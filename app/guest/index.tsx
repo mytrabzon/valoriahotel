@@ -5,6 +5,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
 import { supabase } from '@/lib/supabase';
 import { useTranslation } from 'react-i18next';
+import { log } from '@/lib/logger';
 
 export default function GuestScanScreen() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -22,11 +23,22 @@ export default function GuestScanScreen() {
     if (scanned) return;
     setScanned(true);
     setError(null);
+    log.info('GuestScan', 'QR taranıyor', { dataLength: data?.length });
     try {
-      const url = data.startsWith('http') ? data : `https://${data}`;
-      const u = new URL(url);
-      const token = u.searchParams.get('token') ?? u.pathname.split('/').pop();
+      let token: string | null = null;
+      if (data.startsWith('http')) {
+        try {
+          const u = new URL(data);
+          token = u.searchParams.get('token') ?? u.pathname.split('/').filter(Boolean).pop() ?? null;
+        } catch (urlErr) {
+          log.warn('GuestScan', 'URL parse', urlErr);
+          token = null;
+        }
+      } else {
+        token = data.trim();
+      }
       if (!token) {
+        log.warn('GuestScan', 'token yok');
         setError(t('invalidQR'));
         setScanned(false);
         return;
@@ -38,6 +50,9 @@ export default function GuestScanScreen() {
         .gt('expires_at', new Date().toISOString())
         .single();
 
+      if (e) {
+        log.error('GuestScan', 'room_qr_codes', e.message, e.code, e.details);
+      }
       if (e || !qrRow) {
         setError(t('invalidQR'));
         setScanned(false);
@@ -46,9 +61,11 @@ export default function GuestScanScreen() {
 
       const roomId = (qrRow as { room_id: string }).room_id;
       const roomNumber = (qrRow as { rooms: { room_number: string } | null })?.rooms?.room_number ?? '';
+      log.info('GuestScan', 'QR geçerli', { roomId, roomNumber });
       setQR(token, roomId, roomNumber);
       router.replace('/guest/language');
-    } catch {
+    } catch (err) {
+      log.error('GuestScan', 'handleBarCodeScanned catch', err);
       setError(t('invalidQR'));
       setScanned(false);
     }

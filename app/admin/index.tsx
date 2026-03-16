@@ -34,10 +34,46 @@ export default function AdminDashboard() {
           <Text style={styles.cardDesc}>Oda atama, giriş-çıkış</Text>
         </TouchableOpacity>
       </Link>
+      <Link href="/admin/housekeeping" asChild>
+        <TouchableOpacity style={styles.card}>
+          <Text style={styles.cardTitle}>Oda Durumu (Housekeeping)</Text>
+          <Text style={styles.cardDesc}>Temizlik / bakım durumu güncelle</Text>
+        </TouchableOpacity>
+      </Link>
       <Link href="/admin/contracts" asChild>
         <TouchableOpacity style={styles.card}>
           <Text style={styles.cardTitle}>Sözleşme Yönetimi</Text>
           <Text style={styles.cardDesc}>Şablonlar, çoklu dil</Text>
+        </TouchableOpacity>
+      </Link>
+      <Link href="/admin/stock" asChild>
+        <TouchableOpacity style={styles.card}>
+          <Text style={styles.cardTitle}>Stok Yönetimi</Text>
+          <Text style={styles.cardDesc}>Ürünler, giriş/çıkış, onay</Text>
+        </TouchableOpacity>
+      </Link>
+      <Link href="/admin/access" asChild>
+        <TouchableOpacity style={styles.card}>
+          <Text style={styles.cardTitle}>Geçiş Kontrolü</Text>
+          <Text style={styles.cardDesc}>Kapılar, kartlar, personel yetkileri, loglar</Text>
+        </TouchableOpacity>
+      </Link>
+      <Link href="/admin/notifications" asChild>
+        <TouchableOpacity style={styles.card}>
+          <Text style={styles.cardTitle}>Bildirim Sistemi</Text>
+          <Text style={styles.cardDesc}>Toplu duyuru, acil bildirim, şablonlar</Text>
+        </TouchableOpacity>
+      </Link>
+      <Link href="/admin/messages" asChild>
+        <TouchableOpacity style={styles.card}>
+          <Text style={styles.cardTitle}>Mesajlaşma</Text>
+          <Text style={styles.cardDesc}>Misafir ve personelle anlık sohbet, toplu mesaj</Text>
+        </TouchableOpacity>
+      </Link>
+      <Link href="/staff" asChild>
+        <TouchableOpacity style={styles.card}>
+          <Text style={styles.cardTitle}>Profilim</Text>
+          <Text style={styles.cardDesc}>Çalışan profili, fotoğraf, aktif durum</Text>
         </TouchableOpacity>
       </Link>
       <TouchableOpacity style={styles.logout} onPress={handleSignOut}>

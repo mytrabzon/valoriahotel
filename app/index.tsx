@@ -1,23 +1,78 @@
-import { useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Link, useRouter } from 'expo-router';
+import { useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { useRouter } from 'expo-router';
 import { useAuthStore } from '@/stores/authStore';
+import { log } from '@/lib/logger';
+import { startGeofenceWatch, stopGeofenceWatch, type HotelGeofenceConfig } from '@/lib/geofencing';
+import { hasPolicyConsent } from '@/lib/policyConsent';
+
+const HOTEL_COORDS: HotelGeofenceConfig | null =
+  typeof process.env.EXPO_PUBLIC_HOTEL_LAT !== 'undefined' &&
+  typeof process.env.EXPO_PUBLIC_HOTEL_LON !== 'undefined'
+    ? {
+        latitude: Number(process.env.EXPO_PUBLIC_HOTEL_LAT),
+        longitude: Number(process.env.EXPO_PUBLIC_HOTEL_LON),
+        radius: 500,
+      }
+    : null;
 
 export default function HomeScreen() {
   const router = useRouter();
   const { user, staff, loading, loadSession } = useAuthStore();
+  const notifiedNearby = useRef(false);
 
   useEffect(() => {
+    log.info('HomeScreen', 'loadSession tetikleniyor');
     loadSession();
   }, []);
+
+  // Konum: Otele yaklaşınca "Check-in yapmak ister misiniz?" bildirimi
+  useEffect(() => {
+    if (!HOTEL_COORDS || staff) return;
+    startGeofenceWatch(
+      HOTEL_COORDS,
+      (distance) => {
+        if (notifiedNearby.current) return;
+        notifiedNearby.current = true;
+        Alert.alert(
+          'Valoria Hotel',
+          'Otele yakınsınız. Check-in yapmak ister misiniz?',
+          [
+            { text: 'Hayır', style: 'cancel', onPress: () => { notifiedNearby.current = false; } },
+            { text: 'Evet', onPress: () => router.push('/guest') },
+          ]
+        );
+      },
+      (e) => log.warn('HomeScreen', 'Geofence', e?.message)
+    );
+    return () => stopGeofenceWatch();
+  }, [staff]);
 
   useEffect(() => {
     if (loading) return;
     if (staff) {
+      log.info('HomeScreen', 'staff var, /admin yönlendiriliyor');
       router.replace('/admin');
       return;
     }
+    log.info('HomeScreen', 'ana ekran gösteriliyor (giriş yok)');
   }, [loading, staff]);
+
+  useEffect(() => {
+    if (!loading) log.info('HomeScreen', 'durum', { hasStaff: !!staff, hasUser: !!user });
+  }, [loading, staff, user]);
+
+  const goToCustomer = async () => {
+    const accepted = await hasPolicyConsent();
+    if (accepted) router.replace('/customer');
+    else router.push({ pathname: '/policies', params: { next: 'customer' } });
+  };
+
+  const goToGuest = async () => {
+    const accepted = await hasPolicyConsent();
+    if (accepted) router.replace('/guest');
+    else router.push({ pathname: '/policies', params: { next: 'guest' } });
+  };
 
   if (loading) {
     return (
@@ -32,16 +87,18 @@ export default function HomeScreen() {
     <View style={styles.centered}>
       <Text style={styles.title}>Valoria Hotel</Text>
       <Text style={styles.subtitle}>Konaklama Sözleşmesi</Text>
-      <Link href="/guest" asChild>
-        <TouchableOpacity style={styles.primaryButton}>
-          <Text style={styles.primaryButtonText}>QR ile Sözleşme Onayı</Text>
-        </TouchableOpacity>
-      </Link>
-      <Link href="/admin/login" asChild>
-        <TouchableOpacity style={styles.secondaryButton}>
-          <Text style={styles.secondaryButtonText}>Personel Girişi</Text>
-        </TouchableOpacity>
-      </Link>
+      <TouchableOpacity style={styles.primaryButton} onPress={goToCustomer}>
+        <Text style={styles.primaryButtonText}>Müşteri Uygulaması</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.secondaryButton} onPress={goToGuest}>
+        <Text style={styles.secondaryButtonText}>QR ile Sözleşme Onayı</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.secondaryButton, { marginTop: 0 }]} onPress={() => router.push('/admin/login')}>
+        <Text style={styles.secondaryButtonText}>Personel Girişi</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.secondaryButton, { marginTop: 8 }]} onPress={() => router.push('/auth')}>
+        <Text style={styles.secondaryButtonText}>E-posta ile giriş / kayıt</Text>
+      </TouchableOpacity>
     </View>
   );
 }

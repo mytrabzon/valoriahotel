@@ -1,35 +1,81 @@
-import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { useEffect, useState, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, useWindowDimensions, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
 import { supabase } from '@/lib/supabase';
+import { LANGUAGES } from '@/i18n';
+import { WebView } from 'react-native-webview';
 
 export default function ContractScreen() {
   const router = useRouter();
   const { t, i18n } = useTranslation();
   const { lang, setStep } = useGuestFlowStore();
+  const [contractLang, setContractLang] = useState<string>(i18n.language || lang || 'tr');
   const [content, setContent] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const { height } = useWindowDimensions();
+
+  const fetchContract = useCallback(async (lng: string) => {
+    setLoading(true);
+    const { data: v2 } = await supabase
+      .from('contract_templates')
+      .select('content')
+      .eq('lang', lng)
+      .eq('version', 2)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (v2?.content) {
+      setContent(v2.content);
+      setLoading(false);
+      return;
+    }
+    const { data: v1 } = await supabase
+      .from('contract_templates')
+      .select('content')
+      .eq('lang', lng)
+      .eq('is_active', true)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    setContent(v1?.content ?? t('contract'));
+    setLoading(false);
+  }, [t]);
 
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from('contract_templates')
-        .select('content')
-        .eq('lang', i18n.language || lang)
-        .eq('is_active', true)
-        .order('version', { ascending: false })
-        .limit(1)
-        .single();
-      setContent(data?.content ?? t('contract'));
-      setLoading(false);
-    })();
-  }, [lang, i18n.language]);
+    fetchContract(contractLang);
+  }, [contractLang, fetchContract]);
+
+  const onSelectLang = (code: string) => {
+    setContractLang(code);
+    i18n.changeLanguage(code);
+  };
 
   const accept = () => {
     setStep('form');
     router.replace('/guest/form');
+  };
+
+  const htmlDoc = (body: string) => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <style>
+    body { margin: 0; padding: 12px; font-size: 15px; color: #1a202c; line-height: 1.5; }
+    a { color: #3182ce; text-decoration: none; }
+    a:active { opacity: 0.8; }
+    h2,h3 { color: #1a365d; margin-top: 16px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>${body}</body>
+</html>`;
+
+  const handleShouldStartLoad = (req: { url: string }) => {
+    const u = req.url;
+    if (u === 'about:blank' || u.startsWith('data:')) return true;
+    Linking.openURL(u);
+    return false;
   };
 
   return (
@@ -37,15 +83,43 @@ export default function ContractScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>{t('contract')}</Text>
       </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.langStrip}
+        contentContainerStyle={styles.langStripContent}
+      >
+        {LANGUAGES.map(({ code, label }) => (
+          <TouchableOpacity
+            key={code}
+            style={[styles.langBtn, contractLang === code && styles.langBtnActive]}
+            onPress={() => onSelectLang(code)}
+          >
+            <Text style={[styles.langBtnText, contractLang === code && styles.langBtnTextActive]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
       {loading ? (
         <Text style={styles.loading}>{t('loading')}</Text>
       ) : (
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          <Text style={styles.body}>{content}</Text>
-          <TouchableOpacity style={styles.button} onPress={accept}>
-            <Text style={styles.buttonText}>{t('acceptContract')} - {t('next')}</Text>
-          </TouchableOpacity>
-        </ScrollView>
+        <>
+          <View style={[styles.webWrap, { height: height * 0.45 }]}>
+            <WebView
+              source={{ html: htmlDoc(content) }}
+              style={styles.webview}
+              scrollEnabled
+              onShouldStartLoadWithRequest={handleShouldStartLoad}
+              originWhitelist={['*']}
+            />
+          </View>
+          <View style={styles.footer}>
+            <TouchableOpacity style={styles.button} onPress={accept}>
+              <Text style={styles.buttonText}>{t('acceptContract')} – {t('next')}</Text>
+            </TouchableOpacity>
+          </View>
+        </>
       )}
     </View>
   );
@@ -53,12 +127,24 @@ export default function ContractScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#1a365d' },
-  header: { paddingTop: 56, paddingHorizontal: 24, paddingBottom: 16 },
+  header: { paddingTop: 56, paddingHorizontal: 24, paddingBottom: 8 },
   title: { fontSize: 24, fontWeight: '700', color: '#fff' },
+  langStrip: { maxHeight: 44, marginBottom: 8 },
+  langStripContent: { paddingHorizontal: 16, gap: 8, alignItems: 'center', paddingVertical: 6 },
+  langBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    marginRight: 8,
+  },
+  langBtnActive: { backgroundColor: '#ed8936' },
+  langBtnText: { color: 'rgba(255,255,255,0.9)', fontSize: 13 },
+  langBtnTextActive: { color: '#fff', fontWeight: '600' },
   loading: { color: '#fff', padding: 24 },
-  scroll: { flex: 1 },
-  scrollContent: { padding: 24, paddingBottom: 48 },
-  body: { color: 'rgba(255,255,255,0.95)', fontSize: 15, lineHeight: 24, marginBottom: 32 },
+  webWrap: { marginHorizontal: 16, borderRadius: 12, overflow: 'hidden', backgroundColor: '#fff' },
+  webview: { flex: 1 },
+  footer: { padding: 24, paddingBottom: 48 },
   button: {
     backgroundColor: '#ed8936',
     paddingVertical: 16,

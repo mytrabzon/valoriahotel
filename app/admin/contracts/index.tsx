@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity } from 'react-native';
+import { Link } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 
 type Template = {
@@ -36,6 +37,11 @@ export default function ContractsList() {
 
   return (
     <View style={styles.container}>
+      <Link href="/admin/contracts/rules" asChild>
+        <TouchableOpacity style={styles.rulesCta}>
+          <Text style={styles.rulesCtaText}>📋 Kurallar sözleşmesi (7 dil) – Düzenle</Text>
+        </TouchableOpacity>
+      </Link>
       <FlatList
         data={templates}
         keyExtractor={(t) => t.id}
@@ -54,6 +60,8 @@ export default function ContractsList() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f7fafc' },
+  rulesCta: { margin: 16, marginBottom: 0, padding: 16, backgroundColor: '#1a365d', borderRadius: 12, alignItems: 'center' },
+  rulesCtaText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   loading: { padding: 24 },
   list: { padding: 16 },
   card: {

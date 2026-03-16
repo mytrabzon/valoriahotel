@@ -132,31 +132,40 @@ ALTER TABLE public.guests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.verification_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admin_logs ENABLE ROW LEVEL SECURITY;
 
--- Staff: sadece kendi kaydı (auth_id = auth.uid())
+-- Policies (DROP IF EXISTS ile tekrar çalıştırılabilir)
+DROP POLICY IF EXISTS "staff_own" ON public.staff;
 CREATE POLICY "staff_own" ON public.staff FOR ALL USING (auth_id = auth.uid());
 
--- Rooms, templates, QR: authenticated staff tüm erişim
+DROP POLICY IF EXISTS "rooms_all" ON public.rooms;
 CREATE POLICY "rooms_all" ON public.rooms FOR ALL TO authenticated USING (true);
+DROP POLICY IF EXISTS "room_images_all" ON public.room_images;
 CREATE POLICY "room_images_all" ON public.room_images FOR ALL TO authenticated USING (true);
+DROP POLICY IF EXISTS "contract_templates_read" ON public.contract_templates;
 CREATE POLICY "contract_templates_read" ON public.contract_templates FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS "contract_templates_write" ON public.contract_templates;
 CREATE POLICY "contract_templates_write" ON public.contract_templates FOR ALL TO authenticated USING (true);
+DROP POLICY IF EXISTS "room_qr_codes_all" ON public.room_qr_codes;
 CREATE POLICY "room_qr_codes_all" ON public.room_qr_codes FOR ALL TO authenticated USING (true);
 
--- QR token ile guest sözleşme akışı: anon sadece token ile QR bilgisi ve template okuyabilsin
+DROP POLICY IF EXISTS "room_qr_by_token" ON public.room_qr_codes;
 CREATE POLICY "room_qr_by_token" ON public.room_qr_codes FOR SELECT TO anon
   USING (expires_at > now());
 
--- Guests: staff tüm; anon sadece insert (yeni misafir kaydı) ve kendi kaydını güncelleme (signature vb)
+DROP POLICY IF EXISTS "guests_staff_all" ON public.guests;
 CREATE POLICY "guests_staff_all" ON public.guests FOR ALL TO authenticated USING (true);
+DROP POLICY IF EXISTS "guests_anon_insert" ON public.guests;
 CREATE POLICY "guests_anon_insert" ON public.guests FOR INSERT TO anon WITH CHECK (true);
+DROP POLICY IF EXISTS "guests_anon_select_own" ON public.guests;
 CREATE POLICY "guests_anon_select_own" ON public.guests FOR SELECT TO anon USING (true);
+DROP POLICY IF EXISTS "guests_anon_update_own" ON public.guests;
 CREATE POLICY "guests_anon_update_own" ON public.guests FOR UPDATE TO anon USING (true);
 
--- Verification codes: anon insert/select (doğrulama akışı)
+DROP POLICY IF EXISTS "verification_anon" ON public.verification_codes;
 CREATE POLICY "verification_anon" ON public.verification_codes FOR ALL TO anon USING (true);
+DROP POLICY IF EXISTS "verification_staff" ON public.verification_codes;
 CREATE POLICY "verification_staff" ON public.verification_codes FOR ALL TO authenticated USING (true);
 
--- Admin logs: sadece authenticated
+DROP POLICY IF EXISTS "admin_logs_staff" ON public.admin_logs;
 CREATE POLICY "admin_logs_staff" ON public.admin_logs FOR ALL TO authenticated USING (true);
 
 -- Function: QR token oluştur / yenile

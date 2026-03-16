@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
 import { supabase } from '@/lib/supabase';
+import { setGuestNotificationToken } from '@/lib/guestNotificationToken';
 
 export default function VerifyScreen() {
   const { t } = useTranslation();
@@ -66,6 +67,12 @@ export default function VerifyScreen() {
         .from('guests')
         .update({ verified_at: new Date().toISOString(), verification_method: 'sms' })
         .eq('id', guestId);
+
+      const { data: token } = await supabase.rpc('get_guest_app_token_after_verify', {
+        p_guest_id: guestId,
+        p_code: code.trim(),
+      });
+      if (token) await setGuestNotificationToken(token);
 
       setStep('sign');
       router.replace('/guest/sign');

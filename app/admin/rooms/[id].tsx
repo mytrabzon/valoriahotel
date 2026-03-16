@@ -80,8 +80,8 @@ export default function RoomDetail() {
         <Text style={styles.label}>QR Kod</Text>
         {qrValue ? (
           <View style={styles.qrWrap}>
-            <QRCode value={qrValue} size={180} />
-            <Text style={styles.qrRoom}>Oda {room.room_number}</Text>
+            <QRCode value={qrValue} size={180} logo={require('../../../assets/icon.png')} logoSize={36} />
+            <Text style={styles.qrRoom}>Valoria Hotel • Oda {room.room_number}</Text>
             <TouchableOpacity style={styles.qrBtn} onPress={refreshQR}>
               <Text style={styles.qrBtnText}>QR Kodu Yenile</Text>
             </TouchableOpacity>

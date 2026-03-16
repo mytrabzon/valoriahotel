@@ -1,0 +1,33 @@
+-- Sesli mesaj / medya: misafir mesaj gönderirken media_url (ses dosyası URL) kaydedilebilsin
+-- Eski 4 parametreli sürümü kaldır; tek imza ile devam et (varsayılanlar ile geri uyumlu)
+DROP FUNCTION IF EXISTS public.messaging_send_message_guest(TEXT, UUID, TEXT, VARCHAR);
+
+CREATE OR REPLACE FUNCTION public.messaging_send_message_guest(
+  p_app_token TEXT,
+  p_conversation_id UUID,
+  p_content TEXT,
+  p_message_type VARCHAR DEFAULT 'text',
+  p_media_url TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_guest_id UUID;
+  v_guest_name TEXT;
+  v_msg_id UUID;
+BEGIN
+  SELECT g.id, g.full_name INTO v_guest_id, v_guest_name FROM public.guests g WHERE g.app_token = p_app_token LIMIT 1;
+  IF v_guest_id IS NULL THEN RETURN NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.conversation_participants WHERE conversation_id = p_conversation_id AND participant_id = v_guest_id AND participant_type = 'guest' AND left_at IS NULL) THEN
+    RETURN NULL;
+  END IF;
+  INSERT INTO public.messages (conversation_id, sender_id, sender_type, sender_name, message_type, content, media_url)
+  VALUES (p_conversation_id, v_guest_id, 'guest', v_guest_name, COALESCE(NULLIF(p_message_type, ''), 'text'), p_content, p_media_url)
+  RETURNING id INTO v_msg_id;
+  UPDATE public.conversations SET last_message_id = v_msg_id, last_message_at = now(), updated_at = now() WHERE id = p_conversation_id;
+  RETURN v_msg_id;
+END;
+$$;

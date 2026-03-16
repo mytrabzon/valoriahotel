@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import SignatureCanvas from 'react-native-signature-canvas';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
 import { supabase } from '@/lib/supabase';
+import { hasBiometric, authenticate } from '@/lib/biometric';
 
 export default function SignScreen() {
   const { t } = useTranslation();
@@ -12,6 +13,11 @@ export default function SignScreen() {
   const { guestId, setStep } = useGuestFlowStore();
   const ref = useRef<SignatureCanvas>(null);
   const [loading, setLoading] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+
+  useEffect(() => {
+    hasBiometric().then(setBiometricAvailable);
+  }, []);
 
   const clear = () => ref.current?.clearSignature();
 
@@ -19,20 +25,34 @@ export default function SignScreen() {
     ref.current?.readSignature();
   };
 
+  const saveAndFinish = async (signatureData: string) => {
+    if (!guestId) return;
+    setLoading(true);
+    try {
+      await supabase.from('guests').update({ signature_data: signatureData }).eq('id', guestId);
+      setStep('done');
+      router.replace('/guest/success');
+    } catch (e: unknown) {
+      Alert.alert(t('error'), (e as Error)?.message ?? 'Kayıt yapılamadı.');
+    }
+    setLoading(false);
+  };
+
   const handleOK = async (signature: string) => {
     if (!guestId || !signature) {
       Alert.alert(t('error'), t('signBelow'));
       return;
     }
-    setLoading(true);
-    try {
-      await supabase.from('guests').update({ signature_data: signature }).eq('id', guestId);
-      setStep('done');
-      router.replace('/guest/success');
-    } catch (e: unknown) {
-      Alert.alert(t('error'), (e as Error)?.message ?? 'İmza kaydedilemedi.');
+    await saveAndFinish(signature);
+  };
+
+  const handleBiometric = async () => {
+    const result = await authenticate('Sözleşmeyi onaylamak için kimliğinizi doğrulayın');
+    if (!result.success) {
+      Alert.alert(t('error'), result.error ?? 'Biyometrik doğrulama başarısız.');
+      return;
     }
-    setLoading(false);
+    await saveAndFinish('biometric:' + new Date().toISOString());
   };
 
   return (
@@ -55,6 +75,11 @@ export default function SignScreen() {
       <TouchableOpacity style={styles.clearBtn} onPress={clear}>
         <Text style={styles.clearBtnText}>{t('clear')}</Text>
       </TouchableOpacity>
+      {biometricAvailable && (
+        <TouchableOpacity style={styles.biometricBtn} onPress={handleBiometric} disabled={loading}>
+          <Text style={styles.biometricBtnText}>🔐 Parmak izi / Face ID ile onayla</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -77,4 +102,13 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   clearBtnText: { color: '#fff', fontWeight: '600' },
+  biometricBtn: {
+    marginTop: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  biometricBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
 });
