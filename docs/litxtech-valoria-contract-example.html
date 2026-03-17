@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Valoria Hotel – Sözleşme Onayı</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --brand: #b8860b;
+      --brand2: #1e40af;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+    .hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    .brand { font-weight: 800; font-size: 1.25rem; }
+    .brand small { display: block; color: var(--muted); font-weight: 600; font-size: 0.85rem; margin-top: 4px; }
+    .pill { font-size: 12px; color: var(--muted); border: 1px solid rgba(255,255,255,0.15); padding: 6px 10px; border-radius: 999px; }
+    .card { background: var(--card); border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08); }
+    .cardHead { padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .cardHead h1 { margin: 0; font-size: 1.1rem; font-weight: 800; color: var(--text); }
+    .lang { font-size: 12px; color: var(--muted); }
+    .content { padding: 16px 20px 20px; max-height: 55vh; overflow: auto; line-height: 1.6; }
+    .content a { color: #93c5fd; text-decoration: none; }
+    .content a:hover { text-decoration: underline; }
+    .footer { padding: 16px 20px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+    .msg { font-size: 14px; font-weight: 700; }
+    .msg.ok { color: #86efac; }
+    .msg.err { color: #fde68a; }
+    .btn {
+      appearance: none; border: 0; cursor: pointer; padding: 14px 20px; border-radius: 12px; font-weight: 700;
+      background: linear-gradient(135deg, var(--brand), #eab308); color: #1c1917;
+    }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .sub { font-size: 12px; color: var(--muted); max-width: 360px; line-height: 1.4; }
+    .loading { color: var(--muted); padding: 24px; text-align: center; }
+    .error { color: #fca5a5; padding: 16px; background: rgba(239,68,68,0.15); border-radius: 12px; margin: 16px 20px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div class="brand">Valoria Hotel <small>Sözleşme / Kurallar Onayı</small></div>
+      <span class="pill">QR ile açıldı · <span id="date"></span></span>
+    </div>
+    <div class="card">
+      <div class="cardHead">
+        <h1 id="title">—</h1>
+        <span class="lang" id="langLabel">Dil: TR</span>
+      </div>
+      <div id="contentArea">
+        <p class="loading">Yükleniyor…</p>
+      </div>
+      <div class="footer">
+        <p class="sub">Bu onay kayıt altına alınır. Sorunuz olursa resepsiyon ile iletişime geçebilirsiniz.</p>
+        <div>
+          <span id="message" class="msg" style="display:none;"></span>
+          <button id="acceptBtn" class="btn" style="display:none;">Okudum, Kabul Ediyorum</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      // ——— Ayarlar: Litxtech / kendi sunucunuzda bu URL'yi kendi Supabase projenize göre değiştirin.
+      var CONTRACT_API_URL = 'https://PROJE_ID.supabase.co/functions/v1/public-contract';
+
+      var qs = new URLSearchParams(window.location.search);
+      var token = (qs.get('token') || '').trim();
+      var lang = (qs.get('lang') || 'tr').toLowerCase();
+      var allowedLang = ['tr','en','ar','de','fr','ru','es'].indexOf(lang) >= 0 ? lang : 'tr';
+
+      document.getElementById('date').textContent = new Date().toLocaleDateString('tr-TR');
+      document.getElementById('langLabel').textContent = 'Dil: ' + allowedLang.toUpperCase();
+
+      var contentArea = document.getElementById('contentArea');
+      var titleEl = document.getElementById('title');
+      var acceptBtn = document.getElementById('acceptBtn');
+      var messageEl = document.getElementById('message');
+
+      function showError(msg) {
+        contentArea.innerHTML = '<div class="error">' + escapeHtml(msg) + '</div>';
+        acceptBtn.style.display = 'none';
+      }
+      function escapeHtml(s) {
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      if (!token) {
+        showError('Eksik parametre: token. Lütfen QR kodu tekrar okutun.');
+        return;
+      }
+
+      var apiGetUrl = CONTRACT_API_URL + '?token=' + encodeURIComponent(token) + '&lang=' + encodeURIComponent(allowedLang) + '&format=json';
+      fetch(apiGetUrl, { method: 'GET', headers: { Accept: 'application/json' } })
+        .then(function(r) {
+          if (!r.ok) {
+            if (r.status === 404) throw new Error('QR geçersiz veya süresi dolmuş.');
+            throw new Error('İçerik alınamadı.');
+          }
+          return r.json();
+        })
+        .then(function(data) {
+          titleEl.textContent = data.title || 'Sözleşme';
+          contentArea.innerHTML = (data.content || '').trim() || '<p>İçerik yok.</p>';
+          acceptBtn.style.display = 'inline-block';
+        })
+        .catch(function(e) {
+          showError(e.message || 'Bir hata oluştu.');
+        });
+
+      acceptBtn.addEventListener('click', function() {
+        acceptBtn.disabled = true;
+        messageEl.style.display = 'none';
+        fetch(CONTRACT_API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: token, lang: allowedLang })
+        })
+          .then(function(r) {
+            return r.json().then(function(j) { return { ok: r.ok, json: j }; });
+          })
+          .then(function(o) {
+            if (o.ok && o.json.success) {
+              messageEl.textContent = o.json.message || 'Onayınız alınmıştır.';
+              messageEl.className = 'msg ok';
+              messageEl.style.display = 'inline';
+              acceptBtn.style.display = 'none';
+            } else {
+              messageEl.textContent = (o.json && o.json.error) || 'Onay gönderilemedi.';
+              messageEl.className = 'msg err';
+              messageEl.style.display = 'inline';
+              acceptBtn.disabled = false;
+            }
+          })
+          .catch(function() {
+            messageEl.textContent = 'Bağlantı hatası. Tekrar deneyin.';
+            messageEl.className = 'msg err';
+            messageEl.style.display = 'inline';
+            acceptBtn.disabled = false;
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

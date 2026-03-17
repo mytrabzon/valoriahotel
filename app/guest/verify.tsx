@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
+import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
 import { supabase } from '@/lib/supabase';
 import { setGuestNotificationToken } from '@/lib/guestNotificationToken';
 
@@ -10,6 +11,7 @@ export default function VerifyScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const { guestId, setStep } = useGuestFlowStore();
+  const { appToken } = useGuestMessagingStore();
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -68,10 +70,11 @@ export default function VerifyScreen() {
         .update({ verified_at: new Date().toISOString(), verification_method: 'sms' })
         .eq('id', guestId);
 
-      const { data: token } = await supabase.rpc('get_guest_app_token_after_verify', {
-        p_guest_id: guestId,
-        p_code: code.trim(),
-      });
+      let token = appToken;
+      if (!token) {
+        const res = await supabase.rpc('get_guest_app_token', { p_guest_id: guestId });
+        token = res.data ?? null;
+      }
       if (token) await setGuestNotificationToken(token);
 
       setStep('sign');
@@ -83,7 +86,7 @@ export default function VerifyScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={60}>
       <Text style={styles.title}>{t('verificationCode')}</Text>
       <Text style={styles.subtitle}>{t('enterCode')}</Text>
       <TextInput
@@ -101,7 +104,7 @@ export default function VerifyScreen() {
       <TouchableOpacity style={styles.link} onPress={sendCode} disabled={loading}>
         <Text style={styles.linkText}>{t('sendCode')}</Text>
       </TouchableOpacity>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

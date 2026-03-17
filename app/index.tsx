@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { ScrollView as ScrollViewType } from 'react-native';
 import {
   View,
   Text,
@@ -7,14 +8,107 @@ import {
   Alert,
   useWindowDimensions,
   Platform,
+  ScrollView,
+  ActivityIndicator,
+  TextInput,
+  KeyboardAvoidingView,
+  Animated,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
+import NetInfo from '@react-native-community/netinfo';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuthStore } from '@/stores/authStore';
+import { supabase } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 import { startGeofenceWatch, stopGeofenceWatch, type HotelGeofenceConfig } from '@/lib/geofencing';
+import { useCustomerRoomStore } from '@/stores/customerRoomStore';
+import { linkGuestToRoom } from '@/lib/linkGuestToRoom';
+import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
 import { hasPolicyConsent } from '@/lib/policyConsent';
-import { theme } from '@/constants/theme';
+
+const GEOFENCE_CHECKIN_PROMPT_KEY = '@valoria/geofence_checkin_prompt_shown';
+
+function AnimatedLobbyBackground() {
+  const { width, height } = useWindowDimensions();
+  const drift1 = useRef(new Animated.Value(0)).current;
+  const drift2 = useRef(new Animated.Value(0)).current;
+  const drift3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = (val: Animated.Value, duration: number, delta: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(val, { toValue: 1, duration, useNativeDriver: true }),
+          Animated.timing(val, { toValue: 0, duration, useNativeDriver: true }),
+        ])
+      );
+    const a1 = loop(drift1, 22000, 40);
+    const a2 = loop(drift2, 32000, 50);
+    const a3 = loop(drift3, 28000, 35);
+    a1.start();
+    a2.start();
+    a3.start();
+    return () => {
+      a1.stop();
+      a2.stop();
+      a3.stop();
+    };
+  }, [drift1, drift2, drift3]);
+
+  const orbSize = Math.max(width, height) * 0.6;
+  const y1 = drift1.interpolate({ inputRange: [0, 1], outputRange: [0, 30] });
+  const x2 = drift2.interpolate({ inputRange: [0, 1], outputRange: [0, -25] });
+  const y3 = drift3.interpolate({ inputRange: [0, 1], outputRange: [0, -20] });
+
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      <Animated.View
+        style={[
+          styles.bgOrb,
+          {
+            width: orbSize,
+            height: orbSize,
+            borderRadius: orbSize / 2,
+            left: -orbSize * 0.35,
+            top: -orbSize * 0.2,
+            backgroundColor: 'rgba(13, 148, 136, 0.18)',
+            transform: [{ translateY: y1 }],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.bgOrb,
+          {
+            width: orbSize * 0.85,
+            height: orbSize * 0.85,
+            borderRadius: (orbSize * 0.85) / 2,
+            right: -orbSize * 0.4,
+            top: height * 0.25,
+            backgroundColor: 'rgba(30, 58, 95, 0.2)',
+            transform: [{ translateX: x2 }],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.bgOrb,
+          {
+            width: orbSize * 0.7,
+            height: orbSize * 0.7,
+            borderRadius: (orbSize * 0.7) / 2,
+            left: width * 0.1,
+            bottom: -orbSize * 0.15,
+            backgroundColor: 'rgba(59, 130, 246, 0.12)',
+            transform: [{ translateY: y3 }],
+          },
+        ]}
+      />
+    </View>
+  );
+}
 
 const HOTEL_COORDS: HotelGeofenceConfig | null =
   typeof process.env.EXPO_PUBLIC_HOTEL_LAT !== 'undefined' &&
@@ -26,137 +120,497 @@ const HOTEL_COORDS: HotelGeofenceConfig | null =
       }
     : null;
 
+function OfflineWelcome({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={[styles.wrapper, styles.offlineWrapper, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+      <View style={styles.hero}>
+        <Text style={styles.offlineEmoji}>📴</Text>
+        <Text style={styles.offlineTitle}>{t('valoria')}</Text>
+        <Text style={styles.offlineSub}>{t('offline')}</Text>
+      </View>
+      <TouchableOpacity style={styles.retryButton} onPress={onRetry} activeOpacity={0.85}>
+        <Text style={styles.retryButtonText}>{t('retry')}</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 export default function HomeScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const { user, staff, loading, loadSession } = useAuthStore();
+  const { user, staff, loading } = useAuthStore();
+  const [isOffline, setIsOffline] = useState(false);
+  const [appleLoading, setAppleLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [signInLoading, setSignInLoading] = useState(false);
+  const [guestLoginLoading, setGuestLoginLoading] = useState(false);
   const notifiedNearby = useRef(false);
+  const scrollRef = useRef<ScrollViewType>(null);
 
   useEffect(() => {
-    log.info('HomeScreen', 'loadSession tetikleniyor');
-    loadSession();
+    const sub = NetInfo.addEventListener((state) => setIsOffline(!state.isConnected));
+    NetInfo.fetch().then((state) => setIsOffline(!state.isConnected));
+    return () => sub();
   }, []);
 
   useEffect(() => {
     if (!HOTEL_COORDS || staff) return;
-    startGeofenceWatch(
-      HOTEL_COORDS,
-      (distance) => {
-        if (notifiedNearby.current) return;
-        notifiedNearby.current = true;
-        Alert.alert(
-          'Valoria Hotel',
-          'Otele yakınsınız. Check-in yapmak ister misiniz?',
-          [
-            { text: 'Hayır', style: 'cancel', onPress: () => { notifiedNearby.current = false; } },
-            { text: 'Evet', onPress: () => router.push('/guest') },
-          ]
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const shown = await AsyncStorage.getItem(GEOFENCE_CHECKIN_PROMPT_KEY);
+        if (shown === '1') return;
+        await startGeofenceWatch(
+          HOTEL_COORDS!,
+          async () => {
+            if (cancelled || notifiedNearby.current) return;
+            notifiedNearby.current = true;
+            await AsyncStorage.setItem(GEOFENCE_CHECKIN_PROMPT_KEY, '1');
+            Alert.alert(
+              t('nearbyCheckinTitle'),
+              t('nearbyCheckinMessage'),
+              [
+                { text: t('no'), style: 'cancel' },
+                { text: t('yes'), onPress: () => router.push('/guest') },
+              ]
+            );
+          },
+          (e) => log.warn('HomeScreen', 'Geofence', (e as Error)?.message)
         );
-      },
-      (e) => log.warn('HomeScreen', 'Geofence', e?.message)
-    );
-    return () => stopGeofenceWatch();
+      } catch (e) {
+        log.warn('HomeScreen', 'Geofence', (e as Error)?.message);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+      stopGeofenceWatch();
+    };
   }, [staff]);
 
+  // Giriş yapmış kullanıcıyı ilgili panele yönlendir. İlk girişte gizlilik onayı yoksa önce /policies.
   useEffect(() => {
     if (loading) return;
-    if (staff) {
-      log.info('HomeScreen', 'staff var, /admin yönlendiriliyor');
-      router.replace('/admin');
+    if (!user && !staff) return;
+    const path = staff ? '/staff' : '/customer';
+    const nextParam = staff ? 'staff' : 'customer';
+    let cancelled = false;
+    hasPolicyConsent().then((accepted) => {
+      if (cancelled) return;
+      if (accepted) {
+        router.replace(path);
+      } else {
+        router.replace({ pathname: '/policies', params: { next: nextParam } });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [loading, user, staff]);
+
+  const signInWithPassword = async () => {
+    const e = email.trim().toLowerCase();
+    if (!e) {
+      Alert.alert(t('error'), t('errorEnterEmail'));
       return;
     }
-    if (user) {
-      log.info('HomeScreen', 'müşteri oturumu var, /customer yönlendiriliyor');
-      router.replace('/customer');
+    if (!password || password.length < 6) {
+      Alert.alert(t('error'), t('passwordMinLength'));
       return;
     }
-    log.info('HomeScreen', 'ana ekran gösteriliyor (giriş yok)');
-  }, [loading, staff, user]);
-
-  useEffect(() => {
-    if (!loading) log.info('HomeScreen', 'durum', { hasStaff: !!staff, hasUser: !!user });
-  }, [loading, staff, user]);
-
-  const goToCustomer = async () => {
-    const accepted = await hasPolicyConsent();
-    if (accepted) router.replace('/customer');
-    else router.push({ pathname: '/policies', params: { next: 'customer' } });
+    setSignInLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email: e, password });
+      if (error) throw error;
+      if (data.user) {
+        await useAuthStore.getState().loadSession();
+        const { user, staff } = useAuthStore.getState();
+        const { pendingRoom, clearPendingRoom } = useCustomerRoomStore.getState();
+        if (pendingRoom && user?.email) {
+          await linkGuestToRoom(user.email, pendingRoom.roomId, user.user_metadata?.full_name);
+          clearPendingRoom();
+        }
+        const accepted = await hasPolicyConsent();
+        const path = staff ? '/staff' : '/customer';
+        const nextParam = staff ? 'staff' : 'customer';
+        if (accepted) {
+          router.replace(path);
+        } else {
+          router.replace({ pathname: '/policies', params: { next: nextParam } });
+        }
+      }
+    } catch (err: unknown) {
+      const msg = (err as Error)?.message ?? t('signInFailed');
+      log.error('HomeScreen', 'signIn', err, msg);
+      Alert.alert(t('error'), msg);
+    }
+    setSignInLoading(false);
   };
 
-  const goToGuest = async () => {
-    const accepted = await hasPolicyConsent();
-    if (accepted) router.replace('/guest');
-    else router.push({ pathname: '/policies', params: { next: 'guest' } });
+  const signInWithApple = async () => {
+    if (Platform.OS !== 'ios') return;
+    setAppleLoading(true);
+    try {
+      const AppleAuthentication = await import('expo-apple-authentication');
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+      const token = credential?.identityToken;
+      if (!token) {
+        Alert.alert(t('appleSignIn'), t('appleCredentialUnavailable'));
+        setAppleLoading(false);
+        return;
+      }
+      const { error } = await supabase.auth.signInWithIdToken({
+        provider: 'apple',
+        token,
+      });
+      if (error) throw error;
+      await useAuthStore.getState().loadSession();
+      const { staff } = useAuthStore.getState();
+      const accepted = await hasPolicyConsent();
+      const path = staff ? '/staff' : '/customer';
+      const nextParam = staff ? 'staff' : 'customer';
+      if (accepted) {
+        router.replace(path);
+      } else {
+        router.replace({ pathname: '/policies', params: { next: nextParam } });
+      }
+    } catch (err: unknown) {
+      const e = err as { code?: string; message?: string };
+      if (e?.code === 'ERR_REQUEST_CANCELED') return;
+      log.warn('HomeScreen', 'Apple sign-in', e?.message ?? e);
+      const msg =
+        e?.code === 'ERR_REQUEST_FAILED' ||
+        (typeof e?.message === 'string' && e.message.includes('missing'))
+          ? t('appleCredentialUnavailable')
+          : (e?.message ?? t('signInFailed'));
+      Alert.alert(t('appleSignIn'), msg);
+    } finally {
+      setAppleLoading(false);
+    }
   };
 
-  const cardWidth = Math.min(width - 48, 400);
-  const paddingHorizontal = Math.max(24, (width - cardWidth) / 2);
+  const signInWithGoogle = async () => {
+    if (Platform.OS !== 'android') return;
+    const { GoogleSignin, isGoogleSigninAvailable, getGoogleSigninLoadError } = require('@/lib/googleSignin');
+    if (!isGoogleSigninAvailable() || !GoogleSignin) {
+      const err = getGoogleSigninLoadError?.();
+      const msg =
+        err && typeof (err as Error)?.message === 'string' && (err as Error).message.includes('RNGoogleSignin')
+          ? 'Google Sign-In native modülü bu derlemede yok. Lütfen projeyi yeniden derleyin: npx expo prebuild --clean ardından npx expo run:android'
+          : 'Google ile giriş bu ortamda kullanılamıyor. Development build kullanıyorsanız: npx expo prebuild --clean ve npx expo run:android ile yeniden derleyin.';
+      Alert.alert(t('googleSignIn'), msg);
+      return;
+    }
+    setGoogleLoading(true);
+    try {
+      GoogleSignin.configure({
+        webClientId: '47373050426-peh0fdfi2f10thui8oh1kkgt6rk5qrvh.apps.googleusercontent.com',
+        offlineAccess: true,
+      });
+      await GoogleSignin.hasPlayServices();
+      const userInfo = await GoogleSignin.signIn();
+      const { idToken } = await GoogleSignin.getTokens();
+      if (!idToken) {
+        const cancelled = userInfo?.user?.id == null;
+        if (!cancelled) Alert.alert(t('googleSignIn'), t('signInFailed'));
+        setGoogleLoading(false);
+        return;
+      }
+      const { error } = await supabase.auth.signInWithIdToken({
+        provider: 'google',
+        token: idToken,
+      });
+      if (error) throw error;
+      await useAuthStore.getState().loadSession();
+      const { user, staff } = useAuthStore.getState();
+      const { pendingRoom, clearPendingRoom } = useCustomerRoomStore.getState();
+      if (pendingRoom && user?.email) {
+        await linkGuestToRoom(user.email, pendingRoom.roomId, user.user_metadata?.full_name);
+        clearPendingRoom();
+      }
+      const accepted = await hasPolicyConsent();
+      const path = staff ? '/staff' : '/customer';
+      const nextParam = staff ? 'staff' : 'customer';
+      if (accepted) {
+        router.replace(path);
+      } else {
+        router.replace({ pathname: '/policies', params: { next: nextParam } });
+      }
+    } catch (err: unknown) {
+      log.error('HomeScreen', 'Google sign-in', err);
+      Alert.alert(t('googleSignIn'), (err as Error)?.message ?? t('signInFailed'));
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  // Misafir olarak giriş: Anonymous auth + get_or_create_guest. Her cihaz bir misafir hesabı; çıkış yapıp tekrar girişte aynı hesap.
+  // Supabase Dashboard: Authentication → Providers → Anonymous Sign-Ins açık olmalı.
+  const signInAsGuest = async () => {
+    setGuestLoginLoading(true);
+    try {
+      const { data: anonData, error: anonError } = await supabase.auth.signInAnonymously();
+      if (anonError) throw anonError;
+      const anonUser = anonData?.user;
+      if (!anonUser) {
+        setGuestLoginLoading(false);
+        return;
+      }
+      await useAuthStore.getState().loadSession();
+      const guestResult = await getOrCreateGuestForCaller(anonUser);
+      if (guestResult?.is_new && guestResult.guest_id) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.access_token) {
+            await supabase.functions.invoke('notify-new-guest-account', {
+              body: { guest_id: guestResult.guest_id },
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            });
+          }
+        } catch (e) {
+          log.warn('HomeScreen', 'notify-new-guest-account', (e as Error)?.message);
+        }
+      }
+      const accepted = await hasPolicyConsent();
+      if (accepted) {
+        router.replace('/customer');
+      } else {
+        router.replace({ pathname: '/policies', params: { next: 'customer' } });
+      }
+    } catch (err: unknown) {
+      log.error('HomeScreen', 'signInAsGuest', err);
+      const msg = (err as Error)?.message ?? '';
+      const isAnonymousDisabled = /anonymous sign-ins are disabled/i.test(msg);
+      const isCaptchaFailed = /captcha verification process failed/i.test(msg);
+      Alert.alert(
+        t('error'),
+        isAnonymousDisabled
+          ? (t('guestLoginDisabled') ?? 'Misafir girişi bu otelde şu an kapalı. Lütfen e-posta ile giriş yapın veya kayıt olun.')
+          : isCaptchaFailed
+            ? ((t('guestLoginCaptchaBlocked') as string | undefined) ??
+              'Misafir girişi şu an CAPTCHA tarafından engellendi. Supabase Dashboard → Authentication → Settings → CAPTCHA ayarını kapatın (veya mobilde CAPTCHA token entegrasyonu ekleyin).')
+            : (msg || t('signInFailed'))
+      );
+    } finally {
+      setGuestLoginLoading(false);
+    }
+  };
+
+  const cardWidth = width - 24;
+  const paddingH = 12;
 
   if (loading) {
+    return <View style={[styles.wrapper, { paddingTop: insets.top, paddingBottom: insets.bottom }]} />;
+  }
+
+  if (isOffline) {
+    return <OfflineWelcome onRetry={() => NetInfo.fetch().then((s) => setIsOffline(!s.isConnected))} />;
+  }
+
+  // Giriş yapmış kullanıcı: sözleşme kontrolü bitene kadar lobi gösterme, tek ekranda yönlendirme
+  if (user || staff) {
     return (
-      <View style={[styles.wrapper, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-        <View style={styles.hero}>
-          <View style={styles.logoPlaceholder} />
-          <Text style={styles.loadingTitle}>Valoria Hotel</Text>
-          <Text style={styles.loadingSub}>Yükleniyor...</Text>
-        </View>
+      <View style={[styles.wrapper, styles.redirectingWrapper, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        <ActivityIndicator size="large" color="#b8860b" />
+        <Text style={styles.redirectingText}>{t('loading')}</Text>
       </View>
     );
   }
 
   return (
-    <View style={[styles.wrapper, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-      {/* Üst: marka alanı */}
-      <View style={styles.hero}>
-        <View style={styles.logoMark}>
-          <Text style={styles.logoText}>V</Text>
+    <View style={styles.wrapper}>
+      <AnimatedLobbyBackground />
+      <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => setShowScrollTop(e.nativeEvent.contentOffset.y > 200)}
+        scrollEventThrottle={100}
+        style={[styles.scrollView, { paddingTop: insets.top }]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 48 }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Full-bleed dark hero */}
+        <View style={[styles.lobbyHeroDark, { paddingTop: 32 + insets.top * 0.5, paddingBottom: 48 }]}>
+          <Text style={styles.lobbyBrandWhite}>{t('valoria')}</Text>
+          <Text style={styles.lobbyTaglineWhite}>{t('tagline')}</Text>
         </View>
-        <Text style={styles.title}>Valoria Hotel</Text>
-        <View style={styles.divider} />
-        <Text style={styles.tagline}>Konaklama sözleşmesi ve giriş</Text>
-      </View>
 
-      {/* Alt: aksiyon kartı */}
-      <View style={[styles.card, { width: cardWidth, marginHorizontal: paddingHorizontal }]}>
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={goToCustomer}
-          activeOpacity={0.85}
+        <KeyboardAvoidingView
+          style={[styles.cardsContainer, { width: cardWidth, marginHorizontal: paddingH }]}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={0}
         >
-          <Text style={styles.primaryLabel}>Müşteri uygulaması</Text>
-          <Text style={styles.primaryHint}>Giriş yap veya hesap oluştur</Text>
-        </TouchableOpacity>
+          <View style={styles.lobbyCard}>
+            <View style={styles.lobbyCardInner}>
+              <View style={styles.lobbySection}>
+                <Text style={styles.lobbySectionTitle}>{t('signIn')}</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder={t('emailPlaceholder')}
+                  placeholderTextColor="#94a3b8"
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!signInLoading}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder={t('passwordPlaceholder')}
+                  placeholderTextColor="#94a3b8"
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  editable={!signInLoading}
+                />
+                <TouchableOpacity
+                  style={[styles.cardBtn, styles.cardBtnPrimary, signInLoading && styles.cardBtnDisabled]}
+                  onPress={signInWithPassword}
+                  disabled={signInLoading}
+                  activeOpacity={0.82}
+                >
+                  {signInLoading ? (
+                    <ActivityIndicator size="small" color="#ffffff" />
+                  ) : (
+                    <Text style={styles.cardBtnTextPrimary}>{t('signInButton')}</Text>
+                  )}
+                </TouchableOpacity>
+                <View style={styles.authLinksRow}>
+                  <TouchableOpacity onPress={() => router.push('/auth/register')} style={styles.authLinkWrap}>
+                    <Text style={styles.cardLinkText}>{t('signUp')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => router.push('/auth/reset')} style={styles.authLinkWrap}>
+                    <Text style={styles.cardLinkText}>{t('forgotPassword')}</Text>
+                  </TouchableOpacity>
+                </View>
 
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={goToGuest}
-          activeOpacity={0.85}
-        >
-          <Text style={styles.secondaryLabel}>QR ile sözleşme onayı</Text>
-          <Text style={styles.secondaryHint}>Oda QR kodu ile hızlı giriş</Text>
-        </TouchableOpacity>
+                <View style={styles.lobbyOrRow}>
+                  <View style={styles.lobbyOrLine} />
+                  <Text style={styles.lobbyOrText}>veya</Text>
+                  <View style={styles.lobbyOrLine} />
+                </View>
 
-        <View style={styles.dividerLine} />
+                {Platform.OS === 'android' && (
+                  <TouchableOpacity
+                    style={[styles.cardBtn, styles.cardBtnOutlined, googleLoading && styles.cardBtnDisabled]}
+                    onPress={signInWithGoogle}
+                    disabled={googleLoading}
+                    activeOpacity={0.82}
+                  >
+                    {googleLoading ? (
+                      <ActivityIndicator size="small" color="#0f172a" />
+                    ) : (
+                      <Text style={styles.cardBtnTextOutlined}>{t('googleSignIn')}</Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+                {Platform.OS === 'ios' && (
+                  <TouchableOpacity
+                    style={[styles.cardBtn, styles.cardBtnOutlined, appleLoading && styles.cardBtnDisabled]}
+                    onPress={signInWithApple}
+                    disabled={appleLoading}
+                    activeOpacity={0.82}
+                  >
+                    {appleLoading ? (
+                      <ActivityIndicator size="small" color="#0f172a" />
+                    ) : (
+                      <Text style={styles.cardBtnTextOutlined}>{t('appleSignIn')}</Text>
+                    )}
+                  </TouchableOpacity>
+                )}
 
-        <TouchableOpacity
-          style={styles.tertiaryButton}
-          onPress={() => router.push('/admin/login')}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.tertiaryLabel}>Personel girişi</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tertiaryButton, styles.tertiaryButtonLast]}
-          onPress={() => router.push('/auth')}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.tertiaryLabel}>E-posta ile giriş / kayıt</Text>
-        </TouchableOpacity>
-      </View>
+                <TouchableOpacity
+                  style={[styles.guestLoginBtn, guestLoginLoading && styles.cardBtnDisabled]}
+                  onPress={signInAsGuest}
+                  disabled={guestLoginLoading || signInLoading}
+                  activeOpacity={0.82}
+                >
+                  {guestLoginLoading ? (
+                    <ActivityIndicator size="small" color="#0d9488" />
+                  ) : (
+                    <>
+                      <Text style={styles.guestLoginBtnText}>{t('guestAccountLogin')}</Text>
+                      <Text style={styles.guestLoginBtnHint}>{t('guestAccountLoginHint')}</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
 
-      {Platform.OS === 'web' && (
-        <Text style={styles.footer}>Valoria Hotel — Konuk deneyimi</Text>
+              <View style={styles.lobbyDivider} />
+
+              <Text style={styles.lobbySectionLabel}>{t('moreOptions') || 'Diğer seçenekler'}</Text>
+              <View style={styles.lobbyActionGrid}>
+                <TouchableOpacity style={styles.lobbyActionTile} onPress={() => router.push('/guest')} activeOpacity={0.85}>
+                  <View style={[styles.lobbyActionTileIcon, styles.lobbyActionTileGuest]}>
+                    <Text style={styles.lobbyActionTileEmoji}>📋</Text>
+                  </View>
+                  <Text style={styles.lobbyActionTileTitle}>{t('guestCheckIn') || 'Misafir check-in'}</Text>
+                  <Text style={styles.lobbyActionTileHint} numberOfLines={2}>{t('guestCheckInHint') || 'QR veya link ile sözleşme onayı'}</Text>
+                  <Text style={styles.lobbyActionTileArrow}>→</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.lobbyActionTile} onPress={() => router.push('/join')} activeOpacity={0.85}>
+                  <View style={[styles.lobbyActionTileIcon, styles.lobbyActionTileStaff]}>
+                    <Text style={styles.lobbyActionTileEmoji}>💼</Text>
+                  </View>
+                  <Text style={styles.lobbyActionTileTitle}>{t('staffApplication')}</Text>
+                  <Text style={styles.lobbyActionTileHint} numberOfLines={2}>{t('staffApplicationHint')}</Text>
+                  <Text style={styles.lobbyActionTileArrow}>→</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.lobbyDivider} />
+
+              <View style={styles.lobbyFooter}>
+                <Text style={styles.lobbyFooterLocation}>📍 Uzungöl, Türkiye</Text>
+                <View style={styles.lobbyFooterButtons}>
+                  <TouchableOpacity
+                    style={styles.lobbyFooterBtn}
+                    onPress={() => router.push({ pathname: '/legal/[type]', params: { type: 'privacy' } })}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.lobbyFooterBtnText}>{t('privacy')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.lobbyFooterBtn}
+                    onPress={() => router.push({ pathname: '/legal/[type]', params: { type: 'terms' } })}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.lobbyFooterBtnText}>{t('terms')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.lobbyFooterBtn}
+                    onPress={() => router.push('/guest/language')}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.lobbyFooterBtnText}>{t('language')}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </ScrollView>
+      {showScrollTop && (
+        <View style={[styles.scrollTopWrap, { bottom: insets.bottom + 24 }]} pointerEvents="box-none">
+          <TouchableOpacity
+            style={styles.scrollTopBtn}
+            onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.scrollTopBtnText}>{t('scrollTop')}</Text>
+          </TouchableOpacity>
+        </View>
       )}
     </View>
   );
@@ -165,142 +619,381 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   wrapper: {
     flex: 1,
-    backgroundColor: '#0f1419',
-    justifyContent: 'space-between',
+    backgroundColor: '#0c1222',
+  },
+  redirectingWrapper: {
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 24,
+  },
+  redirectingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: 'rgba(255,255,255,0.9)',
+  },
+  scrollView: {
+    flex: 1,
+    backgroundColor: 'transparent',
+  },
+  scrollContent: {
+    alignItems: 'center',
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
   },
   hero: {
-    flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
-    minHeight: 220,
-  },
-  logoMark: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
-    backgroundColor: theme.colors.primary,
+    paddingVertical: 36,
+    minHeight: 100,
     justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  logoText: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#0f1419',
-    letterSpacing: -1,
-  },
-  logoPlaceholder: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
-    backgroundColor: 'rgba(184, 134, 11, 0.3)',
-    marginBottom: 20,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#ffffff',
-    letterSpacing: 0.5,
-    marginBottom: 12,
-  },
-  tagline: {
-    fontSize: 15,
-    color: 'rgba(255, 255, 255, 0.65)',
-    letterSpacing: 0.2,
-  },
-  divider: {
-    width: 40,
-    height: 3,
-    backgroundColor: theme.colors.primary,
-    borderRadius: 2,
-    marginBottom: 12,
-  },
-  loadingTitle: {
     fontSize: 24,
-    fontWeight: '700',
-    color: '#ffffff',
-    marginBottom: 8,
+    fontWeight: '800',
+    color: '#0f1419',
+    letterSpacing: 0.5,
   },
   loadingSub: {
-    fontSize: 15,
-    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 14,
+    color: 'rgba(15,20,25,0.6)',
+    marginTop: 8,
   },
-  card: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    paddingVertical: 20,
-    paddingHorizontal: 20,
+  cardsContainer: {
+    marginTop: -32,
     marginBottom: 24,
-    ...(Platform.OS !== 'web' && {
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 8 },
-      shadowOpacity: 0.35,
-      shadowRadius: 24,
-      elevation: 12,
-    }),
   },
-  primaryButton: {
-    backgroundColor: theme.colors.primary,
-    borderRadius: 14,
+  lobbyHeroDark: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+    paddingHorizontal: 24,
+  },
+  lobbyBrandWhite: {
+    fontSize: 34,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: -0.8,
+  },
+  lobbyTaglineWhite: {
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.72)',
+    marginTop: 10,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  bgOrb: {
+    position: 'absolute',
+  },
+  lobbyCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 24,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.12,
+    shadowRadius: 28,
+    elevation: 8,
+  },
+  lobbyCardInner: {
+    padding: 28,
+  },
+  lobbySection: {
+    alignItems: 'stretch',
+  },
+  lobbySectionTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0f172a',
+    letterSpacing: -0.4,
+    marginBottom: 20,
+  },
+  lobbyDivider: {
+    height: 1,
+    backgroundColor: '#e2e8f0',
+    marginVertical: 26,
+  },
+  lobbySectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+    marginBottom: 14,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  lobbyOrRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 20,
+    gap: 14,
+  },
+  lobbyOrLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#e2e8f0',
+  },
+  lobbyOrText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#94a3b8',
+  },
+  lobbyActionGrid: {
+    flexDirection: 'row',
+    gap: 14,
+  },
+  lobbyActionTile: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    minHeight: 140,
+  },
+  lobbyActionTileIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  lobbyActionTileGuest: {
+    backgroundColor: 'rgba(59, 130, 246, 0.14)',
+  },
+  lobbyActionTileStaff: {
+    backgroundColor: 'rgba(34, 197, 94, 0.14)',
+  },
+  lobbyActionTileEmoji: {
+    fontSize: 26,
+  },
+  lobbyActionTileTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  lobbyActionTileHint: {
+    fontSize: 12,
+    color: '#64748b',
+    lineHeight: 16,
+    marginBottom: 12,
+  },
+  lobbyActionTileArrow: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#64748b',
+  },
+  lobbyFooter: {
+    marginTop: 2,
+  },
+  lobbyFooterLocation: {
+    fontSize: 13,
+    color: '#64748b',
+    marginBottom: 16,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  lobbyFooterButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  lobbyFooterBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    backgroundColor: 'transparent',
+  },
+  lobbyFooterBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  input: {
+    width: '100%',
+    backgroundColor: '#f8fafc',
+    borderRadius: 16,
     paddingVertical: 18,
     paddingHorizontal: 20,
-    marginBottom: 12,
+    color: '#0f172a',
+    fontSize: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
-  primaryLabel: {
-    fontSize: 17,
+  authLinksRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 14,
+    marginTop: 18,
+    marginBottom: (Platform.OS === 'ios' || Platform.OS === 'android') ? 14 : 0,
+  },
+  authLinkWrap: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  cardEmoji: {
+    fontSize: 32,
+    marginBottom: 10,
+  },
+  cardTitle: {
+    fontSize: 18,
     fontWeight: '700',
     color: '#0f1419',
+    marginBottom: 6,
   },
-  primaryHint: {
+  cardHint: {
     fontSize: 13,
-    color: 'rgba(15, 20, 25, 0.75)',
-    marginTop: 2,
+    color: 'rgba(15,20,25,0.7)',
+    textAlign: 'center',
+    marginBottom: 18,
+    lineHeight: 20,
   },
-  secondaryButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  cardBtn: {
+    paddingVertical: 17,
+    paddingHorizontal: 28,
     borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    marginBottom: 16,
+    minWidth: 180,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  secondaryLabel: {
+  cardBtnPrimary: {
+    backgroundColor: '#0d9488',
+    borderWidth: 0,
+  },
+  cardBtnSecondary: {
+    backgroundColor: '#0d9488',
+    borderWidth: 0,
+  },
+  cardBtnOutlined: {
+    backgroundColor: 'transparent',
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    marginTop: 0,
+  },
+  cardBtnTextPrimary: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  cardBtnTextSecondary: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '800',
     color: '#ffffff',
   },
-  secondaryHint: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.6)',
-    marginTop: 2,
+  cardBtnTextOutlined: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
   },
-  dividerLine: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    marginBottom: 12,
-  },
-  tertiaryButton: {
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+  guestLoginBtn: {
+    marginTop: 20,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderRadius: 14,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#0d9488',
+    borderStyle: 'dashed',
     alignItems: 'center',
-    borderRadius: 12,
   },
-  tertiaryButtonLast: {
-    marginBottom: 0,
+  guestLoginBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0d9488',
   },
-  tertiaryLabel: {
+  guestLoginBtnHint: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 4,
+  },
+  cardBtnApple: {
+    marginTop: 0,
+    backgroundColor: '#0d9488',
+  },
+  cardBtnGoogle: {
+    marginTop: 0,
+    backgroundColor: '#0d9488',
+  },
+  cardBtnDisabled: {
+    opacity: 0.65,
+  },
+  cardBtnTextApple: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  cardBtnTextGoogle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  cardLink: {
+    marginTop: 12,
+    paddingVertical: 4,
+  },
+  cardLinkText: {
+    fontSize: 14,
+    color: '#0d9488',
+    fontWeight: '700',
+  },
+  scrollTopWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  scrollTopBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 14,
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  scrollTopBtnText: {
     fontSize: 15,
-    fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.8)',
+    fontWeight: '800',
+    color: '#0f172a',
   },
-  footer: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.35)',
-    marginBottom: 8,
+  offlineWrapper: {
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  offlineTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: -0.5,
+  },
+  offlineEmoji: {
+    fontSize: 48,
+    marginBottom: 16,
+  },
+  offlineSub: {
+    fontSize: 16,
+    color: 'rgba(255,255,255,0.75)',
+    marginTop: 8,
+  },
+  retryButton: {
+    backgroundColor: '#ffffff',
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  retryButtonText: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0f172a',
   },
 });

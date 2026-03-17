@@ -48,7 +48,7 @@ export default function GuestScanScreen() {
         .select('room_id, rooms(room_number)')
         .eq('token', token)
         .gt('expires_at', new Date().toISOString())
-        .single();
+        .maybeSingle();
 
       if (e) {
         log.error('GuestScan', 'room_qr_codes', e.message, e.code, e.details);

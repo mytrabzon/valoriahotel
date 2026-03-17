@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Y&#252;kl&#252;yor...</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0b1220; color: #fff; margin: 0; padding: 2rem; text-align: center; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,.2); border-top-color: #b8860b; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 1rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .err { color: #fc8181; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="spinner"></div>
+  <p>S&#246;zle&#351;me sayfas&#305; y&#252;kl&#252;yor...</p>
+  <p class="err" id="err"></p>
+  <script>
+    (function() {
+      var params = new URLSearchParams(window.location.search);
+      var token = params.get('token') || params.get('t') || 'valoria-resepsiyon-qr';
+      var lang = params.get('lang') || params.get('l') || 'tr';
+      var url = 'https://sbydlcujsiqmifybqzsi.supabase.co/functions/v1/public-contract?token=' + encodeURIComponent(token) + '&lang=' + encodeURIComponent(lang);
+      fetch(url, { headers: { 'Accept': 'text/html' } })
+        .then(function(r) { return r.text(); })
+        .then(function(html) {
+          if (!html || html.length < 100) throw new Error('Bos yanit');
+          document.open();
+          document.write(html);
+          document.close();
+        })
+        .catch(function(e) {
+          document.getElementById('err').textContent = 'Y&#252;klenemedi: ' + (e.message || 'Bilinmeyen hata');
+        });
+    })();
+  </script>
+</body>
+</html>

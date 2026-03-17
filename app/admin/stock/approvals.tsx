@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Image, StyleSheet, Alert } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
+import { CachedImage } from '@/components/CachedImage';
+import { ImagePreviewModal } from '@/components/ImagePreviewModal';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -21,11 +23,12 @@ export default function StockApprovalsScreen() {
   const router = useRouter();
   const { staff: currentStaff } = useAuthStore();
   const [pending, setPending] = useState<Movement[]>([]);
+  const [previewUri, setPreviewUri] = useState<string | null>(null);
 
   const load = async () => {
     const { data } = await supabase
       .from('stock_movements')
-      .select('id, product_id, movement_type, quantity, staff_image, photo_proof, notes, created_at, product:stock_products(name, unit, current_stock, barcode), staff:staff(full_name)')
+      .select('id, product_id, movement_type, quantity, staff_image, photo_proof, notes, created_at, product:stock_products(name, unit, current_stock, barcode), staff:staff_id(full_name)')
       .eq('status', 'pending')
       .order('created_at', { ascending: false });
     setPending(data ?? []);
@@ -56,10 +59,11 @@ export default function StockApprovalsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Onay Bekleyenler</Text>
-        <Text style={styles.headerSub}>{pending.length} işlem</Text>
-      </View>
+      {pending.length > 0 && (
+        <View style={styles.subBar}>
+          <Text style={styles.subBarText}>{pending.length} işlem</Text>
+        </View>
+      )}
       <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
         {pending.map((m) => (
           <View key={m.id} style={styles.card}>
@@ -77,8 +81,16 @@ export default function StockApprovalsScreen() {
             </View>
             {(m.staff_image || m.photo_proof) && (
               <View style={styles.photoRow}>
-                {m.staff_image && <Image source={{ uri: m.staff_image }} style={styles.thumb} />}
-                {m.photo_proof && <Image source={{ uri: m.photo_proof }} style={styles.thumb} />}
+                {m.staff_image && (
+                  <TouchableOpacity onPress={() => setPreviewUri(m.staff_image)} activeOpacity={0.8}>
+                    <CachedImage uri={m.staff_image} style={styles.thumb} contentFit="cover" />
+                  </TouchableOpacity>
+                )}
+                {m.photo_proof && (
+                  <TouchableOpacity onPress={() => setPreviewUri(m.photo_proof)} activeOpacity={0.8}>
+                    <CachedImage uri={m.photo_proof} style={styles.thumb} contentFit="cover" />
+                  </TouchableOpacity>
+                )}
               </View>
             )}
             {m.notes ? <Text style={styles.notes}>{m.notes}</Text> : null}
@@ -99,15 +111,15 @@ export default function StockApprovalsScreen() {
           </View>
         )}
       </ScrollView>
+      <ImagePreviewModal visible={!!previewUri} uri={previewUri} onClose={() => setPreviewUri(null)} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f3f4f6' },
-  header: { backgroundColor: '#b8860b', padding: 20 },
-  headerTitle: { fontSize: 22, fontWeight: '700', color: '#fff' },
-  headerSub: { fontSize: 14, color: 'rgba(255,255,255,0.9)', marginTop: 4 },
+  subBar: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e5e7eb' },
+  subBarText: { fontSize: 14, color: '#6b7280' },
   list: { flex: 1 },
   listContent: { padding: 16, paddingBottom: 32 },
   card: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 12 },

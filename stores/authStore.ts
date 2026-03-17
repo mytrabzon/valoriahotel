@@ -11,6 +11,10 @@ interface StaffProfile {
   full_name: string | null;
   role: string;
   department: string | null;
+  profile_image?: string | null;
+  work_status?: string | null;
+  banned_until?: string | null;
+  deleted_at?: string | null;
 }
 
 interface AuthState {
@@ -32,7 +36,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setStaff: (staff) => set({ staff }),
 
   loadSession: async () => {
-    set({ loading: true });
+    // Zaten oturum varsa loading true yapma; sayfa geçişlerinde lobi flash'ını önler
+    const hadSession = !!get().user || !!get().staff;
+    if (!hadSession) set({ loading: true });
     log.info('authStore', 'loadSession başladı');
     try {
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
@@ -48,21 +54,34 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (user) {
         const { data, error: staffError } = await supabase
           .from('staff')
-          .select('id, auth_id, email, full_name, role, department')
+          .select('id, auth_id, email, full_name, role, department, profile_image, work_status, is_active, banned_until, deleted_at')
           .eq('auth_id', user.id)
-          .eq('is_active', true)
-            .maybeSingle();
+          .maybeSingle();
         if (staffError) {
           log.warn('authStore', 'staff fetch hatası (oturum korunur)', staffError.message, staffError.code);
-          // Ağ/veritabanı hatası: çıkış yapma, sadece staff null (kullanıcı lobi görür, tekrar girişte session devam eder)
         } else {
-          staff = data ?? null;
-          // Sadece sorgu başarılı ve personel gerçekten yoksa/pasifse (ban/hesap silme) oturumu kapat
-          if (!staff) {
-            log.info('authStore', 'staff yok veya pasif, oturum kapatılıyor');
-            await supabase.auth.signOut();
-            set({ user: null, staff: null, loading: false });
-            return;
+          const row = data as (StaffProfile & { is_active?: boolean }) | null;
+          if (!row) {
+            staff = null;
+            log.info('authStore', 'staff yok, müşteri oturumu korunuyor');
+          } else {
+            staff = {
+              id: row.id,
+              auth_id: row.auth_id,
+              email: row.email,
+              full_name: row.full_name,
+              role: row.role,
+              department: row.department,
+              profile_image: row.profile_image,
+              work_status: row.work_status,
+              banned_until: row.banned_until,
+              deleted_at: row.deleted_at,
+            };
+            if (row.deleted_at) log.info('authStore', 'staff silinmiş, lobiye yönlendirilecek');
+            else if (row.banned_until && new Date(row.banned_until) > new Date()) log.info('authStore', 'staff banlı, lobiye yönlendirilecek');
+            else if (row.is_active === false) staff = null;
+            else if (!row.deleted_at && (!row.banned_until || new Date(row.banned_until) <= new Date()))
+              savePushTokenForStaff(row.id).catch((e) => log.warn('authStore', 'push token kaydı', e));
           }
         }
         if (staff) {

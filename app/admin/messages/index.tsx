@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '@/stores/authStore';
@@ -16,6 +17,7 @@ import {
 } from '@/lib/messagingApi';
 import type { ConversationWithMeta } from '@/lib/messaging';
 import { MESSAGING_COLORS } from '@/lib/messaging';
+import { CachedImage } from '@/components/CachedImage';
 
 function formatTime(iso: string | null): string {
   if (!iso) return '';
@@ -91,7 +93,11 @@ export default function AdminMessagesScreen() {
             activeOpacity={0.7}
           >
             <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{(item.name || 'Sohbet').charAt(0)}</Text>
+              {item.avatar ? (
+                <CachedImage uri={item.avatar} style={styles.avatarImg} contentFit="cover" />
+              ) : (
+                <Text style={styles.avatarText}>{(item.name || 'Sohbet').charAt(0)}</Text>
+              )}
             </View>
             <View style={styles.rowBody}>
               <Text style={styles.rowTitle} numberOfLines={1}>{item.name || 'Sohbet'}</Text>
@@ -144,7 +150,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
+    overflow: 'hidden',
   },
+  avatarImg: { width: 48, height: 48 },
   avatarText: { color: '#fff', fontWeight: '700', fontSize: 18 },
   rowBody: { flex: 1 },
   rowTitle: { fontWeight: '600', fontSize: 16, color: MESSAGING_COLORS.text },

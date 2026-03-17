@@ -1,0 +1,265 @@
+import { View, Text, StyleSheet, ScrollView, Platform } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { adminTheme } from '@/constants/adminTheme';
+
+/** Cihaz / uygulama izinleri: Uygulamanın kullanıcıdan veya sistemden aldığı izinler */
+const DEVICE_PERMISSIONS = [
+  {
+    key: 'camera',
+    icon: 'camera-outline' as const,
+    title: 'Kamera',
+    reason: 'QR kod okutma (sözleşme onayı, check-in), stok barkodu tarama.',
+    ios: 'NSCameraUsageDescription',
+    android: 'android.permission.CAMERA',
+  },
+  {
+    key: 'photo_library',
+    icon: 'images-outline' as const,
+    title: 'Fotoğraf / Galeri',
+    reason: 'Profil fotoğrafı ve belge yükleme.',
+    ios: 'NSPhotoLibraryUsageDescription',
+    android: '(Medya erişimi)',
+  },
+  {
+    key: 'location',
+    icon: 'location-outline' as const,
+    title: 'Konum',
+    reason: 'Otele yaklaştığınızda check-in bildirimi; otel bölgesine girdiğinizde hoş geldiniz bildirimi.',
+    ios: 'NSLocationWhenInUseUsageDescription, NSLocationAlwaysAndWhenInUseUsageDescription',
+    android: 'ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION, ACCESS_BACKGROUND_LOCATION',
+  },
+  {
+    key: 'notifications',
+    icon: 'notifications-outline' as const,
+    title: 'Bildirimler',
+    reason: 'Anlık bildirimler (mesaj, rezervasyon, acil duyuru).',
+    ios: 'Push Notifications',
+    android: 'expo-notifications',
+  },
+  {
+    key: 'biometric',
+    icon: 'finger-print-outline' as const,
+    title: 'Biyometri (Face ID / Parmak izi)',
+    reason: 'Sözleşme onayında kimlik doğrulama.',
+    ios: 'NSFaceIDUsageDescription',
+    android: 'USE_BIOMETRIC, USE_FINGERPRINT',
+  },
+  {
+    key: 'microphone',
+    icon: 'mic-outline' as const,
+    title: 'Mikrofon',
+    reason: 'Sesli mesaj veya arama özellikleri için (gelecekte kullanılabilir).',
+    ios: '(Opsiyonel)',
+    android: 'RECORD_AUDIO',
+  },
+];
+
+/** Personel uygulama yetkileri: Admin tarafından çalışana verilen yetkiler (staff.app_permissions) */
+const STAFF_APP_PERMISSIONS = [
+  { key: 'stok_giris', label: 'Stok girişi yapabilir', desc: 'Stok giriş/çıkış ve barkod okutma.' },
+  { key: 'mesajlasma', label: 'Müşterilerle mesajlaşabilir', desc: 'Misafirlerle sohbet ve mesaj görüntüleme.' },
+  { key: 'video_paylasim', label: 'Video/resim paylaşabilir', desc: 'Feed ve sohbetlerde medya paylaşımı.' },
+  { key: 'ekip_sohbet', label: 'Ekip sohbetini görebilir', desc: 'Tüm personel sohbet kanalına erişim.' },
+  { key: 'gorev_ata', label: 'Görev atayabilir', desc: 'Diğer personel için görev oluşturma.' },
+  { key: 'personel_ekle', label: 'Personel ekleyebilir', desc: 'Yeni çalışan hesabı oluşturma (genelde yönetici).' },
+  { key: 'raporlar', label: 'Raporları görebilir', desc: 'Raporlar ve HMB raporlarına erişim.' },
+];
+
+/** Geçiş kontrolü yetkileri */
+const ACCESS_PERMISSIONS = [
+  { title: 'Kapılar', desc: 'Oda kapıları, otopark, havuz, personel girişi tanımlama.' },
+  { title: 'Kart tanımlama', desc: 'Misafir/personel kartı, geçerlilik tarihi, hangi kapılar.' },
+  { title: 'Personel kapı yetkileri', desc: 'Kim hangi kapıyı hangi saatte açabilir (staff_door_permissions).' },
+  { title: 'Kapı logları', desc: 'Kim ne zaman hangi kapıyı açtı, yetkisiz denemeler.' },
+];
+
+function PermissionRow({
+  icon,
+  title,
+  reason,
+  sub,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  reason: string;
+  sub?: string;
+}) {
+  return (
+    <View style={styles.permRow}>
+      <View style={styles.permIconWrap}>
+        <Ionicons name={icon} size={22} color={adminTheme.colors.primary} />
+      </View>
+      <View style={styles.permBody}>
+        <Text style={styles.permTitle}>{title}</Text>
+        <Text style={styles.permReason}>{reason}</Text>
+        {sub ? <Text style={styles.permSub}>{sub}</Text> : null}
+      </View>
+    </View>
+  );
+}
+
+export default function AdminPermissionsScreen() {
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <Text style={styles.intro}>
+        Uygulamanın kullandığı ve alınması gereken tüm izinler aşağıda listelenmiştir.
+      </Text>
+
+      <Text style={styles.sectionTitle}>📱 Cihaz / uygulama izinleri</Text>
+      <Text style={styles.sectionDesc}>
+        Bu izinler kullanıcıdan (iOS/Android) veya app.json / infoPlist ile istenir.
+      </Text>
+      {DEVICE_PERMISSIONS.map((p) => (
+        <PermissionRow
+          key={p.key}
+          icon={p.icon}
+          title={p.title}
+          reason={p.reason}
+          sub={Platform.OS === 'web' ? `iOS: ${p.ios} | Android: ${p.android}` : undefined}
+        />
+      ))}
+
+      <Text style={styles.sectionTitle}>👤 Personel uygulama yetkileri</Text>
+      <Text style={styles.sectionDesc}>
+        Admin panelinden çalışan düzenlerken atanır (staff.app_permissions). Çalışan ekle / düzenle ekranında checkbox olarak görünür.
+      </Text>
+      {STAFF_APP_PERMISSIONS.map((p) => (
+        <View key={p.key} style={styles.staffPermRow}>
+          <Text style={styles.staffPermLabel}>{p.label}</Text>
+          <Text style={styles.staffPermDesc}>{p.desc}</Text>
+        </View>
+      ))}
+
+      <Text style={styles.sectionTitle}>🔐 Geçiş kontrolü yetkileri</Text>
+      <Text style={styles.sectionDesc}>
+        Kapılar, kartlar ve personel-kapı eşleştirmesi. Geçiş kontrolü menüsünden yönetilir.
+      </Text>
+      {ACCESS_PERMISSIONS.map((p) => (
+        <View key={p.title} style={styles.accessRow}>
+          <Text style={styles.accessTitle}>{p.title}</Text>
+          <Text style={styles.accessDesc}>{p.desc}</Text>
+        </View>
+      ))}
+
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>
+          İzin metinleri app.json (iOS infoPlist, Android permissions) ve expo plugin’lerinde tanımlıdır.
+        </Text>
+      </View>
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: adminTheme.colors.surfaceSecondary,
+  },
+  content: {
+    padding: 20,
+    paddingBottom: 48,
+  },
+  intro: {
+    fontSize: 15,
+    color: adminTheme.colors.textSecondary,
+    lineHeight: 22,
+    marginBottom: 24,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: adminTheme.colors.text,
+    marginTop: 20,
+    marginBottom: 8,
+  },
+  sectionDesc: {
+    fontSize: 13,
+    color: adminTheme.colors.textMuted,
+    marginBottom: 12,
+    lineHeight: 19,
+  },
+  permRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: adminTheme.colors.surface,
+    padding: 14,
+    borderRadius: adminTheme.radius.md,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: adminTheme.colors.border,
+  },
+  permIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: adminTheme.colors.surfaceTertiary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  permBody: { flex: 1, minWidth: 0 },
+  permTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: adminTheme.colors.text,
+    marginBottom: 4,
+  },
+  permReason: {
+    fontSize: 14,
+    color: adminTheme.colors.textSecondary,
+    lineHeight: 20,
+  },
+  permSub: {
+    fontSize: 11,
+    color: adminTheme.colors.textMuted,
+    marginTop: 6,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  staffPermRow: {
+    backgroundColor: adminTheme.colors.surface,
+    padding: 12,
+    borderRadius: adminTheme.radius.md,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: adminTheme.colors.border,
+  },
+  staffPermLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: adminTheme.colors.text,
+  },
+  staffPermDesc: {
+    fontSize: 13,
+    color: adminTheme.colors.textSecondary,
+    marginTop: 4,
+  },
+  accessRow: {
+    backgroundColor: adminTheme.colors.surface,
+    padding: 12,
+    borderRadius: adminTheme.radius.md,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: adminTheme.colors.border,
+  },
+  accessTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: adminTheme.colors.text,
+  },
+  accessDesc: {
+    fontSize: 13,
+    color: adminTheme.colors.textSecondary,
+    marginTop: 4,
+  },
+  footer: {
+    marginTop: 28,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: adminTheme.colors.border,
+  },
+  footerText: {
+    fontSize: 12,
+    color: adminTheme.colors.textMuted,
+    lineHeight: 18,
+  },
+});

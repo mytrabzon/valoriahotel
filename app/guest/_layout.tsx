@@ -9,6 +9,7 @@ export default function GuestLayout() {
       <Stack.Screen name="form" />
       <Stack.Screen name="verify" />
       <Stack.Screen name="sign" />
+      <Stack.Screen name="sign-one" />
       <Stack.Screen name="success" />
     </Stack>
   );

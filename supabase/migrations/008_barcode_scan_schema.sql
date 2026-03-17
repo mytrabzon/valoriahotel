@@ -18,5 +18,6 @@ CREATE INDEX IF NOT EXISTS idx_barcode_scan_history_created_at ON public.barcode
 CREATE INDEX IF NOT EXISTS idx_barcode_scan_history_barcode ON public.barcode_scan_history(barcode);
 
 ALTER TABLE public.barcode_scan_history ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "barcode_scan_history_authenticated" ON public.barcode_scan_history;
 CREATE POLICY "barcode_scan_history_authenticated" ON public.barcode_scan_history
   FOR ALL TO authenticated USING (true) WITH CHECK (true);

@@ -59,7 +59,11 @@ export async function startGeofenceWatch(
   stopGeofenceWatch();
   const radius = hotel.radius ?? 500;
   watchSubscription = await Location.watchPositionAsync(
-    { accuracy: Location.Accuracy.Balanced, distanceInterval: 50 },
+    {
+      accuracy: Location.Accuracy.Balanced,
+      distanceInterval: 80,
+      timeInterval: 30000,
+    },
     (loc) => {
       const distance = getDistanceFromHotel(
         loc.coords.latitude,

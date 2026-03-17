@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,9 +6,15 @@ import {
   ScrollView,
   RefreshControl,
   TouchableOpacity,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
+import { getExpoPushTokenAsync, savePushTokenForStaff } from '@/lib/notificationsPush';
 import { useAuthStore } from '@/stores/authStore';
+import { useStaffNotificationStore } from '@/stores/staffNotificationStore';
 
 type NotifRow = {
   id: string;
@@ -17,36 +23,102 @@ type NotifRow = {
   category: string | null;
   read_at: string | null;
   created_at: string;
+  data?: { postId?: string; url?: string } | null;
 };
 
 export default function StaffNotificationsScreen() {
+  const router = useRouter();
   const { staff } = useAuthStore();
   const [list, setList] = useState<NotifRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingAll, setDeletingAll] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!staff?.id) {
       setLoading(false);
       return;
     }
+    // Bildirim iznini bu sekme açıldığında (kullanım anında) iste
+    const token = await getExpoPushTokenAsync();
+    if (token) savePushTokenForStaff(staff.id).catch(() => {});
     const { data } = await supabase
       .from('notifications')
-      .select('id, title, body, category, read_at, created_at')
+      .select('id, title, body, category, read_at, created_at, data')
       .eq('staff_id', staff.id)
       .order('created_at', { ascending: false })
       .limit(100);
     setList((data as NotifRow[]) ?? []);
     setLoading(false);
-  };
+  }, [staff?.id]);
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  // Yeni bildirim gelince listeyi güncelle (beğeni/yorum push’u anında görünsün)
+  useEffect(() => {
+    if (!staff?.id) return;
+    const channel = supabase
+      .channel('staff_notifications_list')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'notifications', filter: `staff_id=eq.${staff.id}` },
+        () => {
+          load();
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [staff?.id]);
+
+  const { refresh: refreshBadge, setUnreadCount, setNotificationsScreenFocused } = useStaffNotificationStore();
+
+  useFocusEffect(
+    useCallback(() => {
+      setUnreadCount(0);
+      setNotificationsScreenFocused(true);
+      load();
+      return () => setNotificationsScreenFocused(false);
+    }, [setUnreadCount, setNotificationsScreenFocused, load])
+  );
 
   const markRead = async (id: string) => {
     if (!staff?.id) return;
     await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id).eq('staff_id', staff.id);
     setList((prev) => prev.map((n) => (n.id === id ? { ...n, read_at: new Date().toISOString() } : n)));
+    refreshBadge();
+  };
+
+  const onNotificationPress = (n: NotifRow) => {
+    if (!n.read_at) markRead(n.id);
+    if (n.data?.postId) {
+      router.push({ pathname: '/staff/feed', params: { openPostId: n.data.postId } });
+    }
+  };
+
+  const deleteAllNotifications = () => {
+    if (!staff?.id || list.length === 0) return;
+    Alert.alert(
+      'Tüm bildirimleri sil',
+      'Tüm bildirimleriniz kalıcı olarak silinecek. Emin misiniz?',
+      [
+        { text: 'İptal', style: 'cancel' },
+        {
+          text: 'Sil',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingAll(true);
+            await supabase.from('notifications').delete().eq('staff_id', staff.id);
+            setList([]);
+            setUnreadCount(0);
+            refreshBadge();
+            setDeletingAll(false);
+          },
+        },
+      ]
+    );
   };
 
   const categoryLabel = (c: string | null) => {
@@ -76,6 +148,23 @@ export default function StaffNotificationsScreen() {
     >
       <Text style={styles.title}>Bildirimlerim</Text>
       <Text style={styles.subtitle}>Yeni görevler, acil durumlar ve duyurular burada.</Text>
+      {list.length > 0 && (
+        <TouchableOpacity
+          style={[styles.deleteAllBtn, deletingAll && styles.deleteAllBtnDisabled]}
+          onPress={deleteAllNotifications}
+          disabled={deletingAll}
+          activeOpacity={0.7}
+        >
+          {deletingAll ? (
+            <ActivityIndicator size="small" color="#e53e3e" />
+          ) : (
+            <>
+              <Ionicons name="trash-outline" size={14} color="#e53e3e" />
+              <Text style={styles.deleteAllBtnText}>Tümünü sil</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      )}
       {list.length === 0 && !loading ? (
         <Text style={styles.empty}>Henüz bildirim yok.</Text>
       ) : (
@@ -83,7 +172,7 @@ export default function StaffNotificationsScreen() {
           <TouchableOpacity
             key={n.id}
             style={[styles.row, n.read_at ? styles.rowRead : null]}
-            onPress={() => !n.read_at && markRead(n.id)}
+            onPress={() => onNotificationPress(n)}
             activeOpacity={0.8}
           >
             {categoryLabel(n.category) ? (
@@ -106,6 +195,19 @@ const styles = StyleSheet.create({
   message: { fontSize: 16, color: '#718096' },
   title: { fontSize: 20, fontWeight: '700', color: '#1a202c', marginBottom: 4 },
   subtitle: { fontSize: 14, color: '#718096', marginBottom: 20 },
+  deleteAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    marginBottom: 12,
+    borderRadius: 6,
+    backgroundColor: 'transparent',
+  },
+  deleteAllBtnDisabled: { opacity: 0.6 },
+  deleteAllBtnText: { fontSize: 12, fontWeight: '500', color: '#e53e3e' },
   empty: { color: '#a0aec0', fontSize: 14 },
   row: {
     backgroundColor: '#fff',

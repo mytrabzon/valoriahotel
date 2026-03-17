@@ -9,6 +9,8 @@ import {
   Alert,
   ActivityIndicator,
   Switch,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '@/stores/authStore';
@@ -59,7 +61,7 @@ export default function BulkNotifyScreen() {
     }
     const trimmedTitle = title.trim();
     const trimmedBody = body.trim();
-    if (!trimmedTitle) {
+    if (!toStaff && !trimmedTitle) {
       Alert.alert('Uyarı', 'Başlık girin.');
       return;
     }
@@ -77,6 +79,7 @@ export default function BulkNotifyScreen() {
       if (toStaff) {
         const result = await sendBulkToStaff({
           target: staffTarget,
+          title: trimmedTitle || 'Toplu Duyuru',
           body: trimmedBody,
           createdByStaffId: staff.id,
         });
@@ -113,7 +116,8 @@ export default function BulkNotifyScreen() {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={90}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
       <View style={styles.switchRow}>
         <Text style={styles.switchLabel}>Personele gönder</Text>
         <Switch value={toStaff} onValueChange={setToStaff} />
@@ -178,6 +182,13 @@ export default function BulkNotifyScreen() {
               </Text>
             </TouchableOpacity>
           ))}
+          <Text style={styles.label}>Başlık</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Örn: Toplu Duyuru"
+            value={title}
+            onChangeText={setTitle}
+          />
         </>
       )}
 
@@ -195,11 +206,11 @@ export default function BulkNotifyScreen() {
         numberOfLines={5}
       />
 
-      {!toStaff && title.trim() && (
+      {(title.trim() || (toStaff && body.trim())) && (
         <View style={styles.preview}>
           <Text style={styles.previewTitle}>Önizleme</Text>
           <View style={styles.previewBox}>
-            <Text style={styles.previewHead}>{title.trim()}</Text>
+            <Text style={styles.previewHead}>{toStaff ? (title.trim() || 'Toplu Duyuru') : title.trim()}</Text>
             <Text style={styles.previewBody}>{body.trim() || '—'}</Text>
           </View>
         </View>
@@ -221,7 +232,8 @@ export default function BulkNotifyScreen() {
           <Text style={styles.btnSecondaryText}>İptal</Text>
         </TouchableOpacity>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

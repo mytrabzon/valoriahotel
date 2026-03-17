@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList } from 'react-native';
-import { Link } from 'expo-router';
+import { useEffect, useState, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, FlatList, Animated, Platform } from 'react-native';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
+import { adminTheme } from '@/constants/adminTheme';
+import { AdminButton, AdminCard } from '@/components/admin';
 
 type Room = {
   id: string;
@@ -13,52 +16,118 @@ type Room = {
   price_per_night: number | null;
 };
 
+const STATUS_LABELS: Record<string, string> = {
+  available: 'Müsait',
+  occupied: 'Dolu',
+  cleaning: 'Temizlik',
+  maintenance: 'Bakım',
+  out_of_order: 'Kullanılmıyor',
+};
+
+const statusColor: Record<string, string> = {
+  available: adminTheme.colors.success,
+  occupied: adminTheme.colors.error,
+  cleaning: adminTheme.colors.warning,
+  maintenance: adminTheme.colors.info,
+  out_of_order: adminTheme.colors.textMuted,
+};
+
+function RoomCard({ item, onPress }: { item: Room; onPress: () => void }) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const handlePressIn = () => {
+    Animated.spring(scale, { toValue: 0.98, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
+  };
+  const handlePressOut = () => {
+    Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 50, bounciness: 8 }).start();
+  };
+
+  return (
+    <Animated.View style={{ transform: [{ scale }], marginBottom: 12 }}>
+      <TouchableOpacity
+        onPress={onPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        activeOpacity={1}
+        style={styles.card}
+      >
+        <View style={styles.cardRow}>
+          <View style={styles.roomInfo}>
+            <Text style={styles.roomNum}>Oda {item.room_number}</Text>
+            {item.floor != null && (
+              <Text style={styles.meta}>Kat {item.floor}</Text>
+            )}
+          </View>
+          <View style={styles.cardRight}>
+            <View style={[styles.badge, { backgroundColor: statusColor[item.status] || adminTheme.colors.textMuted }]}>
+              <Text style={styles.badgeText}>{STATUS_LABELS[item.status] || item.status}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={adminTheme.colors.textMuted} />
+          </View>
+        </View>
+        {item.price_per_night != null && (
+          <Text style={styles.price}>₺{item.price_per_night} <Text style={styles.priceUnit}>/ gece</Text></Text>
+        )}
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
 export default function RoomsList() {
+  const router = useRouter();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from('rooms').select('id, room_number, floor, status, view_type, bed_type, price_per_night').order('room_number');
+      const { data } = await supabase
+        .from('rooms')
+        .select('id, room_number, floor, status, view_type, bed_type, price_per_night')
+        .order('room_number');
       setRooms(data ?? []);
       setLoading(false);
     })();
   }, []);
 
-  const statusColor: Record<string, string> = {
-    available: '#48bb78',
-    occupied: '#e53e3e',
-    cleaning: '#ed8936',
-    maintenance: '#805ad5',
-    out_of_order: '#718096',
-  };
-
-  if (loading) return <Text style={styles.loading}>Yükleniyor...</Text>;
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.loadingWrap}>
+          <Text style={styles.loading}>Yükleniyor...</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      <Link href="/admin/rooms/new" asChild>
-        <TouchableOpacity style={styles.addBtn}>
-          <Text style={styles.addBtnText}>+ Oda Ekle</Text>
-        </TouchableOpacity>
-      </Link>
+      <View style={styles.topBar}>
+        <AdminButton
+          title="Yeni oda ekle"
+          onPress={() => router.push('/admin/rooms/new')}
+          variant="accent"
+          size="md"
+          leftIcon={<Ionicons name="add" size={20} color="#fff" />}
+          fullWidth
+        />
+      </View>
       <FlatList
         data={rooms}
         keyExtractor={(r) => r.id}
         contentContainerStyle={styles.list}
+        listEmptyComponent={
+          <AdminCard>
+            <Text style={styles.emptyText}>Henüz oda tanımlı değil.</Text>
+            <AdminButton
+              title="İlk odayı ekle"
+              onPress={() => router.push('/admin/rooms/new')}
+              variant="primary"
+              size="md"
+              style={{ marginTop: 16 }}
+            />
+          </AdminCard>
+        }
         renderItem={({ item }) => (
-          <Link href={`/admin/rooms/${item.id}`} asChild>
-            <TouchableOpacity style={styles.card}>
-              <View style={styles.cardRow}>
-                <Text style={styles.roomNum}>Oda {item.room_number}</Text>
-                <View style={[styles.badge, { backgroundColor: statusColor[item.status] || '#718096' }]}>
-                  <Text style={styles.badgeText}>{item.status}</Text>
-                </View>
-              </View>
-              {item.floor != null && <Text style={styles.meta}>Kat: {item.floor}</Text>}
-              {item.price_per_night != null && <Text style={styles.meta}>₺{item.price_per_night}/gece</Text>}
-            </TouchableOpacity>
-          </Link>
+          <RoomCard item={item} onPress={() => router.push(`/admin/rooms/${item.id}`)} />
         )}
       />
     </View>
@@ -66,28 +135,88 @@ export default function RoomsList() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f7fafc' },
-  loading: { padding: 24 },
-  addBtn: {
-    margin: 16,
-    padding: 16,
-    backgroundColor: '#1a365d',
-    borderRadius: 12,
+  container: {
+    flex: 1,
+    backgroundColor: adminTheme.colors.surfaceSecondary,
+  },
+  loadingWrap: {
+    padding: 24,
     alignItems: 'center',
   },
-  addBtnText: { color: '#fff', fontWeight: '600' },
-  list: { padding: 16, paddingTop: 0 },
-  card: {
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+  loading: {
+    fontSize: 15,
+    color: adminTheme.colors.textSecondary,
   },
-  cardRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  roomNum: { fontSize: 18, fontWeight: '700', color: '#1a202c' },
-  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  badgeText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  meta: { fontSize: 14, color: '#718096', marginTop: 4 },
+  topBar: {
+    padding: 20,
+    paddingBottom: 8,
+    backgroundColor: adminTheme.colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: adminTheme.colors.border,
+  },
+  list: {
+    padding: 20,
+    paddingBottom: 32,
+  },
+  card: {
+    backgroundColor: adminTheme.colors.surface,
+    padding: 18,
+    borderRadius: adminTheme.radius.lg,
+    borderWidth: 1,
+    borderColor: adminTheme.colors.border,
+    ...Platform.select({
+      ios: adminTheme.shadow.sm,
+      android: { elevation: 2 },
+    }),
+  },
+  cardRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  roomInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  cardRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  roomNum: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: adminTheme.colors.text,
+  },
+  meta: {
+    fontSize: 13,
+    color: adminTheme.colors.textSecondary,
+    marginTop: 4,
+  },
+  badge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: adminTheme.radius.sm,
+  },
+  badgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  price: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: adminTheme.colors.accent,
+    marginTop: 10,
+  },
+  priceUnit: {
+    fontWeight: '500',
+    color: adminTheme.colors.textSecondary,
+    fontSize: 13,
+  },
+  emptyText: {
+    fontSize: 15,
+    color: adminTheme.colors.textSecondary,
+    textAlign: 'center',
+  },
 });

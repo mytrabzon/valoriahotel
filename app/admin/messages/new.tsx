@@ -32,7 +32,7 @@ export default function AdminNewChatScreen() {
 
   const load = async () => {
     const [gRes, sRes] = await Promise.all([
-      supabase.from('guests').select('id, full_name, room_id, rooms(room_number)').eq('status', 'checked_in').order('full_name'),
+      supabase.from('guests').select('id, full_name, room_id, rooms(room_number)').order('full_name'),
       supabase.from('staff').select('id, full_name, department, profile_image, is_online').eq('is_active', true).neq('id', staff?.id ?? '').order('full_name'),
     ]);
     setGuests(gRes.data ?? []);
@@ -67,7 +67,7 @@ export default function AdminNewChatScreen() {
   }
 
   const sections: { title: string; data: { id: string; name: string; sub: string; type: 'guest' | 'staff' }[] }[] = [
-    { title: 'Misafirler (checked-in)', data: guests.map((g) => ({ id: g.id, name: g.full_name || 'Misafir', sub: (g.rooms as { room_number?: string })?.room_number ? `Oda ${(g.rooms as { room_number: string }).room_number}` : '—', type: 'guest' as const })) },
+    { title: 'Misafirler', data: guests.map((g) => ({ id: g.id, name: g.full_name || 'Misafir', sub: (g.rooms as { room_number?: string })?.room_number ? `Oda ${(g.rooms as { room_number: string }).room_number}` : '—', type: 'guest' as const })) },
     { title: 'Personel', data: staffList.map((s) => ({ id: s.id, name: s.full_name || 'Personel', sub: s.department || '—', type: 'staff' as const })) },
   ].filter((s) => s.data.length > 0);
 

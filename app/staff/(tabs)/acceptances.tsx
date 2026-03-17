@@ -1,0 +1,329 @@
+import { useCallback, useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  RefreshControl,
+  Modal,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/stores/authStore';
+import { theme } from '@/constants/theme';
+
+type RoomRow = { id: string; room_number: string; floor: number | null; status: string };
+
+type AcceptanceRow = {
+  id: string;
+  token: string;
+  room_id: string | null;
+  contract_lang: string;
+  accepted_at: string;
+  room_number?: string | null;
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  available: 'Müsait',
+  occupied: 'Dolu',
+  cleaning: 'Temizlik',
+  maintenance: 'Bakım',
+  out_of_order: 'Kullanılmıyor',
+};
+
+export default function StaffAcceptancesScreen() {
+  const staffId = useAuthStore((s) => s.staff?.id);
+  const [rows, setRows] = useState<AcceptanceRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [rooms, setRooms] = useState<RoomRow[]>([]);
+  const [roomModalVisible, setRoomModalVisible] = useState(false);
+  const [assignTarget, setAssignTarget] = useState<AcceptanceRow | null>(null);
+  const [assigning, setAssigning] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!staffId) return;
+    const { data: list } = await supabase
+      .from('contract_acceptances')
+      .select('id, token, room_id, contract_lang, accepted_at')
+      .eq('assigned_staff_id', staffId)
+      .order('accepted_at', { ascending: false })
+      .limit(100);
+
+    const roomIds = (list ?? []).map((r) => r.room_id).filter(Boolean) as string[];
+    let roomNumbers: Record<string, string> = {};
+    if (roomIds.length > 0) {
+      const { data: roomsData } = await supabase.from('rooms').select('id, room_number').in('id', roomIds);
+      roomNumbers = (roomsData ?? []).reduce((acc, r) => ({ ...acc, [r.id]: r.room_number }), {} as Record<string, string>);
+    }
+
+    setRows(
+      (list ?? []).map((r) => ({
+        ...r,
+        room_number: r.room_id ? roomNumbers[r.room_id] ?? '—' : null,
+      }))
+    );
+  }, [staffId]);
+
+  useEffect(() => {
+    load().finally(() => setLoading(false));
+  }, [load]);
+
+  useEffect(() => {
+    if (roomModalVisible) {
+      supabase
+        .from('rooms')
+        .select('id, room_number, floor, status')
+        .order('room_number')
+        .then(({ data }) => setRooms(data ?? []));
+    }
+  }, [roomModalVisible]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }, [load]);
+
+  const openRoomModal = (item: AcceptanceRow) => {
+    setAssignTarget(item);
+    setRoomModalVisible(true);
+  };
+
+  const assignRoom = async (roomId: string) => {
+    if (!assignTarget) return;
+    setAssigning(true);
+    try {
+      const { error } = await supabase
+        .from('contract_acceptances')
+        .update({ room_id: roomId })
+        .eq('id', assignTarget.id);
+      if (error) throw error;
+      setRoomModalVisible(false);
+      setAssignTarget(null);
+      await load();
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'Oda atanamadı.');
+    }
+    setAssigning(false);
+  };
+
+  const clearRoom = async () => {
+    if (!assignTarget) return;
+    setAssigning(true);
+    try {
+      const { error } = await supabase
+        .from('contract_acceptances')
+        .update({ room_id: null })
+        .eq('id', assignTarget.id);
+      if (error) throw error;
+      setRoomModalVisible(false);
+      setAssignTarget(null);
+      await load();
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'Oda kaldırılamadı.');
+    }
+    setAssigning(false);
+  };
+
+  if (!staffId) return null;
+
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+        <Text style={styles.loadingText}>Yükleniyor...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.headerCard}>
+        <Ionicons name="document-text" size={28} color={theme.colors.primary} />
+        <View style={styles.headerTextWrap}>
+          <Text style={styles.headerTitle}>Sözleşme onayları – Oda ataması</Text>
+          <Text style={styles.headerSub}>Size atanan onaylara oda atayın. Misafir check-in sürecini tamamlar.</Text>
+        </View>
+      </View>
+
+      {rows.length === 0 ? (
+        <View style={styles.empty}>
+          <Ionicons name="folder-open-outline" size={48} color={theme.colors.textMuted} />
+          <Text style={styles.emptyTitle}>Size atanmış onay yok</Text>
+          <Text style={styles.emptySub}>Admin panelinden size sözleşme onayı atandığında burada listelenecektir.</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={rows}
+          keyExtractor={(r) => r.id}
+          contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[theme.colors.primary]} />
+          }
+          renderItem={({ item }) => (
+            <View style={styles.card}>
+              <View style={styles.cardTop}>
+                <View style={styles.tokenBadge}>
+                  <Text style={styles.tokenText}>{item.token.slice(0, 12)}…</Text>
+                </View>
+                <Text style={styles.date}>{new Date(item.accepted_at).toLocaleString('tr-TR')}</Text>
+              </View>
+              <View style={styles.roomRow}>
+                <Text style={styles.roomLabel}>Oda:</Text>
+                <Text style={styles.roomValue}>{item.room_number ?? '— Atanmadı'}</Text>
+              </View>
+              <Text style={styles.meta}>Dil: {item.contract_lang.toUpperCase()}</Text>
+              <TouchableOpacity style={styles.assignRoomBtn} onPress={() => openRoomModal(item)}>
+                <Ionicons name="bed-outline" size={18} color="#fff" />
+                <Text style={styles.assignRoomBtnText}>{item.room_id ? 'Oda değiştir' : 'Oda ata'}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        />
+      )}
+
+      <Modal visible={roomModalVisible} transparent animationType="fade">
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => !assigning && setRoomModalVisible(false)}
+        >
+          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+            <Text style={styles.modalTitle}>Oda seçin</Text>
+            {assignTarget && (
+              <Text style={styles.modalSub}>
+                Onay: {assignTarget.token.slice(0, 12)}… · {new Date(assignTarget.accepted_at).toLocaleString('tr-TR')}
+              </Text>
+            )}
+            <TouchableOpacity style={styles.clearRoomBtn} onPress={() => clearRoom()} disabled={assigning}>
+              <Text style={styles.clearRoomText}>Oda atamasını kaldır</Text>
+            </TouchableOpacity>
+            <FlatList
+              data={rooms}
+              keyExtractor={(r) => r.id}
+              style={styles.roomList}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.roomItem}
+                  onPress={() => assignRoom(item.id)}
+                  disabled={assigning}
+                >
+                  <Text style={styles.roomItemNum}>Oda {item.room_number}</Text>
+                  {item.floor != null && (
+                    <Text style={styles.roomItemFloor}>Kat {item.floor}</Text>
+                  )}
+                  <View style={[styles.roomStatusBadge, { backgroundColor: item.status === 'available' ? theme.colors.success : theme.colors.textMuted }]}>
+                    <Text style={styles.roomStatusText}>{STATUS_LABELS[item.status] ?? item.status}</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+            />
+            {assigning && (
+              <ActivityIndicator style={styles.modalSpinner} size="small" color={theme.colors.primary} />
+            )}
+            <TouchableOpacity
+              style={styles.modalClose}
+              onPress={() => !assigning && setRoomModalVisible(false)}
+            >
+              <Text style={styles.modalCloseText}>Kapat</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.colors.backgroundSecondary },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.backgroundSecondary },
+  loadingText: { marginTop: 8, fontSize: 14, color: theme.colors.textMuted },
+  headerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surface,
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 8,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    ...theme.shadows.sm,
+  },
+  headerTextWrap: { flex: 1, marginLeft: 12 },
+  headerTitle: { fontSize: 17, fontWeight: '700', color: theme.colors.text },
+  headerSub: { fontSize: 13, color: theme.colors.textSecondary, marginTop: 4 },
+  empty: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+  },
+  emptyTitle: { fontSize: 17, fontWeight: '600', color: theme.colors.text, marginTop: 12 },
+  emptySub: { fontSize: 14, color: theme.colors.textMuted, marginTop: 8, textAlign: 'center' },
+  list: { padding: 16, paddingBottom: 32 },
+  card: {
+    backgroundColor: theme.colors.surface,
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    ...theme.shadows.sm,
+  },
+  cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  tokenBadge: { backgroundColor: theme.colors.backgroundSecondary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  tokenText: { fontSize: 13, fontWeight: '600', color: theme.colors.text },
+  date: { fontSize: 12, color: theme.colors.textMuted },
+  roomRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  roomLabel: { fontSize: 14, color: theme.colors.textSecondary, marginRight: 6 },
+  roomValue: { fontSize: 15, fontWeight: '600', color: theme.colors.text },
+  meta: { fontSize: 12, color: theme.colors.textMuted, marginBottom: 12 },
+  assignRoomBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: theme.colors.primary,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  assignRoomBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: 16,
+    maxHeight: '80%',
+    padding: 16,
+  },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: theme.colors.text, marginBottom: 4 },
+  modalSub: { fontSize: 12, color: theme.colors.textMuted, marginBottom: 12 },
+  clearRoomBtn: { alignSelf: 'flex-start', paddingVertical: 6, paddingHorizontal: 10, marginBottom: 12 },
+  clearRoomText: { fontSize: 13, color: theme.colors.error },
+  roomList: { maxHeight: 280 },
+  roomItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  roomItemNum: { fontSize: 16, fontWeight: '600', color: theme.colors.text, minWidth: 90 },
+  roomItemFloor: { fontSize: 13, color: theme.colors.textMuted, marginRight: 8 },
+  roomStatusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  roomStatusText: { fontSize: 11, fontWeight: '600', color: '#fff' },
+  modalSpinner: { marginVertical: 8 },
+  modalClose: { marginTop: 12, paddingVertical: 12, alignItems: 'center' },
+  modalCloseText: { fontSize: 15, fontWeight: '600', color: theme.colors.textMuted },
+});

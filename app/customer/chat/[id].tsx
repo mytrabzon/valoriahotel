@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,18 +11,25 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useNavigation } from 'expo-router';
 import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
+import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
 import {
   guestGetMessages,
   guestSendMessage,
-  uploadVoiceMessageForGuest,
   subscribeToMessages,
+  uploadImageMessageForGuest,
 } from '@/lib/messagingApi';
 import type { Message } from '@/lib/messaging';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { uriToArrayBuffer, getMimeAndExt } from '@/lib/uploadMedia';
+import { encode as encodeBase64 } from 'base64-arraybuffer';
 import { MESSAGING_COLORS } from '@/lib/messaging';
-import { useVoiceRecorder } from '@/lib/useVoiceRecorder';
+import { supabase } from '@/lib/supabase';
 import { VoiceMessagePlayer } from '@/components/VoiceMessagePlayer';
+import { Ionicons } from '@expo/vector-icons';
+import { CachedImage } from '@/components/CachedImage';
 
 function formatMessageTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
@@ -30,6 +37,7 @@ function formatMessageTime(iso: string): string {
 
 function MessageBubble({ msg, isOwn }: { msg: Message; isOwn: boolean }) {
   const voiceUri = msg.message_type === 'voice' ? (msg.media_url || msg.content) : null;
+  const isImage = msg.message_type === 'image' && (msg.media_url || msg.media_thumbnail);
   return (
     <View style={[styles.bubbleWrap, isOwn ? styles.bubbleWrapOwn : styles.bubbleWrapOther]}>
       {!isOwn && msg.sender_name ? <Text style={styles.senderName}>{msg.sender_name}</Text> : null}
@@ -40,6 +48,14 @@ function MessageBubble({ msg, isOwn }: { msg: Message; isOwn: boolean }) {
           </Text>
         ) : msg.message_type === 'voice' && voiceUri ? (
           <VoiceMessagePlayer uri={voiceUri} isOwn={isOwn} />
+        ) : isImage ? (
+          <View style={styles.imageWrap}>
+            <CachedImage
+              uri={msg.media_thumbnail || msg.media_url || ''}
+              style={styles.bubbleImage}
+              contentFit="cover"
+            />
+          </View>
         ) : (
           <Text style={[styles.bubbleText, isOwn ? styles.bubbleTextOwn : styles.bubbleTextOther]}>
             [{msg.message_type}] {msg.content || msg.media_url || '—'}
@@ -55,15 +71,37 @@ function MessageBubble({ msg, isOwn }: { msg: Message; isOwn: boolean }) {
 }
 
 export default function CustomerChatScreen() {
-  const { id: conversationId } = useLocalSearchParams<{ id: string }>();
-  const { appToken } = useGuestMessagingStore();
+  const { id: conversationId, name: conversationName } = useLocalSearchParams<{ id: string; name?: string }>();
+  const navigation = useNavigation();
+  const { appToken, setAppToken } = useGuestMessagingStore();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [tokenTried, setTokenTried] = useState(false);
   const listRef = useRef<FlatList>(null);
   const subscriptionRef = useRef<ReturnType<typeof subscribeToMessages> | null>(null);
-  const voice = useVoiceRecorder();
+  const lastRealtimeAtRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (appToken || tokenTried) return;
+    (async () => {
+      await supabase.auth.refreshSession();
+      const { data: { session } } = await supabase.auth.getSession();
+      const row = await getOrCreateGuestForCaller(session?.user);
+      if (row?.app_token) await setAppToken(row.app_token);
+      setTokenTried(true);
+    })();
+  }, [appToken, tokenTried, setAppToken]);
+
+  useEffect(() => {
+    navigation.setOptions({
+      headerTitle: conversationName || 'Sohbet',
+      headerRight: () => (
+        <Text style={styles.headerOnline}>🟢 Çevrimiçi</Text>
+      ),
+    });
+  }, [navigation, conversationName]);
 
   useEffect(() => {
     if (!appToken || !conversationId) {
@@ -77,19 +115,46 @@ export default function CustomerChatScreen() {
     })();
   }, [appToken, conversationId]);
 
+  // Realtime: yeni mesaj geldiğinde listeyi güncelle; sıra ascending olduğu için altta görünür, scrollToEnd ile kaydırılır
   useEffect(() => {
     if (!conversationId) return;
     subscriptionRef.current = subscribeToMessages(conversationId, (newMsg) => {
+      lastRealtimeAtRef.current = Date.now();
       setMessages((prev) => {
         if (prev.some((m) => m.id === newMsg.id)) return prev;
         return [...prev, newMsg];
       });
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 150);
     });
     return () => {
       subscriptionRef.current?.unsubscribe?.();
     };
   }, [conversationId]);
+
+  // Sohbet odasındayken gelen mesajların listelenmesi: polling (realtime misafir tarafında bazen çalışmıyor)
+  useEffect(() => {
+    if (!appToken || !conversationId || loading) return;
+    const poll = async () => {
+      // Realtime yeni çalışıyorsa polling'i seyrekleştir (gereksiz egress/DB yükü azalt).
+      if (Date.now() - lastRealtimeAtRef.current < 60_000) return;
+      const list = await guestGetMessages(appToken, conversationId, 50);
+      setMessages((prev) => {
+        if (prev.length === list.length && prev[prev.length - 1]?.id === list[list.length - 1]?.id) return prev;
+        return list;
+      });
+    };
+    const interval = setInterval(poll, 15_000);
+    return () => clearInterval(interval);
+  }, [appToken, conversationId, loading]);
+
+  // Tüm hook'lar erken return'lerden önce çağrılmalı (Rules of Hooks)
+  const sortedMessages = useMemo(
+    () => [...messages].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+    [messages]
+  );
+  useEffect(() => {
+    if (sortedMessages.length > 0) listRef.current?.scrollToEnd({ animated: true });
+  }, [sortedMessages.length]);
 
   const send = async () => {
     const text = input.trim();
@@ -99,45 +164,111 @@ export default function CustomerChatScreen() {
     const msgId = await guestSendMessage(appToken, conversationId, text);
     setSending(false);
     if (msgId) {
+      const { notifyAdmins } = await import('@/lib/notificationService');
+      notifyAdmins({
+        title: '💬 Yeni misafir mesajı',
+        body: text.slice(0, 60) + (text.length > 60 ? '…' : ''),
+        data: { url: '/admin/messages' },
+      }).catch(() => {});
       const list = await guestGetMessages(appToken, conversationId, 50);
       setMessages(list);
-      listRef.current?.scrollToEnd({ animated: true });
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
     }
   };
 
-  const startVoice = async () => {
-    const err = await voice.startRecording();
-    if (err) Alert.alert('Ses kaydı', err);
-  };
-
-  const sendVoice = async () => {
-    const uri = await voice.stopRecording();
-    voice.reset();
-    if (!uri || !appToken || !conversationId || sending) return;
-    if (voice.durationSec < 1) {
-      Alert.alert('Çok kısa', 'En az 1 saniye kayıt yapın.');
-      return;
+  const sendImageFromSource = async (source: 'camera' | 'library') => {
+    if (!appToken || !conversationId || sending) return;
+    if (source === 'camera') {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('İzin', 'Kamera erişimi gerekli.');
+        return;
+      }
+    } else {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('İzin', 'Galeri erişimi gerekli.');
+        return;
+      }
     }
+    const result = source === 'camera'
+      ? await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          quality: 0.8,
+          allowsEditing: false,
+        })
+      : await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          quality: 0.8,
+          allowsEditing: false,
+        });
+    if (result.canceled || !result.assets[0]?.uri) return;
+    let uri = result.assets[0].uri;
     setSending(true);
-    const mediaUrl = await uploadVoiceMessageForGuest(appToken, conversationId, uri);
-    if (!mediaUrl) {
+    try {
+      // Edge Function body limit (~1MB) için resmi küçültüp sıkıştırıyoruz
+      try {
+        const manipulated = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: 1200 } }], {
+          compress: 0.65,
+          format: ImageManipulator.SaveFormat.JPEG,
+        });
+        if (manipulated?.uri) uri = manipulated.uri;
+      } catch (_) {
+        // Manipülasyon başarısız olursa orijinal uri ile devam et
+      }
+      console.log('[Chat] Resim seçildi, uri:', uri?.slice?.(0, 80));
+      const arrayBuffer = await uriToArrayBuffer(uri);
+      console.log('[Chat] uriToArrayBuffer OK, byteLength:', arrayBuffer?.byteLength);
+      const base64 = encodeBase64(arrayBuffer);
+      console.log('[Chat] base64 encode OK, length:', base64?.length);
+      const { mime } = getMimeAndExt(uri, 'image');
+      console.log('[Chat] mime:', mime);
+      const mediaUrl = await uploadImageMessageForGuest(appToken, conversationId, base64, mime);
+      if (!mediaUrl) {
+        console.warn('[Chat] uploadImageMessageForGuest null döndü');
+        Alert.alert('Hata', 'Resim yüklenemedi.');
+        return;
+      }
+      console.log('[Chat] mediaUrl alındı:', mediaUrl?.slice?.(0, 60));
+      const msgId = await guestSendMessage(appToken, conversationId, 'Fotoğraf', 'image', mediaUrl);
+      if (msgId) {
+        const { notifyAdmins } = await import('@/lib/notificationService');
+        notifyAdmins({
+          title: '💬 Yeni misafir mesajı',
+          body: 'Fotoğraf gönderildi.',
+          data: { url: '/admin/messages' },
+        }).catch(() => {});
+        const list = await guestGetMessages(appToken, conversationId, 50);
+        setMessages(list);
+        setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+      }
+    } catch (e) {
+      const err = e as Error;
+      console.error('[Chat] Resim yükleme hatası:', err?.message, err?.stack);
+      Alert.alert('Hata', err?.message ?? 'Resim gönderilemedi.');
+    } finally {
       setSending(false);
-      Alert.alert('Hata', 'Ses yüklenemedi. Tekrar deneyin.');
-      return;
     }
-    const msgId = await guestSendMessage(appToken, conversationId, 'Sesli mesaj', 'voice', mediaUrl);
-    setSending(false);
-    if (msgId) {
-      const list = await guestGetMessages(appToken, conversationId, 50);
-      setMessages(list);
-      listRef.current?.scrollToEnd({ animated: true });
-    }
+  };
+
+  const showImageOptions = () => {
+    Alert.alert(
+      'Fotoğraf gönder',
+      undefined,
+      [
+        { text: 'Resim çek', onPress: () => sendImageFromSource('camera') },
+        { text: 'Galeriden seç', onPress: () => sendImageFromSource('library') },
+        { text: 'İptal', style: 'cancel' },
+      ]
+    );
   };
 
   if (!appToken) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.placeholder}>Mesajlaşma için giriş yapın.</Text>
+        <Text style={styles.placeholder}>
+          {tokenTried ? 'Mesajlaşma için giriş yapın.' : 'Yükleniyor…'}
+        </Text>
       </View>
     );
   }
@@ -153,30 +284,21 @@ export default function CustomerChatScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={90}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       <FlatList
+        keyboardShouldPersistTaps="handled"
         ref={listRef}
-        data={messages}
+        data={sortedMessages}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, sortedMessages.length > 0 && styles.listContentGrow]}
         renderItem={({ item }) => (
           <MessageBubble msg={item} isOwn={item.sender_type === 'guest'} />
         )}
         ListEmptyComponent={<Text style={styles.empty}>Henüz mesaj yok. İlk mesajı siz gönderin.</Text>}
+        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
       />
-      {voice.state === 'recording' && (
-        <View style={styles.voiceBar}>
-          <Text style={styles.voiceBarText}>🔴 {voice.durationSec} sn</Text>
-          <TouchableOpacity style={styles.voiceCancelBtn} onPress={voice.cancelRecording}>
-            <Text style={styles.voiceCancelText}>İptal</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.voiceSendBtn} onPress={sendVoice} disabled={sending}>
-            {sending ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.voiceSendText}>Gönder</Text>}
-          </TouchableOpacity>
-        </View>
-      )}
       <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
@@ -188,20 +310,34 @@ export default function CustomerChatScreen() {
           maxLength={2000}
           onSubmitEditing={send}
         />
-        {voice.state === 'idle' || voice.state === 'error' ? (
-          <TouchableOpacity style={styles.micBtn} onPress={startVoice}>
-            <Text style={styles.micBtnText}>🎤</Text>
-          </TouchableOpacity>
-        ) : null}
+        <TouchableOpacity
+          style={styles.mediaBtn}
+          onPress={showImageOptions}
+          disabled={sending}
+          accessibilityLabel="Fotoğraf"
+          activeOpacity={0.7}
+        >
+          <Ionicons name="camera-outline" size={24} color={MESSAGING_COLORS.primary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.mediaBtn}
+          onPress={() => sendImageFromSource('library')}
+          disabled={sending}
+          accessibilityLabel="Galeriden seç"
+          activeOpacity={0.7}
+        >
+          <Ionicons name="images-outline" size={24} color={MESSAGING_COLORS.primary} />
+        </TouchableOpacity>
         <TouchableOpacity
           style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
           onPress={send}
           disabled={!input.trim() || sending}
+          activeOpacity={0.85}
         >
-          {sending && voice.state !== 'recording' ? (
+          {sending ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
-            <Text style={styles.sendBtnText}>Gönder</Text>
+            <Ionicons name="send" size={22} color="#fff" />
           )}
         </TouchableOpacity>
       </View>
@@ -213,8 +349,10 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9fafb' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   placeholder: { color: MESSAGING_COLORS.textSecondary },
-  listContent: { padding: 12, paddingBottom: 16 },
-  bubbleWrap: { marginBottom: 8 },
+  headerOnline: { fontSize: 13, color: MESSAGING_COLORS.success, fontWeight: '600', marginRight: 12 },
+  listContent: { padding: 16, paddingBottom: 24 },
+  listContentGrow: { flexGrow: 1 },
+  bubbleWrap: { marginBottom: 10 },
   bubbleWrapOwn: { alignItems: 'flex-end' },
   bubbleWrapOther: { alignItems: 'flex-start' },
   senderName: { fontSize: 12, color: MESSAGING_COLORS.primary, marginBottom: 2, marginLeft: 12 },
@@ -222,7 +360,7 @@ const styles = StyleSheet.create({
     maxWidth: '80%',
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 16,
+    borderRadius: 18,
   },
   bubbleOwn: { backgroundColor: MESSAGING_COLORS.primary },
   bubbleOther: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e7eb' },
@@ -232,65 +370,54 @@ const styles = StyleSheet.create({
   bubbleTime: { fontSize: 11, marginTop: 4 },
   bubbleTimeOwn: { color: 'rgba(255,255,255,0.85)' },
   bubbleTimeOther: { color: MESSAGING_COLORS.textSecondary },
+  imageWrap: { marginTop: 2 },
+  bubbleImage: { width: 200, height: 200, borderRadius: 12 },
   empty: { textAlign: 'center', color: MESSAGING_COLORS.textSecondary, marginTop: 24 },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    padding: 8,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 48,
     backgroundColor: '#fff',
     borderTopWidth: 1,
-    borderTopColor: '#e5e7eb',
+    borderTopColor: '#e0e0e0',
   },
   input: {
     flex: 1,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
+    minHeight: 40,
+    maxHeight: 100,
+    backgroundColor: '#f5f5f5',
     borderRadius: 20,
     paddingHorizontal: 16,
     paddingVertical: 10,
-    fontSize: 15,
-    maxHeight: 100,
-    marginRight: 8,
+    fontSize: 16,
+    marginRight: 6,
   },
-  sendBtn: {
-    backgroundColor: MESSAGING_COLORS.primary,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 20,
-    justifyContent: 'center',
-    minHeight: 40,
-  },
-  sendBtnDisabled: { opacity: 0.5 },
-  sendBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
-  micBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#e5e7eb',
+  mediaBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(197, 160, 89, 0.12)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(197, 160, 89, 0.25)',
   },
-  micBtnText: { fontSize: 20 },
-  voiceBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#fff3e0',
-    borderTopWidth: 1,
-    borderTopColor: '#e5e7eb',
-    gap: 12,
-  },
-  voiceBarText: { fontSize: 14, color: '#1a202c' },
-  voiceCancelBtn: { paddingHorizontal: 12, paddingVertical: 6 },
-  voiceCancelText: { color: MESSAGING_COLORS.textSecondary, fontWeight: '600' },
-  voiceSendBtn: {
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: MESSAGING_COLORS.primary,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 2,
+    shadowColor: MESSAGING_COLORS.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  voiceSendText: { color: '#fff', fontWeight: '600' },
+  sendBtnDisabled: { opacity: 0.5, shadowOpacity: 0 },
 });

@@ -8,11 +8,14 @@ import {
   Image,
   ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
 import { guestGetOrCreateConversationWithStaff } from '@/lib/messagingApi';
 import { supabase } from '@/lib/supabase';
+import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
 import { MESSAGING_COLORS } from '@/lib/messaging';
+import { StaffNameWithBadge, AvatarWithBadge } from '@/components/VerifiedBadge';
+import { CachedImage } from '@/components/CachedImage';
 
 type StaffRow = {
   id: string;
@@ -21,11 +24,13 @@ type StaffRow = {
   profile_image: string | null;
   is_online: boolean | null;
   role: string;
+  verification_badge?: 'blue' | 'yellow' | null;
 };
 
 export default function NewChatScreen() {
   const router = useRouter();
-  const { appToken } = useGuestMessagingStore();
+  const params = useLocalSearchParams<{ staffId?: string }>();
+  const { appToken, setAppToken } = useGuestMessagingStore();
   const [staff, setStaff] = useState<StaffRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [startingId, setStartingId] = useState<string | null>(null);
@@ -34,23 +39,54 @@ export default function NewChatScreen() {
     loadStaff();
   }, []);
 
+  useEffect(() => {
+    if (!loading && params.staffId && !startingId) {
+      startChat(params.staffId);
+    }
+  }, [loading, params.staffId]);
+
+  /** Giriş yapmış kullanıcı (Apple/Google dahil) için app_token getir/oluştur. */
+  const ensureAppToken = async (): Promise<string | null> => {
+    let token = useGuestMessagingStore.getState().appToken;
+    if (token) return token;
+    await supabase.auth.refreshSession();
+    const { data: { session } } = await supabase.auth.getSession();
+    const row = await getOrCreateGuestForCaller(session?.user);
+    const t = row?.app_token ?? null;
+    if (t) await setAppToken(t);
+    return t;
+  };
+
   const loadStaff = async () => {
-    const { data } = await supabase
-      .from('staff')
-      .select('id, full_name, department, profile_image, is_online, role')
-      .eq('is_active', true)
-      .order('full_name');
-    setStaff(data ?? []);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) await ensureAppToken();
+    // Giriş yapmış kullanıcı: staff tablosundan çek (verification_badge dahil)
+    if (session) {
+      const { data: directData } = await supabase
+        .from('staff')
+        .select('id, full_name, department, profile_image, is_online, role, verification_badge')
+        .eq('is_active', true)
+        .order('full_name');
+      setStaff((directData ?? []) as StaffRow[]);
+      setLoading(false);
+      return;
+    }
+    // Giriş yok: RPC ile personel listesi (anon)
+    const { data: rpcData } = await supabase.rpc('messaging_list_staff_for_guest');
+    const rows: StaffRow[] = Array.isArray(rpcData) ? rpcData : rpcData ? [rpcData] : [];
+    setStaff(rows);
     setLoading(false);
   };
 
   const startChat = async (staffId: string) => {
-    if (!appToken) {
+    let token = appToken;
+    if (!token) token = await ensureAppToken();
+    if (!token) {
       router.replace('/customer/(tabs)/messages');
       return;
     }
     setStartingId(staffId);
-    const convId = await guestGetOrCreateConversationWithStaff(appToken, staffId);
+    const convId = await guestGetOrCreateConversationWithStaff(token, staffId);
     setStartingId(null);
     if (convId) router.replace({ pathname: '/customer/chat/[id]', params: { id: convId } });
   };
@@ -69,6 +105,14 @@ export default function NewChatScreen() {
       <FlatList
         data={staff}
         keyExtractor={(item) => item.id}
+        ListEmptyComponent={
+          !loading ? (
+            <View style={styles.empty}>
+              <Text style={styles.emptyText}>Listelenecek personel bulunamadı.</Text>
+              <Text style={styles.emptySub}>Aktif personel eklenince burada görünecektir.</Text>
+            </View>
+          ) : null
+        }
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.row}
@@ -76,12 +120,11 @@ export default function NewChatScreen() {
             disabled={!!startingId}
             activeOpacity={0.7}
           >
-            <Image
-              source={{ uri: item.profile_image || 'https://via.placeholder.com/56' }}
-              style={styles.avatar}
-            />
+            <AvatarWithBadge badge={item.verification_badge ?? null} avatarSize={56} badgeSize={12}>
+              <CachedImage uri={item.profile_image || 'https://via.placeholder.com/56'} style={styles.avatar} contentFit="cover" />
+            </AvatarWithBadge>
             <View style={styles.rowBody}>
-              <Text style={styles.name}>{item.full_name || 'Personel'}</Text>
+              <StaffNameWithBadge name={item.full_name || 'Personel'} badge={item.verification_badge ?? null} textStyle={styles.name} />
               <Text style={styles.dept}>
                 {item.department || item.role || '—'}
                 {item.is_online ? '  ·  🟢 Çevrimiçi' : ''}
@@ -123,4 +166,7 @@ const styles = StyleSheet.create({
   name: { fontWeight: '600', fontSize: 16, color: MESSAGING_COLORS.text },
   dept: { fontSize: 13, color: MESSAGING_COLORS.textSecondary, marginTop: 2 },
   arrow: { fontSize: 18, color: MESSAGING_COLORS.textSecondary },
+  empty: { padding: 32, alignItems: 'center' },
+  emptyText: { fontSize: 16, color: MESSAGING_COLORS.textSecondary },
+  emptySub: { fontSize: 14, color: MESSAGING_COLORS.textSecondary, marginTop: 8 },
 });

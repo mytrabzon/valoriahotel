@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { View, StyleSheet, Alert } from 'react-native';
 import { BarcodeScannerView } from '@/components/BarcodeScannerView';
 import { supabase } from '@/lib/supabase';
@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 
 export default function StaffStockScanScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ returnTo?: string }>();
   const { staff } = useAuthStore();
 
   const handleScan = async ({ type, data }: { type: string; data: string }) => {
@@ -18,35 +19,56 @@ export default function StaffStockScanScreen() {
       .eq('barcode', barcode)
       .maybeSingle();
 
-    try {
-      await supabase.from('barcode_scan_history').insert({
-        barcode,
-        barcode_type: type,
-        product_id: product?.id ?? null,
-        scanned_by: staff?.id ?? null,
-        scan_result: product ? 'found' : 'not_found',
-      });
-    } catch (_) {}
-
     if (error) {
       Alert.alert('Hata', error.message);
       return;
     }
-    if (product) {
-      router.replace({ pathname: '/staff/stock/entry', params: { productId: product.id } });
+
+    let productId = product?.id;
+
+    if (!product) {
+      // Barkoda kayıtlı ürün yok: stok girişine barkod + ürün adı (Ürün - barkod) ile git, kullanıcı adı düzenleyip kaydetsin
+      try {
+        await supabase.from('barcode_scan_history').insert({
+          barcode,
+          barcode_type: type,
+          scanned_by: staff?.id ?? null,
+          scan_result: 'not_found',
+        });
+      } catch (_) {}
+      if (params.returnTo === 'exit') {
+        Alert.alert('Ürün yok', 'Bu barkoda kayıtlı ürün yok. Önce stok girişi ile ürün ekleyin.');
+        return;
+      }
+      router.replace({ pathname: '/staff/stock/entry', params: { barcode } });
+      return;
+    }
+
+    try {
+      await supabase.from('barcode_scan_history').insert({
+        barcode,
+        barcode_type: type,
+        product_id: productId ?? undefined,
+        scanned_by: staff?.id ?? null,
+        scan_result: 'found',
+      });
+    } catch (_) {}
+
+    if (params.returnTo === 'exit' && productId) {
+      router.replace({ pathname: '/staff/stock/exit', params: { productId } });
+      return;
+    }
+    if (productId) {
+      router.replace({ pathname: '/staff/stock/entry', params: { productId } });
     } else {
-      Alert.alert(
-        'Ürün bulunamadı',
-        'Bu barkoda kayıtlı ürün yok. Lütfen admin ile iletişime geçin veya ürün adı ile arayın.',
-        [{ text: 'Tamam' }]
-      );
+      router.replace({ pathname: '/staff/stock/entry', params: { barcode } });
     }
   };
 
   return (
     <View style={styles.container}>
       <BarcodeScannerView
-        title="Stok Girişi – Barkod Okut"
+        title={params.returnTo === 'exit' ? 'Stok Çıkışı – Barkod Okut' : 'Stok Girişi – Barkod Okut'}
         hint="Barkodu çerçeve içine getirin"
         onScan={handleScan}
         onClose={() => router.back()}

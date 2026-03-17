@@ -1,0 +1,7 @@
+{
+  "name": "valoria-contract",
+  "private": true,
+  "scripts": {
+    "build": "echo OK"
+  }
+}

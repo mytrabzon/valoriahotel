@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Onayınız alındı – Valoria Hotel</title>
+  <style>
+    body{ margin:0; font-family: system-ui, sans-serif; background: #0b1220; color: #fff; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem; text-align: center; }
+    .card{ background: rgba(255,255,255,.06); border-radius: 20px; padding: 2rem; max-width: 420px; border: 1px solid rgba(255,255,255,.1); }
+    h1{ font-size: 1.5rem; margin: 0 0 0.5rem; color: #fff; }
+    p{ color: rgba(255,255,255,.85); margin: 0 0 1.5rem; line-height: 1.5; }
+    .store{ display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 1.5rem; }
+    .store a{ display: inline-block; padding: 14px 24px; border-radius: 12px; font-weight: 700; text-decoration: none; color: #fff; }
+    .store .gp{ background: #34a853; }
+    .store .as{ background: #007aff; }
+    .store a:hover{ opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Teşekkürler</h1>
+    <p>Onayınız alındı. Dilerseniz aşağıdan uygulamayı indirebilirsiniz.</p>
+    <div class="store">
+      <a href="#" id="gp" class="gp">Google Play'den indir</a>
+      <a href="#" id="as" class="as">App Store'dan indir</a>
+    </div>
+    <p style="margin-top:1.5rem;font-size:0.85rem;color:rgba(255,255,255,.6)">Uygulama ile oda bilgilerinize ve mesajlara erişebilirsiniz.</p>
+  </div>
+  <script>
+    (function(){
+      var gp = document.getElementById('gp');
+      var as = document.getElementById('as');
+      var gpUrl = 'https://play.google.com/store/apps/details?id=com.valoria.hotel';
+      var asUrl = 'https://apps.apple.com/app/valoria-hotel/idXXXXXXXXX';
+      gp.href = gpUrl;
+      as.href = asUrl;
+    })();
+  </script>
+</body>
+</html>

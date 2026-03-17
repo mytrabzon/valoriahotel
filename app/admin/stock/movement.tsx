@@ -8,20 +8,29 @@ import {
   ScrollView,
   StyleSheet,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { decode } from 'base64-arraybuffer';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
+import { uriToArrayBuffer } from '@/lib/uploadMedia';
+import { CachedImage } from '@/components/CachedImage';
+import { ImagePreviewModal } from '@/components/ImagePreviewModal';
 
 type Product = { id: string; name: string; unit: string | null; current_stock: number | null };
 
 export default function StockMovementScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const params = useLocalSearchParams<{ type?: string; productId?: string }>();
   const type = (params.type as 'in' | 'out') || 'in';
   const { staff } = useAuthStore();
+
+  useEffect(() => {
+    navigation.setOptions({ title: type === 'in' ? 'Stok Girişi' : 'Stok Çıkışı' });
+  }, [type, navigation]);
 
   const [product, setProduct] = useState<Product | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
@@ -31,6 +40,7 @@ export default function StockMovementScreen() {
   const [staffImage, setStaffImage] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [search, setSearch] = useState('');
+  const [previewUri, setPreviewUri] = useState<string | null>(null);
 
   useEffect(() => {
     if (params.productId) {
@@ -40,30 +50,63 @@ export default function StockMovementScreen() {
     }
   }, [params.productId]);
 
-  const uploadPhoto = async (base64: string): Promise<string> => {
-    const arrayBuffer = decode(base64);
-    const fileName = `stock/${Date.now()}.jpg`;
-    const { error } = await supabase.storage.from('stock-proofs').upload(fileName, arrayBuffer, { contentType: 'image/jpeg' });
+  const uploadPhotoFromUri = async (uri: string): Promise<string> => {
+    const arrayBuffer = await uriToArrayBuffer(uri);
+    const ext = uri.toLowerCase().includes('.png') ? 'png' : 'jpg';
+    const contentType = ext === 'png' ? 'image/png' : 'image/jpeg';
+    const fileName = `stock/${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from('stock-proofs').upload(fileName, arrayBuffer, {
+      contentType,
+      upsert: true,
+    });
     if (error) throw error;
     const { data: { publicUrl } } = supabase.storage.from('stock-proofs').getPublicUrl(fileName);
     return publicUrl;
   };
 
   const takePhoto = async (kind: 'staff' | 'product') => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('İzin', 'Fotoğraf çekmek için kamera erişimi gerekli.');
+      return;
+    }
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
-      quality: 0.5,
-      base64: true,
+      quality: 0.6,
     });
-    if (result.canceled || !result.assets[0].base64) return;
+    if (result.canceled || !result.assets[0]?.uri) return;
     setUploading(true);
     try {
-      const url = await uploadPhoto(result.assets[0].base64);
+      const url = await uploadPhotoFromUri(result.assets[0].uri);
       if (kind === 'staff') setStaffImage(url);
       else setPhoto(url);
-    } catch {
-      Alert.alert('Hata', 'Fotoğraf yüklenemedi.');
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'Fotoğraf yüklenemedi.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const pickPhoto = async (kind: 'staff' | 'product') => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('İzin', 'Galeri erişimi gerekli.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.6,
+    });
+    if (result.canceled || !result.assets[0]?.uri) return;
+    setUploading(true);
+    try {
+      const url = await uploadPhotoFromUri(result.assets[0].uri);
+      if (kind === 'staff') setStaffImage(url);
+      else setPhoto(url);
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'Fotoğraf yüklenemedi.');
     } finally {
       setUploading(false);
     }
@@ -78,6 +121,13 @@ export default function StockMovementScreen() {
     if (isNaN(q) || q <= 0) {
       Alert.alert('Hata', 'Geçerli miktar girin.');
       return;
+    }
+    if (type === 'out') {
+      const cur = product.current_stock ?? 0;
+      if (q > cur) {
+        Alert.alert('Yetersiz stok', `Mevcut stok: ${cur} ${product.unit ?? 'adet'}. Çıkış miktarı bu değeri aşamaz.`);
+        return;
+      }
     }
     const { data: movement, error } = await supabase
       .from('stock_movements')
@@ -104,10 +154,11 @@ export default function StockMovementScreen() {
   const filteredProducts = products.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <ScrollView style={styles.container}>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={90}>
+      <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
       <Text style={styles.title}>{type === 'in' ? 'Stok Girişi' : 'Stok Çıkışı'}</Text>
 
-      {!params.productId ? (
+      {(!params.productId) ? (
         <View style={styles.section}>
           <TouchableOpacity style={styles.barcodeBtn} onPress={() => router.push('/admin/stock/scan')}>
             <Text style={styles.barcodeBtnText}>📷 Barkod Okut</Text>
@@ -145,13 +196,20 @@ export default function StockMovementScreen() {
         <Text style={styles.label}>Teslim alan çalışan fotoğrafı</Text>
         {staffImage ? (
           <View style={styles.photoWrap}>
-            <Image source={{ uri: staffImage }} style={styles.photo} />
+            <TouchableOpacity onPress={() => setPreviewUri(staffImage)} activeOpacity={0.8}>
+              <CachedImage uri={staffImage} style={styles.photo} contentFit="cover" />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.removePhoto} onPress={() => setStaffImage(null)}><Text style={styles.removePhotoText}>✕</Text></TouchableOpacity>
           </View>
         ) : (
-          <TouchableOpacity style={styles.photoPlaceholder} onPress={() => takePhoto('staff')} disabled={uploading}>
-            <Text style={styles.photoPlaceholderText}>Çalışan fotoğrafı çek</Text>
-          </TouchableOpacity>
+          <View style={styles.photoButtonsRow}>
+            <TouchableOpacity style={styles.photoPlaceholder} onPress={() => takePhoto('staff')} disabled={uploading}>
+              <Text style={styles.photoPlaceholderText}>📷 Çek</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.photoPlaceholder} onPress={() => pickPhoto('staff')} disabled={uploading}>
+              <Text style={styles.photoPlaceholderText}>📁 Galeri</Text>
+            </TouchableOpacity>
+          </View>
         )}
       </View>
 
@@ -159,13 +217,20 @@ export default function StockMovementScreen() {
         <Text style={styles.label}>Ürün fotoğrafı (kanıt)</Text>
         {photo ? (
           <View style={styles.photoWrap}>
-            <Image source={{ uri: photo }} style={[styles.photo, styles.photoLarge]} />
+            <TouchableOpacity onPress={() => setPreviewUri(photo)} activeOpacity={0.8}>
+              <CachedImage uri={photo} style={[styles.photo, styles.photoLarge]} contentFit="cover" />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.removePhoto} onPress={() => setPhoto(null)}><Text style={styles.removePhotoText}>✕</Text></TouchableOpacity>
           </View>
         ) : (
-          <TouchableOpacity style={styles.photoPlaceholder} onPress={() => takePhoto('product')} disabled={uploading}>
-            <Text style={styles.photoPlaceholderText}>Ürün fotoğrafı çek</Text>
-          </TouchableOpacity>
+          <View style={styles.photoButtonsRow}>
+            <TouchableOpacity style={styles.photoPlaceholder} onPress={() => takePhoto('product')} disabled={uploading}>
+              <Text style={styles.photoPlaceholderText}>📷 Çek</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.photoPlaceholder} onPress={() => pickPhoto('product')} disabled={uploading}>
+              <Text style={styles.photoPlaceholderText}>📁 Galeri</Text>
+            </TouchableOpacity>
+          </View>
         )}
       </View>
 
@@ -181,7 +246,9 @@ export default function StockMovementScreen() {
       >
         <Text style={styles.submitText}>{type === 'in' ? 'STOK GİRİŞİ YAP' : 'STOK ÇIKIŞI YAP'}</Text>
       </TouchableOpacity>
-    </ScrollView>
+      </ScrollView>
+      <ImagePreviewModal visible={!!previewUri} uri={previewUri} onClose={() => setPreviewUri(null)} />
+    </KeyboardAvoidingView>
   );
 }
 
@@ -202,8 +269,9 @@ const styles = StyleSheet.create({
   photoLarge: { width: '100%', height: 180 },
   removePhoto: { position: 'absolute', top: 4, right: 4, width: 28, height: 28, borderRadius: 14, backgroundColor: '#dc2626', justifyContent: 'center', alignItems: 'center' },
   removePhotoText: { color: '#fff', fontWeight: '700' },
-  photoPlaceholder: { borderWidth: 2, borderStyle: 'dashed', borderColor: '#d1d5db', borderRadius: 10, padding: 32, alignItems: 'center' },
-  photoPlaceholderText: { color: '#6b7280' },
+  photoButtonsRow: { flexDirection: 'row', gap: 12, marginBottom: 8 },
+  photoPlaceholder: { flex: 1, borderWidth: 2, borderStyle: 'dashed', borderColor: '#d1d5db', borderRadius: 10, padding: 20, alignItems: 'center' },
+  photoPlaceholderText: { color: '#6b7280', fontSize: 14 },
   submit: { backgroundColor: '#b8860b', padding: 16, borderRadius: 10 },
   submitDisabled: { opacity: 0.5 },
   submitText: { color: '#fff', fontWeight: '700', textAlign: 'center', fontSize: 16 },

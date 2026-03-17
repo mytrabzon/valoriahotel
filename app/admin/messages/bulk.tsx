@@ -8,6 +8,8 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
@@ -56,7 +58,8 @@ export default function AdminBulkMessageScreen() {
   if (!staff) return null;
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={90}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
       <Text style={styles.label}>Kime</Text>
       {TARGET_OPTIONS.map((opt) => (
         <TouchableOpacity
@@ -104,7 +107,8 @@ export default function AdminBulkMessageScreen() {
       <TouchableOpacity style={styles.sendBtn} onPress={send} disabled={sending}>
         {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.sendBtnText}>Gönder</Text>}
       </TouchableOpacity>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

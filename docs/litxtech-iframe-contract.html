@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Valoria – Sözleşme Onayı</title>
+  <style>
+    body { margin: 0; height: 100vh; }
+    iframe { width: 100%; height: 100%; border: 0; display: block; }
+  </style>
+</head>
+<body>
+  <iframe id="contract"></iframe>
+  <script>
+    var qs = new URLSearchParams(location.search);
+    var token = qs.get('token') || '';
+    var lang = qs.get('lang') || 'tr';
+    // Aşağıdaki PROJE_ID yerine kendi Supabase proje adresinizi yazın (örn. xyzcompany.supabase.co)
+    var base = 'https://PROJE_ID.supabase.co/functions/v1/public-contract';
+    document.getElementById('contract').src = base + '?token=' + encodeURIComponent(token) + '&lang=' + encodeURIComponent(lang);
+  </script>
+</body>
+</html>

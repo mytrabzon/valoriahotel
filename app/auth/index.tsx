@@ -8,15 +8,23 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
 import { supabase } from '@/lib/supabase';
+import { useCustomerRoomStore } from '@/stores/customerRoomStore';
 import { log } from '@/lib/logger';
+import { theme } from '@/constants/theme';
 
-const MAGIC_LINK_REDIRECT = 'valoria-hotel://auth/callback';
+const MAGIC_LINK_REDIRECT = 'valoria://auth/callback';
 
 export default function AuthEmailScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const pendingRoom = useCustomerRoomStore((s) => s.pendingRoom);
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
@@ -24,7 +32,7 @@ export default function AuthEmailScreen() {
   const sendCode = async () => {
     const e = email.trim().toLowerCase();
     if (!e) {
-      Alert.alert('Hata', 'E-posta adresinizi girin.');
+      Alert.alert(t('error'), t('errorEnterEmail'));
       return;
     }
     setLoading(true);
@@ -42,104 +50,197 @@ export default function AuthEmailScreen() {
       log.info('AuthEmail', 'OTP/Magic link gönderildi', { email: e.slice(0, 5) + '...' });
       router.push({ pathname: '/auth/code', params: { email: e } });
     } catch (err: unknown) {
-      const msg = (err as Error)?.message ?? 'Kod gönderilemedi.';
+      const msg = (err as Error)?.message ?? t('errorCodeNotSent');
       log.error('AuthEmail', 'signInWithOtp', err, msg);
-      Alert.alert('Hata', msg);
+      Alert.alert(t('error'), msg);
     }
     setLoading(false);
   };
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.wrapper, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={60}
+      keyboardVerticalOffset={0}
     >
-      <Text style={styles.title}>E-posta ile Giriş / Kayıt</Text>
-      <Text style={styles.subtitle}>
-        E-posta adresinize 6 haneli kod veya giriş linki göndereceğiz.
-      </Text>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.hero}>
+          <View style={styles.logoMark}>
+            <Text style={styles.logoText}>V</Text>
+          </View>
+          <Text style={styles.title}>{t('login')}</Text>
+          {pendingRoom ? (
+            <Text style={styles.roomHint}>{t('roomHintLogin', { room: pendingRoom.roomNumber })}</Text>
+          ) : (
+            <View style={styles.divider} />
+          )}
+          <Text style={styles.subtitle}>{t('loginSubtitle')}</Text>
+        </View>
 
-      <TextInput
-        style={styles.input}
-        placeholder="E-posta"
-        placeholderTextColor="rgba(255,255,255,0.5)"
-        value={email}
-        onChangeText={setEmail}
-        keyboardType="email-address"
-        autoCapitalize="none"
-        autoCorrect={false}
-        editable={!loading}
-      />
+        <View style={styles.card}>
+          <TextInput
+            style={styles.input}
+            placeholder={t('emailPlaceholder')}
+            placeholderTextColor="#9ca3af"
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!loading}
+          />
 
-      <TouchableOpacity style={styles.button} onPress={sendCode} disabled={loading}>
-        <Text style={styles.buttonText}>
-          {loading ? 'Gönderiliyor...' : 'Kod / Magic link gönder'}
-        </Text>
-      </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
+            onPress={sendCode}
+            disabled={loading}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.primaryButtonText}>
+              {loading ? t('sending') : t('sendCodeBtn')}
+            </Text>
+          </TouchableOpacity>
+        </View>
 
-      <Text style={styles.hint}>
-        E-postayı kontrol edin. 6 haneli kodu aşağıdaki ekrana girebilir veya e-postadaki linke tıklayarak uygulamada giriş yapabilirsiniz.
-      </Text>
+        <View style={styles.links}>
+          <TouchableOpacity onPress={() => router.push('/auth/password')} style={styles.linkWrap}>
+            <Text style={styles.linkText}>{t('loginWithPassword')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push('/auth/register')} style={styles.linkWrap}>
+            <Text style={styles.linkText}>{t('signUp')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push('/auth/reset')} style={styles.linkWrap}>
+            <Text style={styles.linkText}>{t('forgotPassword')}</Text>
+          </TouchableOpacity>
+        </View>
 
-      <View style={styles.links}>
-        <TouchableOpacity onPress={() => router.push('/auth/password')}>
-          <Text style={styles.linkText}>Şifre ile giriş</Text>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} activeOpacity={0.8}>
+          <Text style={styles.backBtnText}>← {t('backBtn')}</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => router.push({ pathname: '/auth/password', params: { signUp: '1' } })}>
-          <Text style={styles.linkText}>Kayıt ol</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => router.push('/auth/reset')}>
-          <Text style={styles.linkText}>Şifremi unuttum</Text>
-        </TouchableOpacity>
-      </View>
-
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Text style={styles.backBtnText}>← Geri</Text>
-      </TouchableOpacity>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  wrapper: {
     flex: 1,
-    backgroundColor: '#1a365d',
-    padding: 24,
-    justifyContent: 'center',
+    backgroundColor: '#ffffff',
   },
-  title: { fontSize: 24, fontWeight: '700', color: '#fff', textAlign: 'center', marginBottom: 8 },
-  subtitle: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.85)',
+  scrollContent: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingBottom: 32,
+    justifyContent: 'center',
+    minHeight: '100%',
+  },
+  hero: {
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  logoMark: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: theme.colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  logoText: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: -0.5,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: theme.colors.text,
     textAlign: 'center',
+    marginBottom: 10,
+  },
+  divider: {
+    width: 36,
+    height: 3,
+    backgroundColor: theme.colors.primary,
+    borderRadius: 2,
+    marginBottom: 12,
+  },
+  roomHint: {
+    fontSize: 14,
+    color: theme.colors.primary,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  subtitle: {
+    fontSize: 15,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 22,
+    maxWidth: 320,
+  },
+  card: {
+    backgroundColor: theme.colors.backgroundSecondary,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: 24,
     marginBottom: 24,
-    lineHeight: 20,
   },
   input: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    borderRadius: 12,
-    padding: 16,
-    color: '#fff',
+    backgroundColor: '#ffffff',
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+    color: theme.colors.text,
     fontSize: 16,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
   },
-  button: {
-    backgroundColor: '#ed8936',
+  primaryButton: {
+    backgroundColor: theme.colors.primary,
     paddingVertical: 16,
-    borderRadius: 12,
-    marginBottom: 16,
+    borderRadius: 14,
+    alignItems: 'center',
   },
-  buttonText: { color: '#fff', fontSize: 18, fontWeight: '600', textAlign: 'center' },
-  hint: {
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.75)',
-    textAlign: 'center',
+  primaryButtonDisabled: {
+    opacity: 0.7,
+  },
+  primaryButtonText: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  links: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 20,
     marginBottom: 24,
-    lineHeight: 18,
   },
-  links: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', gap: 16 },
-  linkText: { color: '#90cdf4', fontSize: 14 },
-  backBtn: { marginTop: 24, alignSelf: 'center' },
-  backBtnText: { color: 'rgba(255,255,255,0.8)', fontSize: 16 },
+  linkWrap: {
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+  },
+  linkText: {
+    color: theme.colors.primary,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  backBtn: {
+    alignSelf: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  backBtnText: {
+    color: theme.colors.textSecondary,
+    fontSize: 16,
+    fontWeight: '500',
+  },
 });

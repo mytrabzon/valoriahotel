@@ -20,10 +20,18 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { app_token, conversation_id, audio_base64, mime_type = "audio/m4a" } = body;
-    if (!app_token || !conversation_id || !audio_base64) {
+    const raw = body as Record<string, unknown>;
+    const app_token = typeof raw.app_token === "string" ? raw.app_token.trim() : undefined;
+    const conversation_id = typeof raw.conversation_id === "string" ? raw.conversation_id.trim() : undefined;
+    const audio_base64 = raw.audio_base64;
+    const image_base64 = raw.image_base64;
+    const mime_type = (raw.mime_type as string) || "audio/m4a";
+    const isImage = Boolean(image_base64);
+    console.log("[upload-message-media] isImage=", isImage, "conversation_id=", conversation_id, "base64Len=", (isImage ? image_base64 : audio_base64)?.length);
+    if (!app_token || !conversation_id || (!audio_base64 && !image_base64)) {
+      console.warn("[upload-message-media] Eksik parametre:", { hasToken: !!app_token, hasConv: !!conversation_id, hasAudio: !!audio_base64, hasImage: !!image_base64 });
       return new Response(
-        JSON.stringify({ error: "app_token, conversation_id, audio_base64 gerekli" }),
+        JSON.stringify({ error: "app_token, conversation_id ve audio_base64 veya image_base64 gerekli" }),
         { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
       );
     }
@@ -33,6 +41,7 @@ Deno.serve(async (req: Request) => {
       .eq("app_token", app_token)
       .single();
     if (!guest) {
+      console.warn("[upload-message-media] Geçersiz app_token");
       return new Response(JSON.stringify({ error: "Geçersiz token" }), { status: 401, headers: { ...CORS, "Content-Type": "application/json" } });
     }
     const { data: part } = await supabase
@@ -44,16 +53,35 @@ Deno.serve(async (req: Request) => {
       .is("left_at", null)
       .single();
     if (!part) {
+      console.warn("[upload-message-media] Konuşmaya katılım yok, conversation_id=", conversation_id);
       return new Response(JSON.stringify({ error: "Bu sohbete erişim yok" }), { status: 403, headers: { ...CORS, "Content-Type": "application/json" } });
     }
-    const ext = mime_type.includes("mpeg") || mime_type.includes("mp3") ? "mp3" : "m4a";
-    const path = `voice/${crypto.randomUUID()}.${ext}`;
-    const binary = Uint8Array.from(atob(audio_base64), (c) => c.charCodeAt(0));
+    const base64 = isImage ? image_base64 : audio_base64;
+    const contentType = isImage ? (mime_type || "image/jpeg") : mime_type;
+    let path: string;
+    if (isImage) {
+      const ext = contentType.includes("png") ? "png" : "jpg";
+      path = `images/${crypto.randomUUID()}.${ext}`;
+    } else {
+      const ext = contentType.includes("mpeg") || contentType.includes("mp3") ? "mp3" : "m4a";
+      path = `voice/${crypto.randomUUID()}.${ext}`;
+    }
+    let binary: Uint8Array;
+    try {
+      binary = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    } catch (e) {
+      console.error("[upload-message-media] atob hatası:", e instanceof Error ? e.message : e);
+      return new Response(
+        JSON.stringify({ error: "Geçersiz base64" }),
+        { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
+      );
+    }
     const { error: uploadErr } = await supabase.storage.from(BUCKET).upload(path, binary, {
-      contentType: mime_type,
+      contentType,
       upsert: false,
     });
     if (uploadErr) {
+      console.error("[upload-message-media] Storage upload hatası:", uploadErr.message);
       return new Response(
         JSON.stringify({ error: "Yükleme hatası: " + uploadErr.message }),
         { status: 500, headers: { ...CORS, "Content-Type": "application/json" } }
@@ -65,6 +93,7 @@ Deno.serve(async (req: Request) => {
       headers: { ...CORS, "Content-Type": "application/json" },
     });
   } catch (e) {
+    console.error("[upload-message-media] Beklenmeyen hata:", e);
     return new Response(
       JSON.stringify({ error: e instanceof Error ? e.message : "Sunucu hatası" }),
       { status: 500, headers: { ...CORS, "Content-Type": "application/json" } }

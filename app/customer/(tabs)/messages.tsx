@@ -1,107 +1,134 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  TextInput,
-  ActivityIndicator,
   RefreshControl,
+  ActivityIndicator,
+  Platform,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
 import { guestListConversations } from '@/lib/messagingApi';
 import type { ConversationWithMeta } from '@/lib/messaging';
 import { MESSAGING_COLORS } from '@/lib/messaging';
 import { supabase } from '@/lib/supabase';
+import { formatRelative } from '@/lib/date';
+import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
 
-function formatTime(iso: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  const now = new Date();
-  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-  if (d.getTime() > now.getTime() - 86400000 * 2) return 'Dün';
-  return d.toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' });
+/** Sohbet adından avatar emoji tahmini: oda numarası → grup, aksi halde ilk harf */
+function chatAvatarChar(name: string | null | undefined): string {
+  const n = (name || 'Sohbet').trim();
+  if (/^\d+/.test(n)) return '👨‍👩‍👧'; // Oda numarası (örn. 102 Nolu Oda)
+  const first = n.charAt(0).toUpperCase();
+  return first || '💬';
 }
 
 export default function CustomerMessagesScreen() {
   const router = useRouter();
-  const { appToken, setAppToken, loadStoredToken } = useGuestMessagingStore();
+  const { appToken, setAppToken, loadStoredToken, setUnreadCount } = useGuestMessagingStore();
   const [conversations, setConversations] = useState<ConversationWithMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [guestName, setGuestName] = useState<string | null>(null);
-  const [loginToken, setLoginToken] = useState('');
-  const [loginLoading, setLoginLoading] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [hasSession, setHasSession] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    loadStoredToken();
+    let cancelled = false;
+    (async () => {
+      await loadStoredToken();
+      if (cancelled) return;
+      if (!useGuestMessagingStore.getState().appToken) {
+        await supabase.auth.refreshSession();
+        const { data: { session: s } } = await supabase.auth.getSession();
+        const row = await getOrCreateGuestForCaller(s?.user);
+        if (row?.app_token) await setAppToken(row.app_token);
+      }
+      if (cancelled) return;
+      const { data: { session: s } } = await supabase.auth.getSession();
+      setHasSession(!!s);
+      setAuthChecked(true);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    if (!appToken) {
-      setConversations([]);
-      setLoading(false);
-      return;
-    }
-    loadConversations();
-    const interval = setInterval(loadConversations, 15000);
-    return () => clearInterval(interval);
-  }, [appToken]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!appToken || !authChecked) {
+        if (authChecked) setConversations([]);
+        setLoading(false);
+        return () => {};
+      }
+      loadConversations();
+      pollRef.current = setInterval(loadConversations, 45000);
+      return () => {
+        if (pollRef.current) clearInterval(pollRef.current);
+        pollRef.current = null;
+      };
+    }, [appToken, authChecked])
+  );
 
   const loadConversations = async () => {
     if (!appToken) return;
     setRefreshing(true);
-    const { data: identity } = await supabase.rpc('get_guest_messaging_identity', { p_app_token: appToken });
-    const row = Array.isArray(identity) ? identity[0] : identity;
-    if (row) setGuestName((row as { full_name: string }).full_name ?? null);
     const list = await guestListConversations(appToken);
-    setConversations(list);
+    const totalUnread = list.reduce((s, c) => s + (c.unread_count ?? 0), 0);
+    setUnreadCount(totalUnread);
+    const sorted = [...list].sort((a, b) => {
+      const ta = new Date(a.last_message_at ?? 0).getTime();
+      const tb = new Date(b.last_message_at ?? 0).getTime();
+      return tb - ta;
+    });
+    setConversations(sorted);
     setRefreshing(false);
     setLoading(false);
   };
 
-  const handleLoginWithToken = async () => {
-    const token = loginToken.trim();
-    if (!token) {
-      setLoginError('Lütfen giriş kodunu girin.');
-      return;
-    }
-    setLoginLoading(true);
-    setLoginError(null);
-    const { data } = await supabase.rpc('get_guest_messaging_identity', { p_app_token: token });
-    const row = Array.isArray(data) ? data[0] : data;
-    if (row && (row as { guest_id: string }).guest_id) {
-      await setAppToken(token);
-      setLoginToken('');
-    } else {
-      setLoginError('Geçersiz giriş kodu. Check-in sonrası personelden aldığınız kodu girin.');
-    }
-    setLoginLoading(false);
-  };
+  useFocusEffect(
+    useCallback(() => {
+      setUnreadCount(0);
+      return () => {};
+    }, [setUnreadCount])
+  );
 
-  if (appToken === null && !loading) {
+  if (authChecked && !appToken) {
+    if (!hasSession) {
+      return (
+        <View style={styles.container}>
+          <View style={styles.loginPrompt}>
+            <Text style={styles.loginTitle}>Mesajlaşma</Text>
+            <Text style={styles.loginSubtitle}>
+              Personel ve otelle mesajlaşmak için giriş yapın. Giriş kodu gerekmez.
+            </Text>
+            <TouchableOpacity style={styles.loginBtn} onPress={() => router.push('/auth')} activeOpacity={0.8}>
+              <Text style={styles.loginBtnText}>Giriş yap</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
     return (
       <View style={styles.container}>
-        <View style={styles.loginCard}>
+        <View style={styles.loginPrompt}>
           <Text style={styles.loginTitle}>Mesajlaşma</Text>
-          <Text style={styles.loginSubtitle}>
-            Check-in sonrası personelden aldığınız giriş kodunu girin; otel personeli ve yönetimle mesajlaşabilirsiniz.
-          </Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Giriş kodu"
-            placeholderTextColor={MESSAGING_COLORS.textSecondary}
-            value={loginToken}
-            onChangeText={(t) => { setLoginToken(t); setLoginError(null); }}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {loginError ? <Text style={styles.errorText}>{loginError}</Text> : null}
-          <TouchableOpacity style={styles.loginBtn} onPress={handleLoginWithToken} disabled={loginLoading}>
-            {loginLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.loginBtnText}>Giriş yap</Text>}
+          <Text style={styles.loginSubtitle}>Mesajlaşma hesabınız hazırlanıyor veya tekrar deneyin.</Text>
+          <TouchableOpacity
+            style={styles.loginBtn}
+            onPress={async () => {
+              await supabase.auth.refreshSession();
+              const { data: { session: s } } = await supabase.auth.getSession();
+              const row = await getOrCreateGuestForCaller(s?.user);
+              if (row?.app_token) await setAppToken(row.app_token);
+              setAuthChecked(false);
+              setLoading(true);
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.loginBtnText}>Tekrar dene</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -118,38 +145,68 @@ export default function CustomerMessagesScreen() {
 
   return (
     <View style={styles.container}>
-      <TouchableOpacity style={styles.newChatBtn} onPress={() => router.push('/customer/new-chat')}>
-        <Text style={styles.newChatBtnText}>+ Yeni sohbet</Text>
-      </TouchableOpacity>
       <FlatList
         data={conversations}
         keyExtractor={(item) => item.id}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadConversations} colors={[MESSAGING_COLORS.primary]} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={loadConversations}
+            colors={[MESSAGING_COLORS.primary]}
+          />
+        }
+        ListHeaderComponent={
+          <TouchableOpacity
+            style={styles.newMessageBtn}
+            onPress={() => router.push('/customer/new-chat')}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.newMessageBtnIcon}>✏️</Text>
+            <Text style={styles.newMessageBtnText}>Yeni mesaj yaz</Text>
+          </TouchableOpacity>
+        }
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text style={styles.emptyText}>Henüz sohbet yok.</Text>
-            <Text style={styles.emptySub}>Personel veya yönetimle sohbet başlatmak için "Yeni sohbet"e tıklayın.</Text>
           </View>
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => router.push({ pathname: '/customer/chat/[id]', params: { id: item.id } })}
-            activeOpacity={0.7}
-          >
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{(item.name || 'Sohbet').charAt(0)}</Text>
-            </View>
-            <View style={styles.rowBody}>
-              <Text style={styles.rowTitle} numberOfLines={1}>{item.name || 'Sohbet'}</Text>
-              <Text style={styles.rowPreview} numberOfLines={1}>{item.last_message_preview || '—'}</Text>
-            </View>
-            <Text style={styles.rowTime}>{formatTime(item.last_message_at ?? null)}</Text>
-            {(item.unread_count ?? 0) > 0 && (
-              <View style={styles.badge}><Text style={styles.badgeText}>{item.unread_count}</Text></View>
-            )}
-          </TouchableOpacity>
-        )}
+        contentContainerStyle={styles.listContent}
+        renderItem={({ item }) => {
+          const name = item.name || 'Sohbet';
+          const unread = item.unread_count ?? 0;
+          return (
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() =>
+                router.push({
+                  pathname: '/customer/chat/[id]',
+                  params: { id: item.id, name },
+                })
+              }
+              activeOpacity={0.7}
+            >
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>{chatAvatarChar(name)}</Text>
+              </View>
+              <View style={styles.cardBody}>
+                <Text style={styles.cardName} numberOfLines={1}>{name}</Text>
+                <Text style={styles.cardPreview} numberOfLines={1}>
+                  {item.last_message_preview || '—'}
+                </Text>
+              </View>
+              <View style={styles.cardMeta}>
+                <Text style={styles.cardTime}>
+                  {item.last_message_at ? formatRelative(item.last_message_at) : '—'}
+                </Text>
+                {unread > 0 && (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{unread > 99 ? '99+' : unread}</Text>
+                  </View>
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        }}
       />
     </View>
   );
@@ -158,7 +215,8 @@ export default function CustomerMessagesScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: MESSAGING_COLORS.background },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loginCard: {
+  listContent: { padding: 12, paddingBottom: 24 },
+  loginPrompt: {
     margin: 16,
     padding: 20,
     backgroundColor: '#fff',
@@ -171,16 +229,6 @@ const styles = StyleSheet.create({
   },
   loginTitle: { fontSize: 20, fontWeight: '700', color: MESSAGING_COLORS.text, marginBottom: 8 },
   loginSubtitle: { fontSize: 14, color: MESSAGING_COLORS.textSecondary, marginBottom: 16, lineHeight: 20 },
-  input: {
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-    marginBottom: 8,
-  },
-  errorText: { color: MESSAGING_COLORS.error, fontSize: 13, marginBottom: 8 },
   loginBtn: {
     backgroundColor: MESSAGING_COLORS.primary,
     paddingVertical: 14,
@@ -188,37 +236,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   loginBtnText: { color: '#fff', fontWeight: '600', fontSize: 16 },
-  newChatBtn: {
-    backgroundColor: MESSAGING_COLORS.primary,
-    marginHorizontal: 16,
-    marginVertical: 12,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  newChatBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
-  row: {
+  card: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    ...(Platform.OS === 'android' && { elevation: 1 }),
+    ...(Platform.OS === 'ios' && {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 4,
+    }),
   },
   avatar: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: MESSAGING_COLORS.primary,
+    backgroundColor: '#f3f4f6',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
   },
-  avatarText: { color: '#fff', fontWeight: '700', fontSize: 18 },
-  rowBody: { flex: 1 },
-  rowTitle: { fontWeight: '600', fontSize: 16, color: MESSAGING_COLORS.text },
-  rowPreview: { fontSize: 14, color: MESSAGING_COLORS.textSecondary, marginTop: 2 },
-  rowTime: { fontSize: 12, color: MESSAGING_COLORS.textSecondary },
+  avatarText: { fontSize: 24 },
+  cardBody: { flex: 1, minWidth: 0 },
+  cardName: { fontWeight: '600', fontSize: 16, color: MESSAGING_COLORS.text },
+  cardPreview: { fontSize: 14, color: MESSAGING_COLORS.textSecondary, marginTop: 2 },
+  cardMeta: { alignItems: 'flex-end', marginLeft: 8 },
+  cardTime: { fontSize: 12, color: MESSAGING_COLORS.textSecondary },
   badge: {
     minWidth: 20,
     height: 20,
@@ -226,10 +275,25 @@ const styles = StyleSheet.create({
     backgroundColor: MESSAGING_COLORS.error,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 8,
+    marginTop: 4,
+    paddingHorizontal: 6,
   },
   badgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  newMessageBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    marginBottom: 14,
+    borderRadius: 12,
+    backgroundColor: MESSAGING_COLORS.primary,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  newMessageBtnIcon: { fontSize: 18 },
+  newMessageBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
   empty: { padding: 32, alignItems: 'center' },
   emptyText: { fontSize: 16, color: MESSAGING_COLORS.textSecondary },
-  emptySub: { fontSize: 14, color: MESSAGING_COLORS.textSecondary, marginTop: 8 },
 });

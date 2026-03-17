@@ -18,29 +18,74 @@ export default function AdminStockScanScreen() {
       .eq('barcode', barcode)
       .maybeSingle();
 
-    // Geçmişe kaydet (tablo varsa)
-    try {
-      await supabase.from('barcode_scan_history').insert({
-        barcode,
-        barcode_type: type,
-        product_id: product?.id ?? null,
-        scanned_by: staff?.id ?? null,
-        scan_result: product ? 'found' : 'not_found',
-      });
-    } catch (_) {}
-
     if (error) {
       Alert.alert('Hata', error.message);
       return;
     }
-    if (product) {
-      router.replace({ pathname: '/admin/stock/movement', params: { productId: product.id, type: 'in' } });
-    } else {
-      Alert.alert(
-        'Ürün bulunamadı',
-        'Bu barkoda kayıtlı ürün yok. Admin panelden yeni ürün ekleyip barkod tanımlayabilirsiniz.',
-        [{ text: 'Tamam' }]
-      );
+
+    let productId = product?.id;
+    let productName = product?.name ?? null;
+    const wasFoundInDb = !!product;
+
+    if (!product) {
+      // Barkoda kayıtlı ürün yok: hemen yeni ürün oluştur (barkod eklensin)
+      const newName = `Ürün - ${barcode}`;
+      const { data: newProduct, error: insertErr } = await supabase
+        .from('stock_products')
+        .insert({
+          name: newName,
+          barcode,
+          unit: 'adet',
+          current_stock: 0,
+        })
+        .select('id, name')
+        .single();
+
+      if (insertErr) {
+        if (insertErr.code === '23505') {
+          const { data: existing } = await supabase
+            .from('stock_products')
+            .select('id, name')
+            .eq('barcode', barcode)
+            .maybeSingle();
+          productId = existing?.id ?? null;
+          productName = existing?.name ?? newName;
+        }
+        if (!productId) {
+          Alert.alert('Hata', insertErr.message);
+          return;
+        }
+      } else {
+        productId = newProduct?.id ?? null;
+        productName = newProduct?.name ?? newName;
+      }
+    }
+
+    try {
+      await supabase.from('barcode_scan_history').insert({
+        barcode,
+        barcode_type: type,
+        product_id: productId ?? undefined,
+        scanned_by: staff?.id ?? null,
+        scan_result: wasFoundInDb ? 'found' : 'not_found',
+      });
+    } catch (_) {}
+
+    if (productId) {
+      const displayName = productName ?? `Barkod: ${barcode}`;
+      if (wasFoundInDb) {
+        Alert.alert(
+          'Ürün bulundu',
+          `${displayName}\n\nStok girişi ekranına yönlendiriliyorsunuz.`,
+          [{ text: 'Tamam', onPress: () => router.replace({ pathname: '/admin/stock/movement', params: { productId, type: 'in' } }) }]
+        );
+      } else {
+        Alert.alert(
+          'Yeni ürün oluşturuldu',
+          `${displayName}\n\nStok girişi ekranına yönlendiriliyorsunuz.`,
+          [{ text: 'Tamam', onPress: () => router.replace({ pathname: '/admin/stock/movement', params: { productId, type: 'in' } }) }]
+        );
+      }
     }
   };
 

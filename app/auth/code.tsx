@@ -9,13 +9,17 @@ import {
   Keyboard,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
+import { useCustomerRoomStore } from '@/stores/customerRoomStore';
+import { linkGuestToRoom } from '@/lib/linkGuestToRoom';
 import { log } from '@/lib/logger';
 
 const CODE_LENGTH = 6;
 
 export default function AuthCodeScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const params = useLocalSearchParams<{ email: string }>();
   const email = (params.email ?? '').trim().toLowerCase();
@@ -35,13 +39,13 @@ export default function AuthCodeScreen() {
 
   const verify = async () => {
     if (!email) {
-      Alert.alert('Hata', 'E-posta bilgisi eksik. Lütfen baştan başlayın.');
+      Alert.alert(t('error'), t('emailRequired'));
       router.replace('/auth');
       return;
     }
     const trimmed = code.replace(/\D/g, '');
     if (trimmed.length !== CODE_LENGTH) {
-      Alert.alert('Hata', '6 haneli kodu girin.');
+      Alert.alert(t('error'), t('enterSixDigitCode'));
       return;
     }
     setLoading(true);
@@ -61,13 +65,17 @@ export default function AuthCodeScreen() {
       }
       log.info('AuthCode', 'OTP doğrulandı');
       await useAuthStore.getState().loadSession();
-      const { staff } = useAuthStore.getState();
-      if (staff) router.replace('/admin');
-      else router.replace('/customer');
+      const { user } = useAuthStore.getState();
+      const { pendingRoom, clearPendingRoom } = useCustomerRoomStore.getState();
+      if (pendingRoom && user?.email) {
+        await linkGuestToRoom(user.email, pendingRoom.roomId, user.user_metadata?.full_name);
+        clearPendingRoom();
+      }
+      router.replace('/');
     } catch (err: unknown) {
-      const msg = (err as Error)?.message ?? 'Kod geçersiz veya süresi dolmuş.';
+      const msg = (err as Error)?.message ?? t('codeInvalidOrExpired');
       log.error('AuthCode', 'verifyOtp', err, msg);
-      Alert.alert('Doğrulama hatası', msg);
+      Alert.alert(t('verificationError'), msg);
     }
     setLoading(false);
   };
@@ -75,9 +83,9 @@ export default function AuthCodeScreen() {
   if (!email) {
     return (
       <View style={styles.container}>
-        <Text style={styles.errorText}>E-posta bulunamadı.</Text>
+        <Text style={styles.errorText}>{t('emailNotFound')}</Text>
         <TouchableOpacity style={styles.button} onPress={() => router.replace('/auth')}>
-          <Text style={styles.buttonText}>Geri dön</Text>
+          <Text style={styles.buttonText}>{t('backBtn')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -85,7 +93,7 @@ export default function AuthCodeScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>6 haneli kodu girin</Text>
+      <Text style={styles.title}>{t('enterSixDigitCode')}</Text>
       <Text style={styles.subtitle}>{email}</Text>
 
       <TextInput
@@ -94,7 +102,7 @@ export default function AuthCodeScreen() {
         value={code}
         onChangeText={handleCodeChange}
         placeholder="000000"
-        placeholderTextColor="rgba(255,255,255,0.4)"
+        placeholderTextColor="#9ca3af"
         keyboardType="number-pad"
         maxLength={CODE_LENGTH}
         selectTextOnFocus
@@ -106,11 +114,11 @@ export default function AuthCodeScreen() {
         onPress={verify}
         disabled={code.length !== CODE_LENGTH || loading}
       >
-        <Text style={styles.buttonText}>{loading ? 'Doğrulanıyor...' : 'Giriş yap'}</Text>
+        <Text style={styles.buttonText}>{loading ? t('verifying') : t('signIn')}</Text>
       </TouchableOpacity>
 
       <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Text style={styles.backBtnText}>← Farklı e-posta</Text>
+        <Text style={styles.backBtnText}>← {t('differentEmail')}</Text>
       </TouchableOpacity>
     </View>
   );
@@ -119,36 +127,38 @@ export default function AuthCodeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a365d',
+    backgroundColor: '#ffffff',
     padding: 24,
     justifyContent: 'center',
   },
-  title: { fontSize: 22, fontWeight: '700', color: '#fff', textAlign: 'center', marginBottom: 8 },
+  title: { fontSize: 22, fontWeight: '700', color: '#1a1d21', textAlign: 'center', marginBottom: 8 },
   subtitle: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.8)',
+    color: '#6c757d',
     textAlign: 'center',
     marginBottom: 24,
   },
   input: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: '#f8f9fa',
     borderRadius: 12,
     padding: 20,
-    color: '#fff',
+    color: '#1a1d21',
     fontSize: 28,
     letterSpacing: 12,
     textAlign: 'center',
     marginBottom: 24,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
   },
   button: {
-    backgroundColor: '#ed8936',
+    backgroundColor: '#b8860b',
     paddingVertical: 16,
     borderRadius: 12,
     marginBottom: 16,
   },
   buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: '#fff', fontSize: 18, fontWeight: '600', textAlign: 'center' },
+  buttonText: { color: '#ffffff', fontSize: 18, fontWeight: '600', textAlign: 'center' },
   backBtn: { marginTop: 16, alignSelf: 'center' },
-  backBtnText: { color: 'rgba(255,255,255,0.8)', fontSize: 15 },
-  errorText: { color: '#fc8181', textAlign: 'center', marginBottom: 24 },
+  backBtnText: { color: '#6c757d', fontSize: 15 },
+  errorText: { color: '#dc3545', textAlign: 'center', marginBottom: 24 },
 });

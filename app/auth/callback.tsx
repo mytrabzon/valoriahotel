@@ -4,9 +4,12 @@ import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
+import { useCustomerRoomStore } from '@/stores/customerRoomStore';
+import { linkGuestToRoom } from '@/lib/linkGuestToRoom';
+import { hasPolicyConsent } from '@/lib/policyConsent';
 import { log } from '@/lib/logger';
 
-function parseHashParams(url: string): { access_token?: string; refresh_token?: string } {
+function parseHashParams(url: string): { access_token?: string; refresh_token?: string; type?: string } {
   const hashIndex = url.indexOf('#');
   if (hashIndex === -1) return {};
   const hash = url.slice(hashIndex + 1);
@@ -18,6 +21,7 @@ function parseHashParams(url: string): { access_token?: string; refresh_token?: 
   return {
     access_token: params.access_token,
     refresh_token: params.refresh_token,
+    type: params.type,
   };
 }
 
@@ -36,7 +40,7 @@ export default function AuthCallbackScreen() {
         setMessage('Geçersiz veya eksik bağlantı.');
         return;
       }
-      const { access_token, refresh_token } = parseHashParams(url);
+      const { access_token, refresh_token, type } = parseHashParams(url);
       if (!access_token || !refresh_token) {
         setStatus('error');
         setMessage('Oturum bilgisi alınamadı.');
@@ -50,10 +54,27 @@ export default function AuthCallbackScreen() {
         if (error) throw error;
         if (cancelled) return;
         await useAuthStore.getState().loadSession();
-        const { staff } = useAuthStore.getState();
+        if (type === 'recovery') {
+          log.info('AuthCallback', 'Şifre sıfırlama linki ile geldi, şifre belirleme ekranına yönlendiriliyor');
+          router.replace('/auth/set-password');
+          setStatus('ok');
+          return;
+        }
+        const { user, staff } = useAuthStore.getState();
+        const { pendingRoom, clearPendingRoom } = useCustomerRoomStore.getState();
         log.info('AuthCallback', 'Magic link girişi tamamlandı', { hasStaff: !!staff });
-        if (staff) router.replace('/admin');
-        else router.replace('/customer');
+        if (pendingRoom && user?.email) {
+          await linkGuestToRoom(user.email, pendingRoom.roomId, user.user_metadata?.full_name);
+          clearPendingRoom();
+        }
+        const accepted = await hasPolicyConsent();
+        const path = staff ? '/staff' : '/customer';
+        const nextParam = staff ? 'staff' : 'customer';
+        if (accepted) {
+          router.replace(path);
+        } else {
+          router.replace({ pathname: '/policies', params: { next: nextParam } });
+        }
         setStatus('ok');
       } catch (err) {
         if (cancelled) return;
@@ -78,7 +99,7 @@ export default function AuthCallbackScreen() {
 
   return (
     <View style={styles.container}>
-      <ActivityIndicator size="large" color="#ed8936" />
+      <ActivityIndicator size="large" color="#b8860b" />
       <Text style={styles.message}>{message}</Text>
     </View>
   );
@@ -87,18 +108,18 @@ export default function AuthCallbackScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a365d',
+    backgroundColor: '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
   },
-  message: { color: '#fff', fontSize: 16, marginTop: 16, textAlign: 'center' },
+  message: { color: '#1a1d21', fontSize: 16, marginTop: 16, textAlign: 'center' },
   button: {
-    backgroundColor: '#ed8936',
+    backgroundColor: '#b8860b',
     paddingVertical: 14,
     paddingHorizontal: 24,
     borderRadius: 12,
     marginTop: 24,
   },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  buttonText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
 });

@@ -15,6 +15,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
   log.error('Supabase env eksik', { supabaseUrl: !!supabaseUrl, supabaseAnonKey: !!supabaseAnonKey });
 }
 
+export { supabaseUrl, supabaseAnonKey };
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: AsyncStorage,

@@ -34,12 +34,9 @@ export default function CustomerRooms() {
   return (
     <ScrollView
       style={styles.container}
+      contentContainerStyle={styles.listContent}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />}
     >
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Odalar</Text>
-        <Text style={styles.headerSubtitle}>Konaklama seçenekleri</Text>
-      </View>
       {rooms.map((r) => (
         <View key={r.id} style={styles.card}>
           <View style={styles.cardRow}>
@@ -60,9 +57,7 @@ export default function CustomerRooms() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.backgroundSecondary },
-  header: { padding: 20, backgroundColor: theme.colors.surface, borderBottomWidth: 1, borderBottomColor: theme.colors.borderLight },
-  headerTitle: { fontSize: 22, fontWeight: '700', color: theme.colors.text },
-  headerSubtitle: { fontSize: 14, color: theme.colors.textSecondary, marginTop: 4 },
+  listContent: { paddingTop: 8, paddingBottom: 24 },
   card: {
     backgroundColor: theme.colors.surface,
     margin: 16,

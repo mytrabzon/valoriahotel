@@ -1,11 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
-const ALL_BARCODE_TYPES = [
-  'ean13', 'ean8', 'upc_a', 'upc_e', 'code39', 'code93', 'code128',
-  'codabar', 'itf14', 'qr', 'pdf417', 'aztec', 'datamatrix',
-] as const;
+/** Sadece sık kullanılan barkod tipleri — hepsini taramak kasılmaya yol açar */
+const BARCODE_TYPES = ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128', 'code39', 'qr'] as const;
 
 export type BarcodeScanResult = { type: string; data: string };
 
@@ -18,6 +16,8 @@ type BarcodeScannerViewProps = {
   hint?: string;
 };
 
+const SCAN_THROTTLE_MS = 2200;
+
 export function BarcodeScannerView({
   onScan,
   onClose,
@@ -29,18 +29,44 @@ export function BarcodeScannerView({
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [lastData, setLastData] = useState<string | null>(null);
+  const [cameraMounted, setCameraMounted] = useState(false);
+  const lastScanTime = useRef(0);
 
   useEffect(() => {
-    if (!permission?.granted) requestPermission();
+    let cancelled = false;
+    if (!permission) return;
+    if (permission.granted) {
+      const delay = Platform.OS === 'android' ? 400 : 150;
+      const t = setTimeout(() => {
+        if (!cancelled) setCameraMounted(true);
+      }, delay);
+      return () => {
+        cancelled = true;
+        clearTimeout(t);
+      };
+    }
+    setCameraMounted(false);
+    return () => { cancelled = true; };
+  }, [permission?.granted]);
+
+  useEffect(() => {
+    if (permission?.granted) return;
+    requestPermission();
   }, []);
 
-  const handleBarCodeScanned = ({ type, data }: BarcodeScanResult) => {
-    if (!continuous && scanned) return;
-    if (continuous && lastData === data) return; // debounce aynı barkod
-    setLastData(data);
-    if (!continuous) setScanned(true);
-    onScan({ type, data });
-  };
+  const handleBarCodeScanned = useCallback(
+    ({ type, data }: BarcodeScanResult) => {
+      const now = Date.now();
+      if (now - lastScanTime.current < SCAN_THROTTLE_MS) return;
+      if (!continuous && scanned) return;
+      if (continuous && lastData === data) return;
+      lastScanTime.current = now;
+      setLastData(data);
+      if (!continuous) setScanned(true);
+      onScan({ type, data });
+    },
+    [continuous, scanned, lastData, onScan]
+  );
 
   const resetScan = () => {
     setScanned(false);
@@ -72,13 +98,21 @@ export function BarcodeScannerView({
     );
   }
 
+  if (!cameraMounted) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.message}>Kamera hazırlanıyor...</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <CameraView
         style={StyleSheet.absoluteFillObject}
         facing="back"
         barcodeScannerSettings={{
-          barcodeTypes: [...ALL_BARCODE_TYPES],
+          barcodeTypes: [...BARCODE_TYPES],
         }}
         onBarcodeScanned={scanned && !continuous ? undefined : handleBarCodeScanned}
       />

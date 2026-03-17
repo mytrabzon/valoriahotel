@@ -35,6 +35,16 @@ export default function AdminNotificationsIndex() {
     load();
   }, []);
 
+  useEffect(() => {
+    if (!staff?.id) return;
+    supabase
+      .from('notifications')
+      .update({ read_at: new Date().toISOString() })
+      .eq('staff_id', staff.id)
+      .is('read_at', null)
+      .then(() => {});
+  }, [staff?.id]);
+
   const categoryLabel = (c: string | null) => {
     const m: Record<string, string> = {
       emergency: 'Acil',

@@ -1,0 +1,16 @@
+# Edge Functions: Gateway JWT doğrulamasını kapat
+# React Native'dan Authorization header bazen iletilmediği için 401 alınıyordu.
+# Bu fonksiyonlar token'ı body.access_token ile alıp kendi içinde doğruluyor.
+
+[functions.approve-staff-application]
+verify_jwt = false
+
+[functions.create-staff]
+verify_jwt = false
+
+[functions.update-staff]
+verify_jwt = false
+
+# QR ile açılan sözleşme sayfası: tarayıcıdan anonim erişim (401 önlenir)
+[functions.public-contract]
+verify_jwt = false

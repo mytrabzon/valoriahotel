@@ -1,8 +1,9 @@
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTranslation } from 'react-i18next';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
-import { LANGUAGES, type LangCode } from '@/i18n';
+import { LANGUAGES, LANG_STORAGE_KEY, type LangCode } from '@/i18n';
 
 export default function LanguageScreen() {
   const router = useRouter();
@@ -11,9 +12,14 @@ export default function LanguageScreen() {
 
   const select = (code: LangCode) => {
     i18n.changeLanguage(code);
-    setLang(code);
-    setStep('contract');
-    router.replace('/guest/contract');
+    AsyncStorage.setItem(LANG_STORAGE_KEY, code);
+    if (roomNumber) {
+      setLang(code);
+      setStep('contract');
+      router.replace('/guest/contract');
+    } else {
+      router.back();
+    }
   };
 
   return (

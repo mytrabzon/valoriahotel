@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
-import { View, Text, ScrollView, Image, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import { useRouter } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import HotelMap from '@/components/HotelMap';
+import { theme } from '@/constants/theme';
+import { CachedImage } from '@/components/CachedImage';
 
 type HotelInfo = {
   name: string | null;
@@ -14,6 +17,7 @@ type GalleryItem = { id: string; url: string; sort_order: number };
 type Facility = { id: string; name: string; icon: string | null };
 
 export default function HotelInfoScreen() {
+  const router = useRouter();
   const [hotel, setHotel] = useState<HotelInfo | null>(null);
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
   const [facilities, setFacilities] = useState<Facility[]>([]);
@@ -33,7 +37,7 @@ export default function HotelInfoScreen() {
   return (
     <ScrollView style={styles.container}>
       {hotel?.cover_image ? (
-        <Image source={{ uri: hotel.cover_image }} style={styles.cover} />
+        <CachedImage uri={hotel.cover_image} style={styles.cover} contentFit="cover" />
       ) : (
         <View style={styles.coverPlaceholder} />
       )}
@@ -49,13 +53,21 @@ export default function HotelInfoScreen() {
         )}
       </View>
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Konum</Text>
+        <View style={styles.sectionRow}>
+          <Text style={styles.sectionTitle}>Konum</Text>
+          <TouchableOpacity onPress={() => router.push('/customer/surroundings')}>
+            <Text style={styles.linkText}>📍 Çevre rehberi</Text>
+          </TouchableOpacity>
+        </View>
         <HotelMap
           latitude={typeof process.env.EXPO_PUBLIC_HOTEL_LAT !== 'undefined' ? Number(process.env.EXPO_PUBLIC_HOTEL_LAT) : undefined}
           longitude={typeof process.env.EXPO_PUBLIC_HOTEL_LON !== 'undefined' ? Number(process.env.EXPO_PUBLIC_HOTEL_LON) : undefined}
           title={hotel?.name || 'Valoria Hotel'}
         />
       </View>
+      <TouchableOpacity style={styles.mapLinkCard} onPress={() => router.push('/customer/hotel/map')}>
+        <Text style={styles.mapLinkText}>🗺️ Otel içi harita – Tesisler ve acil çıkış yolları</Text>
+      </TouchableOpacity>
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Hakkımızda</Text>
         <Text style={styles.desc}>{hotel?.description || 'Lüks konaklama deneyimi.'}</Text>
@@ -78,7 +90,7 @@ export default function HotelInfoScreen() {
           <Text style={styles.sectionTitle}>Galeri</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             {gallery.map((img) => (
-              <Image key={img.id} source={{ uri: img.url }} style={styles.galleryImg} />
+              <CachedImage key={img.id} uri={img.url} style={styles.galleryImg} contentFit="cover" />
             ))}
           </ScrollView>
         </View>
@@ -104,4 +116,16 @@ const styles = StyleSheet.create({
   facilityIcon: { fontSize: 18, marginRight: 8 },
   facilityName: { fontSize: 14, fontWeight: '500' },
   galleryImg: { width: 240, height: 180, borderRadius: 12, marginRight: 12 },
+  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  linkText: { fontSize: 14, color: theme.colors.primary, fontWeight: '600' },
+  mapLinkCard: {
+    marginHorizontal: 20,
+    marginBottom: 24,
+    padding: 16,
+    backgroundColor: theme.colors.backgroundSecondary,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+  },
+  mapLinkText: { fontSize: 15, color: theme.colors.text, fontWeight: '500' },
 });

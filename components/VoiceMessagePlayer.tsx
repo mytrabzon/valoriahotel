@@ -43,7 +43,7 @@ export function VoiceMessagePlayer({ uri, isOwn, durationSec: propDuration }: Pr
         }
         await soundRef.current.playAsync();
         setPlaying(true);
-        intervalRef.current = setInterval(updatePosition, 400);
+        intervalRef.current = setInterval(updatePosition, 1000);
         return;
       }
       setLoading(true);
@@ -70,7 +70,7 @@ export function VoiceMessagePlayer({ uri, isOwn, durationSec: propDuration }: Pr
       if (status.isLoaded && status.durationMillis != null) {
         setDurationSec(Math.floor(status.durationMillis / 1000));
       }
-      intervalRef.current = setInterval(updatePosition, 400);
+      intervalRef.current = setInterval(updatePosition, 1000);
     } catch (e) {
       setLoading(false);
       setPlaying(false);

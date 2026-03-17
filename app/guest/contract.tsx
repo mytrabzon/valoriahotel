@@ -56,7 +56,20 @@ export default function ContractScreen() {
     router.replace('/guest/form');
   };
 
-  const htmlDoc = (body: string) => `
+  const isLikelyHtml = (s: string) => /<[a-z][\s\S]*>/i.test(s);
+  const escapeHtml = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  const bodyForWebView = (raw: string) =>
+    isLikelyHtml(raw) ? raw : escapeHtml(raw).replace(/\n/g, '<br/>');
+
+  const htmlDoc = (body: string) => {
+    const dir = contractLang === 'ar' ? ' dir="rtl"' : '';
+    return `
 <!DOCTYPE html>
 <html>
 <head>
@@ -66,10 +79,12 @@ export default function ContractScreen() {
     a { color: #3182ce; text-decoration: none; }
     a:active { opacity: 0.8; }
     h2,h3 { color: #1a365d; margin-top: 16px; margin-bottom: 8px; }
+    .plain { white-space: pre-wrap; word-break: break-word; }
   </style>
 </head>
-<body>${body}</body>
+<body class="${isLikelyHtml(body) ? '' : 'plain'}"${dir}>${bodyForWebView(body)}</body>
 </html>`;
+  };
 
   const handleShouldStartLoad = (req: { url: string }) => {
     const u = req.url;

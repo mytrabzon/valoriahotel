@@ -1,0 +1,301 @@
+import { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  StyleSheet,
+  Alert,
+  ActivityIndicator,
+} from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/stores/authStore';
+import { theme } from '@/constants/theme';
+
+const EXIT_REASONS = [
+  { value: 'room', label: 'Oda kullanımı' },
+  { value: 'cleaning', label: 'Temizlik' },
+  { value: 'kitchen', label: 'Mutfak' },
+  { value: 'other', label: 'Diğer' },
+] as const;
+
+type Product = { id: string; name: string; unit: string | null; current_stock: number | null };
+type ExitItem = { productId: string; name: string; currentStock: number; quantity: string; unit: string };
+
+export default function StaffStockExitScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ productId?: string }>();
+  const { staff } = useAuthStore();
+
+  const [products, setProducts] = useState<Product[]>([]);
+  const [items, setItems] = useState<ExitItem[]>([]);
+  const [reason, setReason] = useState<(typeof EXIT_REASONS)[number]['value'] | ''>('');
+  const [notes, setNotes] = useState('');
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    supabase
+      .from('stock_products')
+      .select('id, name, unit, current_stock')
+      .order('name')
+      .then(({ data }) => setProducts((data ?? []) as Product[]));
+  }, []);
+
+  useEffect(() => {
+    const id = params.productId;
+    if (!id) return;
+    if (items.some((i) => i.productId === id)) {
+      router.setParams({ productId: undefined });
+      return;
+    }
+
+    const fromList = products.find((p) => p.id === id);
+    if (fromList) {
+      addProduct(fromList);
+      router.setParams({ productId: undefined });
+      return;
+    }
+
+    supabase
+      .from('stock_products')
+      .select('id, name, unit, current_stock')
+      .eq('id', id)
+      .single()
+      .then(({ data }) => {
+        if (data) addProduct(data as Product);
+        router.setParams({ productId: undefined });
+      });
+  }, [params.productId, products, items, router]);
+
+  const addProduct = (p: Product) => {
+    const cur = p.current_stock ?? 0;
+    if (cur <= 0) {
+      Alert.alert('Stok yok', 'Bu üründe stok bulunmuyor.');
+      return;
+    }
+    if (items.some((i) => i.productId === p.id)) return;
+    setItems((prev) => [
+      ...prev,
+      { productId: p.id, name: p.name, currentStock: cur, quantity: '', unit: p.unit ?? 'adet' },
+    ]);
+    setSearch('');
+  };
+
+  const removeItem = (productId: string) => setItems((prev) => prev.filter((i) => i.productId !== productId));
+
+  const submit = async () => {
+    if (!staff?.id) return Alert.alert('Hata', 'Oturum gerekli.');
+    if (!reason) return Alert.alert('Eksik', 'Çıkış nedenini seçin.');
+
+    const valid = items
+      .map((i) => ({ ...i, q: parseInt(i.quantity, 10) }))
+      .filter((i) => !isNaN(i.q) && i.q > 0 && i.q <= i.currentStock);
+
+    if (valid.length === 0) return Alert.alert('Eksik', 'En az bir ürün için geçerli çıkış miktarı girin.');
+
+    setLoading(true);
+    try {
+      const reasonLabel = EXIT_REASONS.find((r) => r.value === reason)?.label ?? reason;
+      const movementNotes = notes.trim() ? `${reasonLabel}: ${notes.trim()}` : reasonLabel;
+
+      for (const i of valid) {
+        const { error } = await supabase.from('stock_movements').insert({
+          product_id: i.productId,
+          movement_type: 'out',
+          quantity: i.q,
+          staff_id: staff.id,
+          notes: movementNotes,
+          status: 'pending',
+        });
+        if (error) throw error;
+      }
+
+      Alert.alert('Kaydedildi', 'Stok çıkışı admin onayından sonra işlenecek.', () => router.back());
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'İşlem başarısız.');
+    }
+    setLoading(false);
+  };
+
+  const filtered = products.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <View style={styles.card}>
+        <TouchableOpacity
+          style={styles.primaryBtn}
+          onPress={() => router.push({ pathname: '/staff/stock/scan', params: { returnTo: 'exit' } })}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="barcode-outline" size={22} color="#fff" />
+          <Text style={styles.primaryBtnText}>📷 Barkod Okut</Text>
+        </TouchableOpacity>
+
+        <Text style={styles.label}>Ürün ara</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Ürün adı yazın..."
+          placeholderTextColor={theme.colors.textMuted}
+          value={search}
+          onChangeText={setSearch}
+        />
+        {search.length >= 2 && (
+          <View style={styles.searchList}>
+            {filtered.slice(0, 10).map((p) => (
+              <TouchableOpacity key={p.id} style={styles.searchItem} onPress={() => addProduct(p)} activeOpacity={0.8}>
+                <Text style={styles.searchItemName}>{p.name}</Text>
+                <Text style={styles.searchItemStock}>Stok: {p.current_stock ?? 0} {p.unit ?? 'adet'}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+      </View>
+
+      {items.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>📋 Çıkış yapılacak ürünler</Text>
+          {items.map((i) => (
+            <View key={i.productId} style={styles.row}>
+              <View style={styles.rowLeft}>
+                <Text style={styles.rowName}>{i.name}</Text>
+                <Text style={styles.rowSub}>Stok: {i.currentStock} {i.unit}</Text>
+                <View style={styles.qtyRow}>
+                  <Text style={styles.qtyLabel}>Çıkış:</Text>
+                  <TextInput
+                    style={styles.qtyInput}
+                    value={i.quantity}
+                    onChangeText={(v) => setItems((prev) => prev.map((x) => (x.productId === i.productId ? { ...x, quantity: v } : x)))}
+                    placeholder="0"
+                    placeholderTextColor={theme.colors.textMuted}
+                    keyboardType="numeric"
+                  />
+                  <Text style={styles.qtyUnit}>{i.unit}</Text>
+                </View>
+              </View>
+              <TouchableOpacity onPress={() => removeItem(i.productId)} hitSlop={12} style={styles.removeBtn}>
+                <Ionicons name="trash-outline" size={22} color={theme.colors.error} />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {items.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>📝 Çıkış nedeni</Text>
+          {EXIT_REASONS.map((r) => (
+            <TouchableOpacity
+              key={r.value}
+              style={[styles.reasonRow, reason === r.value && styles.reasonRowSelected]}
+              onPress={() => setReason(r.value)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={reason === r.value ? 'radio-button-on' : 'radio-button-off'}
+                size={22}
+                color={reason === r.value ? theme.colors.primary : theme.colors.textMuted}
+              />
+              <Text style={styles.reasonLabel}>{r.label}</Text>
+            </TouchableOpacity>
+          ))}
+
+          <Text style={[styles.label, { marginTop: 12 }]}>Not (isteğe bağlı)</Text>
+          <TextInput
+            style={[styles.input, styles.textArea]}
+            placeholder="Açıklama..."
+            placeholderTextColor={theme.colors.textMuted}
+            value={notes}
+            onChangeText={setNotes}
+            multiline
+          />
+
+          <TouchableOpacity
+            style={[styles.submitBtn, loading && styles.submitBtnDisabled]}
+            onPress={submit}
+            disabled={loading}
+            activeOpacity={0.8}
+          >
+            {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.submitBtnText}>💾 Çıkışı Tamamla</Text>}
+          </TouchableOpacity>
+        </View>
+      )}
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.colors.backgroundSecondary },
+  content: { padding: 16, paddingBottom: 24 },
+  card: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+  },
+  primaryBtn: {
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.md,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  label: { fontSize: 13, fontWeight: '700', color: theme.colors.textSecondary, marginBottom: 8 },
+  input: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    padding: 12,
+    fontSize: 14,
+    color: theme.colors.text,
+    backgroundColor: theme.colors.backgroundSecondary,
+  },
+  textArea: { minHeight: 72, textAlignVertical: 'top' },
+  searchList: { marginTop: 10, borderWidth: 1, borderColor: theme.colors.borderLight, borderRadius: theme.radius.md, overflow: 'hidden' },
+  searchItem: { paddingVertical: 12, paddingHorizontal: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.borderLight },
+  searchItemName: { fontSize: 15, fontWeight: '600', color: theme.colors.text },
+  searchItemStock: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
+  sectionTitle: { fontSize: 14, fontWeight: '800', color: theme.colors.text, marginBottom: 10 },
+  row: { flexDirection: 'row', gap: 12, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.borderLight },
+  rowLeft: { flex: 1, minWidth: 0 },
+  rowName: { fontSize: 15, fontWeight: '700', color: theme.colors.text },
+  rowSub: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
+  qtyRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
+  qtyLabel: { fontSize: 13, color: theme.colors.textMuted },
+  qtyInput: {
+    minWidth: 70,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    textAlign: 'center',
+    color: theme.colors.text,
+    backgroundColor: theme.colors.surface,
+  },
+  qtyUnit: { fontSize: 13, color: theme.colors.textMuted },
+  removeBtn: { padding: 6, justifyContent: 'center' },
+  reasonRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 6, borderRadius: theme.radius.md },
+  reasonRowSelected: { backgroundColor: `${theme.colors.primary}14` },
+  reasonLabel: { fontSize: 14, color: theme.colors.text },
+  submitBtn: {
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.md,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  submitBtnDisabled: { opacity: 0.6 },
+  submitBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+});
+

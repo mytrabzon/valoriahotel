@@ -7,6 +7,7 @@ import type { BulkGuestTarget, BulkStaffTarget, BulkCategory } from '@/lib/notif
 import { log } from '@/lib/logger';
 
 const EDGE_FN_PUSH = 'send-expo-push';
+const EDGE_FN_NOTIFY_ADMINS = 'notify-admins';
 
 /** Push token’ları olan hedeflere Expo push gönderir (sessiz hata). */
 async function sendExpoPushToRecipients(params: {
@@ -60,15 +61,28 @@ export async function sendNotification(params: SendNotificationParams): Promise<
       category: category ?? 'bulk',
       data: data ?? {},
       created_by: createdByStaffId ?? null,
-      sent_via: 'in_app',
+      sent_via: 'both',
       sent_at: new Date().toISOString(),
     })
     .select('id')
     .single();
 
   if (error) return { error: error.message };
-  if (guestId) sendExpoPushToRecipients({ guestIds: [guestId], title, body, data }).catch(() => {});
-  if (staffId) sendExpoPushToRecipients({ staffIds: [staffId], title, body, data }).catch(() => {});
+  const staffIds = staffId ? [typeof staffId === 'string' ? staffId : String(staffId)] : [];
+  const guestIds = guestId ? [typeof guestId === 'string' ? guestId : String(guestId)] : [];
+  if (guestIds.length > 0 || staffIds.length > 0) {
+    try {
+      await sendExpoPushToRecipients({
+        guestIds: guestIds.length ? guestIds : undefined,
+        staffIds: staffIds.length ? staffIds : undefined,
+        title,
+        body,
+        data,
+      });
+    } catch (e) {
+      log.warn('notificationService', 'push after sendNotification', e);
+    }
+  }
   return { id: row?.id };
 }
 
@@ -143,10 +157,12 @@ export async function sendBulkToGuests(params: {
 /** Personele toplu bildirim (departman/rol filtresi) */
 export async function sendBulkToStaff(params: {
   target: BulkStaffTarget;
+  title?: string;
   body: string;
   createdByStaffId: string;
 }): Promise<{ count: number; error?: string }> {
-  const { target, body, createdByStaffId } = params;
+  const { target, title: titleParam, body, createdByStaffId } = params;
+  const title = (titleParam && titleParam.trim()) || 'Toplu Duyuru';
 
   let query = supabase.from('staff').select('id').eq('is_active', true);
 
@@ -168,7 +184,7 @@ export async function sendBulkToStaff(params: {
   const rows = list.map((s: { id: string }) => ({
     guest_id: null,
     staff_id: s.id,
-    title: 'Toplu Duyuru',
+    title,
     body,
     category: 'bulk',
     notification_type: 'bulk_staff',
@@ -183,11 +199,36 @@ export async function sendBulkToStaff(params: {
   const staffIds = list.map((s: { id: string }) => s.id);
   sendExpoPushToRecipients({
     staffIds,
-    title: 'Toplu Duyuru',
+    title,
     body,
     data: { screen: 'notifications' },
   }).catch(() => {});
   return { count: rows.length };
+}
+
+/** Tüm admin hesaplarına (açık olan telefona) push bildirimi gönder. Panel bildirimleri için kullanın. */
+export async function notifyAdmins(params: {
+  title: string;
+  body?: string | null;
+  data?: Record<string, unknown>;
+}): Promise<{ sent?: number; failed?: number; error?: string }> {
+  const { title, body, data } = params;
+  if (!title?.trim()) return { error: 'title gerekli' };
+  try {
+    const { data: result, error } = await supabase.functions.invoke(EDGE_FN_NOTIFY_ADMINS, {
+      body: { title: title.trim(), body: body ?? null, data: data ?? {} },
+    });
+    if (error) {
+      log.warn('notificationService', 'notifyAdmins', error);
+      return { error: error.message };
+    }
+    const r = result as { sent?: number; failed?: number } | null;
+    if (r?.sent != null) log.info('notificationService', 'admin push', { sent: r.sent, failed: r.failed ?? 0 });
+    return { sent: r?.sent, failed: r?.failed };
+  } catch (e) {
+    log.warn('notificationService', 'notifyAdmins exception', e);
+    return { error: (e as Error).message };
+  }
 }
 
 /** Acil durum: tüm checked_in misafirlere gönder */

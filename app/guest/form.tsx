@@ -13,6 +13,7 @@ import {
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
+import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
 import { supabase } from '@/lib/supabase';
 
 type IdType = 'tc' | 'passport' | 'other';
@@ -21,6 +22,7 @@ export default function GuestFormScreen() {
   const { t, i18n } = useTranslation();
   const router = useRouter();
   const { lang, roomId, setStep, setGuestId } = useGuestFlowStore();
+  const { setAppToken } = useGuestMessagingStore();
   const [fullName, setFullName] = useState('');
   const [idNumber, setIdNumber] = useState('');
   const [idType, setIdType] = useState<IdType>('tc');
@@ -62,7 +64,11 @@ export default function GuestFormScreen() {
         .single();
 
       if (error) throw error;
-      if (guest) setGuestId(guest.id);
+      if (guest) {
+        setGuestId(guest.id);
+        const { data: token } = await supabase.rpc('get_guest_app_token', { p_guest_id: guest.id });
+        if (token) await setAppToken(token);
+      }
       setStep('verify');
       router.replace('/guest/verify');
     } catch (e: unknown) {

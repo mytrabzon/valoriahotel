@@ -8,13 +8,18 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
+import { useCustomerRoomStore } from '@/stores/customerRoomStore';
+import { linkGuestToRoom } from '@/lib/linkGuestToRoom';
 import { log } from '@/lib/logger';
 
 export default function AuthPasswordScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const params = useLocalSearchParams<{ signUp?: string }>();
   const isSignUp = params.signUp === '1';
@@ -26,15 +31,15 @@ export default function AuthPasswordScreen() {
   const submit = async () => {
     const e = email.trim().toLowerCase();
     if (!e) {
-      Alert.alert('Hata', 'E-posta girin.');
+      Alert.alert(t('error'), t('enterEmail'));
       return;
     }
     if (!password || password.length < 6) {
-      Alert.alert('Hata', 'Şifre en az 6 karakter olmalıdır.');
+      Alert.alert(t('error'), t('passwordMinLength'));
       return;
     }
     if (isSignUp && password !== confirmPassword) {
-      Alert.alert('Hata', 'Şifreler eşleşmiyor.');
+      Alert.alert(t('error'), t('passwordsDontMatch'));
       return;
     }
     setLoading(true);
@@ -43,24 +48,32 @@ export default function AuthPasswordScreen() {
         const { error } = await supabase.auth.signUp({ email: e, password });
         if (error) throw error;
         Alert.alert(
-          'Kayıt başarılı',
-          'E-posta adresinize gelen onay linkine tıklayın. Ardından giriş yapabilirsiniz.',
-          [{ text: 'Tamam', onPress: () => router.replace('/auth') }]
+          t('signUpSuccess'),
+          t('signUpSuccessMessage'),
+          [{ text: t('ok'), onPress: () => router.replace('/auth') }]
         );
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({ email: e, password });
         if (error) throw error;
         if (data.user) {
           await useAuthStore.getState().loadSession();
-          const { staff } = useAuthStore.getState();
-          if (staff) router.replace('/admin');
-          else router.replace('/customer');
+          const { user, staff } = useAuthStore.getState();
+          const { pendingRoom, clearPendingRoom } = useCustomerRoomStore.getState();
+          if (staff) {
+            router.replace('/');
+          } else {
+            if (pendingRoom && user?.email) {
+              await linkGuestToRoom(user.email, pendingRoom.roomId, user.user_metadata?.full_name);
+              clearPendingRoom();
+            }
+            router.replace('/');
+          }
         }
       }
     } catch (err: unknown) {
-      const msg = (err as Error)?.message ?? (isSignUp ? 'Kayıt yapılamadı.' : 'Giriş yapılamadı.');
+      const msg = (err as Error)?.message ?? (isSignUp ? t('signUpFailed') : t('signInFailed'));
       log.error('AuthPassword', isSignUp ? 'signUp' : 'signIn', err, msg);
-      Alert.alert('Hata', msg);
+      Alert.alert(t('error'), msg);
     }
     setLoading(false);
   };
@@ -71,45 +84,55 @@ export default function AuthPasswordScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={60}
     >
-      <Text style={styles.title}>{isSignUp ? 'Kayıt ol' : 'Şifre ile giriş'}</Text>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.title}>{isSignUp ? t('signUp') : t('loginWithPassword')}</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="E-posta"
-        placeholderTextColor="rgba(255,255,255,0.5)"
-        value={email}
-        onChangeText={setEmail}
-        keyboardType="email-address"
-        autoCapitalize="none"
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Şifre (min. 6 karakter)"
-        placeholderTextColor="rgba(255,255,255,0.5)"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-      />
-      {isSignUp && (
         <TextInput
           style={styles.input}
-          placeholder="Şifre tekrar"
-          placeholderTextColor="rgba(255,255,255,0.5)"
-          value={confirmPassword}
-          onChangeText={setConfirmPassword}
-          secureTextEntry
+          placeholder={t('emailPlaceholder')}
+          placeholderTextColor="#9ca3af"
+          value={email}
+          onChangeText={setEmail}
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={!loading}
         />
-      )}
+        <TextInput
+          style={styles.input}
+          placeholder={t('passwordPlaceholder')}
+          placeholderTextColor="#9ca3af"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          editable={!loading}
+        />
+        {isSignUp && (
+          <TextInput
+            style={styles.input}
+            placeholder={t('passwordConfirmPlaceholder')}
+            placeholderTextColor="#9ca3af"
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry
+            editable={!loading}
+          />
+        )}
 
-      <TouchableOpacity style={styles.button} onPress={submit} disabled={loading}>
-        <Text style={styles.buttonText}>
-          {loading ? 'İşleniyor...' : isSignUp ? 'Kayıt ol' : 'Giriş yap'}
-        </Text>
-      </TouchableOpacity>
+        <TouchableOpacity style={styles.button} onPress={submit} disabled={loading}>
+          <Text style={styles.buttonText}>
+            {loading ? t('processing') : isSignUp ? t('signUp') : t('signIn')}
+          </Text>
+        </TouchableOpacity>
 
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Text style={styles.backBtnText}>← Geri</Text>
-      </TouchableOpacity>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Text style={styles.backBtnText}>← {t('backBtn')}</Text>
+        </TouchableOpacity>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -117,26 +140,31 @@ export default function AuthPasswordScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a365d',
+    backgroundColor: '#ffffff',
+  },
+  scrollContent: {
     padding: 24,
+    flexGrow: 1,
     justifyContent: 'center',
   },
-  title: { fontSize: 24, fontWeight: '700', color: '#fff', textAlign: 'center', marginBottom: 24 },
+  title: { fontSize: 24, fontWeight: '700', color: '#1a1d21', textAlign: 'center', marginBottom: 24 },
   input: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: '#f8f9fa',
     borderRadius: 12,
     padding: 16,
-    color: '#fff',
+    color: '#1a1d21',
     fontSize: 16,
     marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
   },
   button: {
-    backgroundColor: '#ed8936',
+    backgroundColor: '#b8860b',
     paddingVertical: 16,
     borderRadius: 12,
     marginTop: 12,
   },
-  buttonText: { color: '#fff', fontSize: 18, fontWeight: '600', textAlign: 'center' },
+  buttonText: { color: '#ffffff', fontSize: 18, fontWeight: '600', textAlign: 'center' },
   backBtn: { marginTop: 24, alignSelf: 'center' },
-  backBtnText: { color: 'rgba(255,255,255,0.8)', fontSize: 16 },
+  backBtnText: { color: '#6c757d', fontSize: 16 },
 });
