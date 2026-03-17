@@ -11,7 +11,6 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Alert } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import { adminTheme } from '@/constants/adminTheme';
 import { AdminCard } from '@/components/admin';
