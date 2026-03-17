@@ -1,7 +1,9 @@
 {
-  "buildCommand": "npx expo export -p web",
+  "version": 2,
+  "buildCommand": "npm run vercel-build",
   "outputDirectory": "dist",
   "framework": null,
+  "installCommand": "npm install",
   "rewrites": [
     {
       "source": "/:path*",

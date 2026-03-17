@@ -13,15 +13,13 @@ import {
   ScrollView,
   ActivityIndicator,
   useWindowDimensions,
-  Platform,
   Keyboard,
   TouchableWithoutFeedback,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
-import ValoriaMapView from '@/components/ValoriaMapView';
-import CustomerMapNative from '@/components/CustomerMapNative';
+import CustomerMapPicker from '@/components/CustomerMapPicker';
 import {
   fetchPoisHybrid,
   getPoiIcon,
@@ -162,8 +160,7 @@ export default function CustomerMapScreen() {
       {/* Boşluğa (haritaya) tıklanınca klavye kapansın ve öneriler kaybolsun */}
       <TouchableWithoutFeedback onPress={dismissSearchAndSuggestions} accessible={false}>
         <View style={[styles.mapContainer, { width: winWidth, height: layoutHeight }]} pointerEvents="box-none">
-          {Platform.OS === 'ios' ? (
-          <CustomerMapNative
+          <CustomerMapPicker
             initialLat={HOTEL_LAT}
             initialLng={HOTEL_LON}
             initialZoom={15}
@@ -174,19 +171,6 @@ export default function CustomerMapScreen() {
             onRegionChangeComplete={handleRegionChange}
             style={{ width: winWidth, height: Math.max(300, layoutHeight) }}
           />
-        ) : (
-          <ValoriaMapView
-            latitude={HOTEL_LAT}
-            longitude={HOTEL_LON}
-            zoom={15}
-            pois={filteredPois}
-            routeCoordinates={routeCoordinates}
-            hotelMarker={{ lat: HOTEL_LAT, lng: HOTEL_LON, title: 'Valoria Hotel' }}
-            onPoiPress={showRouteToPoi}
-            onRegionChange={handleRegionChange}
-            style={{ width: winWidth, height: Math.max(300, layoutHeight) }}
-          />
-        )}
         </View>
       </TouchableWithoutFeedback>
 
