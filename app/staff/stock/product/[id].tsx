@@ -114,8 +114,7 @@ export default function StaffStockProductDetailScreen() {
   }
 
   const cur = product.current_stock ?? 0;
-  const min = product.min_stock ?? 0;
-  const isLow = min > 0 && cur <= min;
+  const isLow = cur <= 3;
   const priceStr = product.purchase_price != null
     ? `${Number(product.purchase_price).toFixed(2)} TL`
     : product.selling_price != null

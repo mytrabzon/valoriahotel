@@ -7,9 +7,9 @@ import {
   Linking,
   Platform,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
 import { supabase } from '@/lib/supabase';
@@ -27,11 +27,95 @@ const COLORS = {
 const DEFAULT_GOOGLE_PLAY = 'https://play.google.com/store/apps';
 const DEFAULT_APP_STORE = 'https://apps.apple.com';
 
+/** Sözleşme doldurulurken seçilen dile göre success + mağaza metinleri */
+const SUCCESS_TEXTS: Record<string, { title: string; subtitle: string; downloadApp: string; downloadAppSubtitle: string; buttonDone: string; googlePlay: string; appStore: string; android: string; iphoneIpad: string }> = {
+  tr: {
+    title: 'Kayıt Tamamlandı',
+    subtitle: 'Seçilen sözleşmeniz onaylandı. Resepsiyona bekleyebilirsiniz.',
+    downloadApp: 'Uygulamayı indir',
+    downloadAppSubtitle: 'Otele özel uygulama ile iletişim ve hizmetlere kolayca ulaşın.',
+    buttonDone: 'Tamam',
+    googlePlay: 'Google Play',
+    appStore: 'App Store',
+    android: 'Android',
+    iphoneIpad: 'iPhone / iPad',
+  },
+  en: {
+    title: 'Registration Complete',
+    subtitle: 'Your selected agreement has been confirmed. You may proceed to reception.',
+    downloadApp: 'Download the app',
+    downloadAppSubtitle: 'Easily reach communication and services with the hotel app.',
+    buttonDone: 'OK',
+    googlePlay: 'Google Play',
+    appStore: 'App Store',
+    android: 'Android',
+    iphoneIpad: 'iPhone / iPad',
+  },
+  ar: {
+    title: 'اكتمل التسجيل',
+    subtitle: 'تم تأكيد الاتفاقية المختارة. يمكنك التوجه إلى الاستقبال.',
+    downloadApp: 'تحميل التطبيق',
+    downloadAppSubtitle: 'تواصل مع الفندق وخدماته بسهولة عبر التطبيق.',
+    buttonDone: 'موافق',
+    googlePlay: 'Google Play',
+    appStore: 'App Store',
+    android: 'Android',
+    iphoneIpad: 'iPhone / iPad',
+  },
+  de: {
+    title: 'Registrierung abgeschlossen',
+    subtitle: 'Ihre ausgewählte Vereinbarung wurde bestätigt. Sie können zur Rezeption gehen.',
+    downloadApp: 'App herunterladen',
+    downloadAppSubtitle: 'Kommunikation und Services einfach mit der Hotel-App nutzen.',
+    buttonDone: 'OK',
+    googlePlay: 'Google Play',
+    appStore: 'App Store',
+    android: 'Android',
+    iphoneIpad: 'iPhone / iPad',
+  },
+  fr: {
+    title: 'Inscription terminée',
+    subtitle: 'Votre contrat sélectionné a été confirmé. Vous pouvez vous présenter à la réception.',
+    downloadApp: 'Télécharger l\'application',
+    downloadAppSubtitle: 'Accédez facilement à la communication et aux services avec l\'app de l\'hôtel.',
+    buttonDone: 'OK',
+    googlePlay: 'Google Play',
+    appStore: 'App Store',
+    android: 'Android',
+    iphoneIpad: 'iPhone / iPad',
+  },
+  ru: {
+    title: 'Регистрация завершена',
+    subtitle: 'Ваше выбранное соглашение подтверждено. Можете пройти на стойку регистрации.',
+    downloadApp: 'Скачать приложение',
+    downloadAppSubtitle: 'Связь и услуги отеля — легко через приложение.',
+    buttonDone: 'OK',
+    googlePlay: 'Google Play',
+    appStore: 'App Store',
+    android: 'Android',
+    iphoneIpad: 'iPhone / iPad',
+  },
+  es: {
+    title: 'Registro completado',
+    subtitle: 'Tu acuerdo seleccionado ha sido confirmado. Puedes dirigirte a recepción.',
+    downloadApp: 'Descargar la aplicación',
+    downloadAppSubtitle: 'Comunicación y servicios del hotel de forma fácil con la app.',
+    buttonDone: 'OK',
+    googlePlay: 'Google Play',
+    appStore: 'App Store',
+    android: 'Android',
+    iphoneIpad: 'iPhone / iPad',
+  },
+};
+
+const appLogo = require('../../assets/icon.png');
+
 export default function SuccessScreen() {
-  const { t } = useTranslation();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { reset } = useGuestFlowStore();
+  const { reset, contractLang } = useGuestFlowStore();
+  const lang = (contractLang ?? 'tr').toLowerCase();
+  const texts = SUCCESS_TEXTS[lang] ?? SUCCESS_TEXTS.tr;
 
   const [googlePlayUrl, setGooglePlayUrl] = useState<string>('');
   const [appStoreUrl, setAppStoreUrl] = useState<string>('');
@@ -69,17 +153,18 @@ export default function SuccessScreen() {
       <View style={styles.iconWrap}>
         <Text style={styles.icon}>✓</Text>
       </View>
-      <Text style={styles.title}>{t('success')}</Text>
-      <Text style={styles.subtitle}>{t('successDesc')}</Text>
+      <Text style={styles.title}>{texts.title}</Text>
+      <Text style={styles.subtitle}>{texts.subtitle}</Text>
 
       {loading ? (
         <ActivityIndicator size="small" color={COLORS.accent} style={styles.loader} />
       ) : (
         <View style={styles.storeSection}>
-          <Text style={styles.storeSectionTitle}>Uygulamayı indir</Text>
-          <Text style={styles.storeSectionSubtitle}>
-            Otele özel uygulama ile iletişim ve hizmetlere kolayca ulaşın.
-          </Text>
+          <View style={styles.logoCard}>
+            <Image source={appLogo} style={styles.logoImage} resizeMode="contain" />
+          </View>
+          <Text style={styles.storeSectionTitle}>{texts.downloadApp}</Text>
+          <Text style={styles.storeSectionSubtitle}>{texts.downloadAppSubtitle}</Text>
           <View style={styles.storeCards}>
             <TouchableOpacity
               style={styles.storeCard}
@@ -89,8 +174,8 @@ export default function SuccessScreen() {
               <View style={styles.storeIconWrap}>
                 <Text style={styles.storeIcon}>▶</Text>
               </View>
-              <Text style={styles.storeTitle}>Google Play</Text>
-              <Text style={styles.storeSubtitle}>Android</Text>
+              <Text style={styles.storeTitle}>{texts.googlePlay}</Text>
+              <Text style={styles.storeSubtitle}>{texts.android}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.storeCard}
@@ -100,15 +185,15 @@ export default function SuccessScreen() {
               <View style={styles.storeIconWrap}>
                 <Text style={styles.storeIcon}>◆</Text>
               </View>
-              <Text style={styles.storeTitle}>App Store</Text>
-              <Text style={styles.storeSubtitle}>iPhone / iPad</Text>
+              <Text style={styles.storeTitle}>{texts.appStore}</Text>
+              <Text style={styles.storeSubtitle}>{texts.iphoneIpad}</Text>
             </TouchableOpacity>
           </View>
         </View>
       )}
 
       <TouchableOpacity style={styles.button} onPress={done} activeOpacity={0.85}>
-        <Text style={styles.buttonText}>Tamam</Text>
+        <Text style={styles.buttonText}>{texts.buttonDone}</Text>
       </TouchableOpacity>
     </View>
   );
@@ -142,6 +227,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   loader: { marginBottom: 24 },
+  logoCard: {
+    width: '100%',
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  logoImage: {
+    width: 80,
+    height: 80,
+  },
   storeSection: {
     width: '100%',
     marginBottom: 32,

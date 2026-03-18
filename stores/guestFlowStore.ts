@@ -10,10 +10,13 @@ interface GuestFlowState {
   roomNumber: string | null;
   lang: LangCode;
   guestId: string | null;
+  /** Sözleşme doldurulurken seçilen dil (success sayfasında metinler bu dilde gösterilir) */
+  contractLang: string | null;
   setStep: (s: Step) => void;
   setQR: (token: string, roomId: string, roomNumber: string) => void;
   setLang: (l: LangCode) => void;
   setGuestId: (id: string | null) => void;
+  setContractLang: (l: string | null) => void;
   reset: () => void;
 }
 
@@ -24,6 +27,7 @@ const initialState = {
   roomNumber: null as string | null,
   lang: 'tr' as LangCode,
   guestId: null as string | null,
+  contractLang: null as string | null,
 };
 
 export const useGuestFlowStore = create<GuestFlowState>((set) => ({
@@ -32,5 +36,6 @@ export const useGuestFlowStore = create<GuestFlowState>((set) => ({
   setQR: (qrToken, roomId, roomNumber) => set({ qrToken, roomId, roomNumber }),
   setLang: (lang) => set({ lang }),
   setGuestId: (guestId) => set({ guestId }),
+  setContractLang: (contractLang) => set({ contractLang }),
   reset: () => set(initialState),
 }));

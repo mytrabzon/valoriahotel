@@ -320,7 +320,7 @@ export default function StaffStockEntryScreen() {
   // Ürün seçilmiş: miktar, fotoğraf, not, gönder
   const cur = product.current_stock ?? 0;
   const min = product.min_stock ?? 0;
-  const isLow = min > 0 && cur <= min;
+  const isLow = cur <= 3;
   /** Barkod okutuldu ve bu barkoda kayıtlı ürün bulundu → "Bu ürün var, stok sayısı artır" vurgusu */
   const isExistingProductFromBarcode = !!barcodeParam && !!product;
 

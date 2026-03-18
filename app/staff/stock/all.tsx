@@ -47,6 +47,7 @@ type MovementRow = {
   quantity: number;
   created_at: string;
   status: string;
+  photo_proof: string | null;
   staff: { full_name: string | null } | null;
 };
 
@@ -60,21 +61,35 @@ export default function StaffAllStocksScreen() {
   const [stockFilter, setStockFilter] = useState<StockFilter>('all');
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  /** Ürün resmi yoksa son hareketin photo_proof ile göster */
+  const [lastPhotoByProductId, setLastPhotoByProductId] = useState<Record<string, string>>({});
 
   const load = async () => {
-    const [prodRes, movRes] = await Promise.all([
+    const [prodRes, movRes, photoRes] = await Promise.all([
       supabase
         .from('stock_products')
         .select('id, name, unit, current_stock, min_stock, image_url, created_at, category:stock_categories(name)')
         .order('name'),
       supabase
         .from('stock_movements')
-        .select('id, product_id, movement_type, quantity, created_at, status, staff:staff_id(full_name)')
+        .select('id, product_id, movement_type, quantity, created_at, status, photo_proof, staff:staff_id(full_name)')
         .order('created_at', { ascending: false })
         .limit(300),
+      supabase
+        .from('stock_movements')
+        .select('product_id, photo_proof')
+        .not('photo_proof', 'is', null)
+        .order('created_at', { ascending: false }),
     ]);
     setProducts((prodRes.data ?? []) as Product[]);
     setMovements((movRes.data ?? []) as MovementRow[]);
+    const byProduct: Record<string, string> = {};
+    for (const m of photoRes.data ?? []) {
+      const pid = (m as { product_id: string }).product_id;
+      const url = (m as { photo_proof: string }).photo_proof;
+      if (pid && url && !(pid in byProduct)) byProduct[pid] = url;
+    }
+    setLastPhotoByProductId(byProduct);
     setLoading(false);
     setRefreshing(false);
   };
@@ -104,11 +119,7 @@ export default function StaffAllStocksScreen() {
         list = list.filter((p) => (p.current_stock ?? 0) > 0);
         break;
       case 'critical': {
-        list = list.filter((p) => {
-          const min = p.min_stock ?? 0;
-          const cur = p.current_stock ?? 0;
-          return min > 0 && cur <= min;
-        });
+        list = list.filter((p) => (p.current_stock ?? 0) <= 3);
         break;
       }
       case 'empty':
@@ -178,9 +189,9 @@ export default function StaffAllStocksScreen() {
             {filtered.map((p) => {
               const cur = p.current_stock ?? 0;
               const min = p.min_stock ?? 0;
-              const isLow = min > 0 && cur <= min;
+              const isLow = cur <= 3;
               const lastMov = lastMovementByProductId[p.id];
-              const previewUrl = p.image_url ?? null;
+              const previewUrl = p.image_url ?? lastPhotoByProductId[p.id] ?? null;
               return (
                 <TouchableOpacity
                   key={p.id}

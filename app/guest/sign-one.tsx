@@ -75,7 +75,7 @@ export default function GuestSignOneScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ token?: string; lang?: string; t?: string; l?: string }>();
-  const { qrToken, roomId, setQR, setStep, setGuestId } = useGuestFlowStore();
+  const { qrToken, roomId, setQR, setStep, setGuestId, setContractLang: setStoreContractLang } = useGuestFlowStore();
   const { setAppToken } = useGuestMessagingStore();
 
   const token = (params.token ?? params.t ?? qrToken ?? '').trim();
@@ -313,6 +313,7 @@ export default function GuestSignOneScreen() {
         });
       }
 
+      setStoreContractLang(contractLang);
       setStep('done');
       router.replace('/guest/success');
     } catch (e: unknown) {

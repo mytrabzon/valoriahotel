@@ -171,7 +171,7 @@ export default function StaffStockListScreen() {
           {filtered.map((p) => {
             const cur = p.current_stock ?? 0;
             const min = p.min_stock ?? 0;
-            const isLow = min > 0 && cur <= min;
+            const isLow = cur <= 3;
             const addedBy = p.creator?.full_name ?? '—';
             const addedAt = p.created_at ? formatShortDateTime(p.created_at) : '—';
             const previewImageUrl = p.image_url ?? lastPhotoByProductId[p.id] ?? null;
@@ -321,37 +321,37 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.backgroundSecondary },
   topActions: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
     padding: 10,
-    gap: 8,
+    gap: 6,
     backgroundColor: theme.colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.borderLight,
   },
   smallBtn: {
     flex: 1,
-    minWidth: '30%',
+    minWidth: 0,
     backgroundColor: theme.colors.primary,
     paddingVertical: 10,
     borderRadius: theme.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 2,
   },
-  smallBtnText: { color: '#fff', fontWeight: '700', fontSize: 11 },
+  smallBtnText: { color: '#fff', fontWeight: '700', fontSize: 10 },
   allStocksBtn: {
     flex: 1,
-    minWidth: '48%',
+    minWidth: 0,
     backgroundColor: theme.colors.surface,
     paddingVertical: 10,
     borderRadius: theme.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 2,
     borderWidth: 2,
     borderColor: theme.colors.primary,
   },
-  allStocksBtnText: { color: theme.colors.primary, fontWeight: '700', fontSize: 11 },
+  allStocksBtnText: { color: theme.colors.primary, fontWeight: '700', fontSize: 10 },
   sonIslemlerBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -369,7 +369,7 @@ const styles = StyleSheet.create({
   searchWrap: { paddingHorizontal: 16, paddingVertical: 12, backgroundColor: theme.colors.surface, borderBottomWidth: 1, borderBottomColor: theme.colors.borderLight, flexDirection: 'row', alignItems: 'center', gap: 10 },
   search: { flex: 1, backgroundColor: theme.colors.backgroundSecondary, borderRadius: theme.radius.md, paddingVertical: 10, paddingHorizontal: 12, fontSize: 15, color: theme.colors.text },
   list: { flex: 1 },
-  listContent: { padding: 16, paddingBottom: 24 },
+  listContent: { padding: 16, paddingBottom: 100 },
   section: { marginBottom: 24 },
   sectionTitle: { fontSize: 15, fontWeight: '800', color: theme.colors.text, marginBottom: 10 },
   productCard: {
