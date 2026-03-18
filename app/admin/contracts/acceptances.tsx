@@ -38,13 +38,23 @@ export default function ContractAcceptances() {
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [assignTarget, setAssignTarget] = useState<Row | null>(null);
   const [assigning, setAssigning] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const { data: list } = await supabase
+    const { data: list, error } = await supabase
       .from('contract_acceptances')
       .select('id, token, room_id, contract_lang, accepted_at, assigned_staff_id, assigned_at')
       .order('accepted_at', { ascending: false })
       .limit(200);
+
+    if (error) {
+      setRows([]);
+      setLoadError(error.message);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+    setLoadError(null);
 
     const roomIds = (list ?? []).map((r) => r.room_id).filter(Boolean) as string[];
     const staffIds = (list ?? []).map((r) => r.assigned_staff_id).filter(Boolean) as string[];
@@ -136,6 +146,12 @@ export default function ContractAcceptances() {
 
   return (
     <View style={styles.container}>
+      {loadError ? (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorBannerText}>Liste yüklenemedi: {loadError}</Text>
+          <Text style={styles.errorBannerSub}>Admin yetkisi ve RLS (contract_acceptances) kontrol edin.</Text>
+        </View>
+      ) : null}
       <Text style={styles.hint}>
         Sözleşme onayı yapan misafirler. Çalışan atayın; atanan çalışan uygulama üzerinden oda ataması yapar. İsterseniz siz de misafir/oda işlemlerine gidebilirsiniz.
       </Text>
@@ -279,4 +295,7 @@ const styles = StyleSheet.create({
   modalSpinner: { marginVertical: 8 },
   modalClose: { marginTop: 12, paddingVertical: 12, alignItems: 'center' },
   modalCloseText: { fontSize: 15, fontWeight: '600', color: '#64748b' },
+  errorBanner: { backgroundColor: '#fef2f2', padding: 12, marginHorizontal: 16, marginTop: 12, borderRadius: 8, borderWidth: 1, borderColor: '#fecaca' },
+  errorBannerText: { fontSize: 14, color: '#b91c1c', fontWeight: '600' },
+  errorBannerSub: { fontSize: 12, color: '#991b1b', marginTop: 4 },
 });

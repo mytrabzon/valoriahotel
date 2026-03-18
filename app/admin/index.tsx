@@ -31,6 +31,7 @@ type Stats = {
   unreadNotifs: number;
   feedTotal: number;
   reportsPending: number;
+  acceptancesUnassigned: number;
 };
 
 type FeedPostRow = {
@@ -154,6 +155,7 @@ export default function AdminDashboard() {
     unreadNotifs: 0,
     feedTotal: 0,
     reportsPending: 0,
+    acceptancesUnassigned: 0,
   });
   const [feedPosts, setFeedPosts] = useState<FeedPostRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -171,6 +173,7 @@ export default function AdminDashboard() {
       feedCountRes,
       feedDataRes,
       reportsPendingRes,
+      acceptancesUnassignedRes,
     ] = await Promise.all([
       supabase.from('rooms').select('*', { count: 'exact', head: true }),
       supabase.from('rooms').select('*', { count: 'exact', head: true }).eq('status', 'occupied'),
@@ -186,6 +189,7 @@ export default function AdminDashboard() {
         .order('created_at', { ascending: false })
         .limit(12),
       supabase.from('feed_post_reports').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+      supabase.from('contract_acceptances').select('id', { count: 'exact', head: true }).is('assigned_staff_id', null),
     ]);
 
     setStats({
@@ -198,6 +202,7 @@ export default function AdminDashboard() {
       unreadNotifs: unreadRes.count ?? 0,
       feedTotal: feedCountRes.count ?? 0,
       reportsPending: reportsPendingRes.count ?? 0,
+      acceptancesUnassigned: acceptancesUnassignedRes.count ?? 0,
     });
     setFeedPosts((feedDataRes.data ?? []) as FeedPostRow[]);
   }, [staff?.id]);
@@ -223,6 +228,7 @@ export default function AdminDashboard() {
     if (itemLabel.includes('Onay bekleyenler')) return stats.stockPending;
     if (itemLabel.includes('Çalışan ekleme')) return stats.staffPending;
     if (itemLabel.includes('Şikayetler')) return stats.reportsPending;
+    if (itemLabel.includes('Sözleşmeler')) return stats.acceptancesUnassigned;
     return undefined;
   };
 

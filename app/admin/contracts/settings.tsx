@@ -13,17 +13,28 @@ import {
   Share,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase, supabaseUrl } from '@/lib/supabase';
 
 const KEYS = {
+  contract_qr_base_url: 'Sözleşme onay sayfası base URL (tek ayar – tüm QR\'lar buraya gider)',
   google_play_url: 'Google Play (Android) uygulama URL',
   app_store_url: 'App Store (iOS) uygulama URL',
-  contract_qr_base_url: 'Sözleşme onay sayfası base URL (QR\'da kullanılacak; boş = Supabase)',
   checkin_qr_base_url: 'Check-in QR base URL (boş = varsayılan)',
 } as const;
 
 const SUPABASE_CONTRACT_PATH = '/functions/v1/public-contract';
 const defaultContractBase = supabaseUrl ? `${supabaseUrl.replace(/\/$/, '')}${SUPABASE_CONTRACT_PATH}` : '';
+
+/** Tek tip QR sözleşme URL'si – Vercel/custom domain sonrası /guest/sign-one olmalı */
+const CONTRACT_SIGN_ONE_PATH = '/guest/sign-one';
+const recommendedContractBase =
+  (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_PUBLIC_CONTRACT_URL
+    ? String(process.env.EXPO_PUBLIC_PUBLIC_CONTRACT_URL).replace(/\/$/, '')
+    : '') ||
+  (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_APP_URL
+    ? `${String(process.env.EXPO_PUBLIC_APP_URL).replace(/\/$/, '')}${CONTRACT_SIGN_ONE_PATH}`
+    : 'https://valoriahotel-el4r.vercel.app/guest/sign-one');
 
 export default function ContractAppSettings() {
   const insets = useSafeAreaInsets();
@@ -66,6 +77,14 @@ export default function ContractAppSettings() {
   const setOne = (key: string, v: string) => setValues((prev) => ({ ...prev, [key]: v }));
 
   const contractBase = (values.contract_qr_base_url || defaultContractBase).replace(/\/$/, '');
+
+  const copyOrShare = async (text: string, label: string) => {
+    try {
+      await Share.share({ message: text, title: label });
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'Paylaşım açılamadı.');
+    }
+  };
 
   const generateLobbyToken = async () => {
     setGeneratingToken(true);
@@ -114,15 +133,28 @@ export default function ContractAppSettings() {
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={insets.top + 56}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-        <Text style={styles.sectionTitle}>Supabase sözleşme sayfası URL'si</Text>
-        <View style={styles.readOnlyBox}>
-          <Text style={styles.readOnlyLabel}>Varsayılan (Supabase Edge Function):</Text>
-          <Text style={styles.readOnlyValue} selectable>{defaultContractBase || '— EXPO_PUBLIC_SUPABASE_URL gerekli'}</Text>
+        <Text style={styles.sectionTitle}>Tek tip QR → Sözleşme onayı (tek ayar)</Text>
+        <View style={styles.recommendedBox}>
+          <Text style={styles.recommendedLabel}>Aşağıdaki ilk alana yapıştırın (Vercel/custom domain siteniz):</Text>
+          <View style={styles.copyRow}>
+            <TextInput
+              style={[styles.recommendedInput, styles.copyInput]}
+              value={recommendedContractBase}
+              editable={false}
+              selectable
+            />
+            <TouchableOpacity
+              style={styles.copyBtn}
+              onPress={() => copyOrShare(recommendedContractBase, 'Sözleşme URL')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="copy-outline" size={22} color="#fff" />
+              <Text style={styles.copyBtnText}>Paylaş / Kopyala</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-        <Text style={styles.hint}>Bu adres tek QR veya oda bazlı QR base adresi olarak kullanılır. Özel domain kullanmak için aşağıdaki base URL alanını doldurun.</Text>
-        <Text style={styles.hint}>Web (Vercel) üzerinden QR ile sözleşme onayı alacaksanız: Sözleşme onay sayfası base URL alanına tam path ile girin (örn. https://valoriahotel-el4r.vercel.app/guest/sign-one). Onaylar otomatik admin ve personel paneline düşer.</Text>
 
-        <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Mağaza linkleri (sözleşme onayı sonrası yönlendirme)</Text>
+        <Text style={[styles.sectionTitle, { marginTop: 16 }]}>Sözleşme onay sayfası base URL</Text>
         {(Object.keys(KEYS) as (keyof typeof KEYS)[]).map((key) => (
           <View key={key} style={styles.field}>
             <Text style={styles.label}>{KEYS[key]}</Text>
@@ -130,7 +162,7 @@ export default function ContractAppSettings() {
               style={styles.input}
               value={values[key] ?? ''}
               onChangeText={(t) => setOne(key, t)}
-              placeholder={key.includes('url') ? 'https://...' : ''}
+              placeholder={key === 'contract_qr_base_url' ? recommendedContractBase : key.includes('url') ? 'https://...' : ''}
               placeholderTextColor="#94a3b8"
               autoCapitalize="none"
               autoCorrect={false}
@@ -151,9 +183,21 @@ export default function ContractAppSettings() {
         {singleQrUrl ? (
           <View style={styles.field}>
             <Text style={styles.label}>Tek QR tam URL (kopyalayıp QR yapın)</Text>
-            <TextInput style={[styles.input, styles.readOnlyInput]} value={singleQrUrl} editable={false} />
+            <View style={styles.copyRow}>
+              <TextInput style={[styles.input, styles.readOnlyInput, styles.copyInput]} value={singleQrUrl} editable={false} selectable />
+              <TouchableOpacity
+                style={styles.copyBtn}
+                onPress={() => copyOrShare(singleQrUrl, 'Tek QR URL')}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="copy-outline" size={22} color="#fff" />
+                <Text style={styles.copyBtnText}>Paylaş / Kopyala</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ) : null}
+
+        <Text style={styles.hint}>Kaydettikten sonra hem "Yeni token oluştur (tek QR URL)" hem oda sözleşme QR’ları bu adresi kullanır. Onaylar Admin → Sözleşme onayları ve Personel uygulamasında görünür.</Text>
 
         <TouchableOpacity style={[styles.saveBtn, saving && styles.saveBtnDisabled]} onPress={save} disabled={saving}>
           {saving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.saveBtnText}>Kaydet</Text>}
@@ -181,6 +225,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   hint: { fontSize: 12, color: '#64748b', marginBottom: 20, lineHeight: 18 },
+  recommendedBox: { marginBottom: 16 },
+  recommendedLabel: { fontSize: 13, fontWeight: '600', color: '#1e293b', marginBottom: 8 },
+  recommendedInput: { backgroundColor: '#f0fdf4', borderWidth: 1, borderColor: '#86efac', borderRadius: 10, padding: 12, fontSize: 14, color: '#166534' },
+  copyRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  copyInput: { flex: 1 },
+  copyBtn: { backgroundColor: '#1a365d', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  copyBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   readOnlyBox: { backgroundColor: '#f1f5f9', padding: 12, borderRadius: 10, marginBottom: 8 },
   readOnlyLabel: { fontSize: 12, color: '#64748b', marginBottom: 4 },
   readOnlyValue: { fontSize: 13, color: '#1e293b', fontFamily: 'monospace' },

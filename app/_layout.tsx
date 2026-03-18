@@ -3,7 +3,7 @@ import i18n, { LANG_STORAGE_KEY, LANGUAGES } from '../i18n';
 import { getDeviceLanguageCode } from '@/lib/deviceLocale';
 import { Stack, useRouter, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AppState, Alert, View, Image, Animated, StyleSheet, Platform, LayoutAnimation } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SplashScreen from 'expo-splash-screen';
@@ -339,29 +339,31 @@ export default function RootLayout() {
   return (
     <ErrorBoundary>
       <SafeAreaProvider>
-      <StatusBar style="auto" />
-      <OfflineBanner />
-      {showSplashLogo ? (
-        <Animated.View style={[styles.splashLogoOverlay, { opacity: splashOpacity }]} pointerEvents="none">
-          <View style={styles.splashLogoBg}>
-            <Image source={splashLogoSource} style={styles.splashLogoImage} resizeMode="contain" />
-          </View>
-        </Animated.View>
-      ) : null}
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="room-select" options={{ headerShown: false }} />
-        <Stack.Screen name="policies" />
-        <Stack.Screen name="legal/[type]" options={{ headerShown: true, title: '' }} />
-        <Stack.Screen name="permissions" options={{ headerShown: true, title: 'İzinler' }} />
-        <Stack.Screen name="auth" options={{ headerShown: false }} />
-        <Stack.Screen name="guest" options={{ headerShown: false }} />
-        <Stack.Screen name="customer" options={{ headerShown: false }} />
-        <Stack.Screen name="admin" options={{ headerShown: false }} />
-        <Stack.Screen name="staff" options={{ headerShown: false }} />
-        <Stack.Screen name="join" options={{ headerShown: true, title: 'Personel Başvurusu' }} />
-        <Stack.Screen name="go-to-notifications" options={{ headerShown: false }} />
-      </Stack>
+        <React.Fragment>
+          <StatusBar style="auto" />
+          <OfflineBanner />
+          {showSplashLogo ? (
+            <Animated.View style={[styles.splashLogoOverlay, { opacity: splashOpacity }]} pointerEvents="none">
+              <View style={styles.splashLogoBg}>
+                <Image source={splashLogoSource} style={styles.splashLogoImage} resizeMode="contain" />
+              </View>
+            </Animated.View>
+          ) : null}
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="room-select" options={{ headerShown: false }} />
+            <Stack.Screen name="policies" />
+            <Stack.Screen name="legal/[type]" options={{ headerShown: true, title: '' }} />
+            <Stack.Screen name="permissions" options={{ headerShown: true, title: 'İzinler' }} />
+            <Stack.Screen name="auth" options={{ headerShown: false }} />
+            <Stack.Screen name="guest" options={{ headerShown: false }} />
+            <Stack.Screen name="customer" options={{ headerShown: false }} />
+            <Stack.Screen name="admin" options={{ headerShown: false }} />
+            <Stack.Screen name="staff" options={{ headerShown: false }} />
+            <Stack.Screen name="join" options={{ headerShown: true, title: 'Personel Başvurusu' }} />
+            <Stack.Screen name="go-to-notifications" options={{ headerShown: false }} />
+          </Stack>
+        </React.Fragment>
       </SafeAreaProvider>
     </ErrorBoundary>
   );

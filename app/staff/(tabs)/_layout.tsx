@@ -8,6 +8,7 @@ import { theme } from '@/constants/theme';
 import { useAuthStore } from '@/stores/authStore';
 import { useStaffUnreadMessagesStore } from '@/stores/staffUnreadMessagesStore';
 import { useStaffNotificationStore } from '@/stores/staffNotificationStore';
+import { useAdminWarningStore } from '@/stores/adminWarningStore';
 
 const TAB_ICON_SIZE = 24;
 
@@ -56,14 +57,20 @@ export default function StaffTabsLayout() {
   const staff = useAuthStore((s) => s.staff);
   const unreadCount = useStaffUnreadMessagesStore((s) => s.unreadCount);
   const refreshNotifications = useStaffNotificationStore((s) => s.refresh);
+  const adminWarningCount = useAdminWarningStore((s) => s.count);
+  const refreshAdminWarning = useAdminWarningStore((s) => s.refresh);
 
   useFocusEffect(
     useCallback(() => {
       if (!staff?.id) return () => {};
       refreshNotifications();
-      const interval = setInterval(refreshNotifications, 180000);
+      if (staff.role === 'admin') refreshAdminWarning(staff.id);
+      const interval = setInterval(() => {
+        refreshNotifications();
+        if (staff.role === 'admin') refreshAdminWarning(staff.id);
+      }, 180000);
       return () => clearInterval(interval);
-    }, [staff?.id, refreshNotifications])
+    }, [staff?.id, staff?.role, refreshNotifications, refreshAdminWarning])
   );
 
   return (
@@ -175,6 +182,8 @@ export default function StaffTabsLayout() {
           title: t('adminTab'),
           headerTitle: t('managementPanel'),
           tabBarLabel: t('adminTab'),
+          tabBarBadge: staff?.role === 'admin' && adminWarningCount > 0 ? (adminWarningCount > 99 ? '99+' : adminWarningCount) : undefined,
+          tabBarBadgeStyle: { backgroundColor: theme.colors.error },
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? 'shield' : 'shield-outline'} size={TAB_ICON_SIZE} color={color} />
           ),

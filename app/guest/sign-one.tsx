@@ -12,17 +12,14 @@ import {
   Modal,
   FlatList,
   ActivityIndicator,
-  useWindowDimensions,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useGuestFlowStore } from '@/stores/guestFlowStore';
 import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
-import { supabase } from '@/lib/supabase';
+import { supabase, supabaseUrl, supabaseAnonKey } from '@/lib/supabase';
 import { COUNTRY_PHONE_CODES, type CountryCode } from '@/constants/countryPhoneCodes';
-
-const ALLOWED_CONTRACT_LANGS = ['tr', 'en', 'ar', 'de', 'fr', 'ru', 'es'] as const;
 
 function parseDDMMYYYY(s: string): string | null {
   const trimmed = (s || '').trim();
@@ -41,9 +38,9 @@ function toISODate(s: string): string | null {
 }
 
 const ID_TYPES = [
-  { value: 'tc', label: 'TC Kimlik' },
-  { value: 'passport', label: 'Pasaport' },
-  { value: 'other', label: 'Sürücü Belgesi' },
+  { value: 'tc', label: 'TC Kimlik No' },
+  { value: 'passport', label: 'Pasaport No' },
+  { value: 'other', label: 'Sürücü Belgesi No' },
 ] as const;
 
 const GENDERS = [
@@ -53,18 +50,45 @@ const GENDERS = [
 
 const ROOM_TYPES = ['Tek kişilik', 'Çift kişilik', 'Üç kişilik', 'Aile', 'Suite', 'Diğer'];
 
+// Göz yormayan, okunaklı renk paleti
+const COLORS = {
+  bg: '#f5f6f8',
+  card: '#ffffff',
+  cardBorder: '#e8eaed',
+  text: '#1f2937',
+  textSecondary: '#6b7280',
+  label: '#374151',
+  accent: '#0ea5e9',
+  accentLight: '#e0f2fe',
+  success: '#059669',
+  inputBg: '#f9fafb',
+  inputBorder: '#e5e7eb',
+  divider: '#e5e7eb',
+};
+
 export default function GuestSignOneScreen() {
   const { t, i18n } = useTranslation();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { height } = useWindowDimensions();
   const params = useLocalSearchParams<{ token?: string; lang?: string; t?: string; l?: string }>();
-  const { qrToken, roomId, roomNumber, setQR, setStep, setGuestId } = useGuestFlowStore();
+  const { qrToken, roomId, setQR, setStep, setGuestId } = useGuestFlowStore();
   const { setAppToken } = useGuestMessagingStore();
 
-  // QR web link uses ?t= and ?l=; app deep link uses token= and lang=
   const token = (params.token ?? params.t ?? qrToken ?? '').trim();
   const lang = (params.lang ?? params.l ?? i18n.language ?? 'tr').toLowerCase();
+
+  if (Platform.OS === 'web' && (!supabaseUrl || !supabaseAnonKey)) {
+    return (
+      <View style={[styles.envContainer, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+        <Text style={styles.envTitle}>Yapılandırma eksik</Text>
+        <Text style={styles.envText}>
+          Sözleşme sayfası için Vercel ortam değişkenleri tanımlanmalı.{'\n\n'}
+          EXPO_PUBLIC_SUPABASE_URL ve EXPO_PUBLIC_SUPABASE_ANON_KEY ekleyin.{'\n\n'}
+          Detay: docs/VERCEL_ENV.md
+        </Text>
+      </View>
+    );
+  }
 
   const [contractContent, setContractContent] = useState('');
   const [loadingContract, setLoadingContract] = useState(true);
@@ -138,7 +162,7 @@ export default function GuestSignOneScreen() {
   const signerSummary = [
     fullName && `Ad Soyad: ${fullName}`,
     idNumber && `Kimlik No: ${idNumber}`,
-    fullPhone && `Telefon (WhatsApp): ${fullPhone}`,
+    fullPhone && `Telefon: ${fullPhone}`,
     email && `E-posta: ${email}`,
     nationality && `Uyruk: ${nationality}`,
     dateOfBirth && `Doğum Tarihi: ${dateOfBirth}`,
@@ -153,11 +177,11 @@ export default function GuestSignOneScreen() {
 
   const submit = async () => {
     if (!fullName.trim()) {
-      Alert.alert(t('error'), 'Ad Soyad zorunludur.');
+      Alert.alert(t('error'), 'Ad soyad alanı zorunludur.');
       return;
     }
     if (!phoneNumber.trim()) {
-      Alert.alert(t('error'), 'WhatsApp / Telefon numarası zorunludur.');
+      Alert.alert(t('error'), 'Telefon numarası zorunludur.');
       return;
     }
     setSaving(true);
@@ -261,193 +285,219 @@ export default function GuestSignOneScreen() {
     >
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 32 }]}
+        contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 32 }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.pageTitle}>Sözleşme onayı</Text>
-        <Text style={styles.sectionLabel}>1. ZORUNLU BİLGİLER</Text>
+        <Text style={styles.pageTitle}>Konaklama sözleşmesi</Text>
+        <Text style={styles.pageSubtitle}>Bilgilerinizi doldurup sözleşmeyi okuyarak onaylayın.</Text>
 
-        <Text style={styles.fieldLabel}>Ad Soyad *</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Ahmet Yılmaz"
-          placeholderTextColor="rgba(255,255,255,0.5)"
-          value={fullName}
-          onChangeText={setFullName}
-          autoCapitalize="words"
-        />
-
-        <Text style={styles.fieldLabel}>Kimlik tipi</Text>
-        <View style={styles.chipRow}>
-          {ID_TYPES.map((opt) => (
-            <TouchableOpacity
-              key={opt.value}
-              style={[styles.chip, idType === opt.value && styles.chipActive]}
-              onPress={() => setIdType(opt.value)}
-            >
-              <Text style={[styles.chipText, idType === opt.value && styles.chipTextActive]}>{opt.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <Text style={styles.fieldLabel}>Kimlik numarası</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="TC veya pasaport no"
-          placeholderTextColor="rgba(255,255,255,0.5)"
-          value={idNumber}
-          onChangeText={setIdNumber}
-          keyboardType="default"
-        />
-
-        <Text style={styles.fieldLabel}>Telefon (WhatsApp) *</Text>
-        <View style={styles.phoneRow}>
-          <TouchableOpacity style={styles.countryBtn} onPress={() => setShowCountryPicker(true)}>
-            <Text style={styles.countryBtnText}>{phoneCountry.dial}</Text>
-          </TouchableOpacity>
-          <TextInput
-            style={[styles.input, styles.phoneInput]}
-            placeholder="555 123 4567"
-            placeholderTextColor="rgba(255,255,255,0.5)"
-            value={phoneNumber}
-            onChangeText={setPhoneNumber}
-            keyboardType="phone-pad"
-          />
-        </View>
-
-        <Text style={styles.fieldLabel}>E-posta</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="ahmet@email.com"
-          placeholderTextColor="rgba(255,255,255,0.5)"
-          value={email}
-          onChangeText={setEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-        />
-
-        <Text style={styles.fieldLabel}>Uyruk</Text>
-        <TouchableOpacity style={styles.input} onPress={() => setShowNationalityPicker(true)}>
-          <Text style={styles.inputText}>{nationality || 'Seçin'}</Text>
-        </TouchableOpacity>
-
-        <Text style={styles.fieldLabel}>Doğum tarihi</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="GG.AA.YYYY"
-          placeholderTextColor="rgba(255,255,255,0.5)"
-          value={dateOfBirth}
-          onChangeText={setDateOfBirth}
-          keyboardType="numbers-and-punctuation"
-        />
-
-        <Text style={styles.fieldLabel}>Cinsiyet</Text>
-        <View style={styles.chipRow}>
-          {GENDERS.map((opt) => (
-            <TouchableOpacity
-              key={opt.value}
-              style={[styles.chip, gender === opt.value && styles.chipActive]}
-              onPress={() => setGender(opt.value)}
-            >
-              <Text style={[styles.chipText, gender === opt.value && styles.chipTextActive]}>{opt.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <Text style={styles.fieldLabel}>Adres</Text>
-        <TextInput
-          style={[styles.input, styles.inputMultiline]}
-          placeholder="Atatürk Cad. No:123, Şehir"
-          placeholderTextColor="rgba(255,255,255,0.5)"
-          value={address}
-          onChangeText={setAddress}
-          multiline
-        />
-
-        <Text style={styles.fieldLabel}>Giriş tarihi</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="GG.AA.YYYY"
-          placeholderTextColor="rgba(255,255,255,0.5)"
-          value={checkInDate}
-          onChangeText={setCheckInDate}
-          keyboardType="numbers-and-punctuation"
-        />
-
-        <Text style={styles.fieldLabel}>Çıkış tarihi</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="GG.AA.YYYY"
-          placeholderTextColor="rgba(255,255,255,0.5)"
-          value={checkOutDate}
-          onChangeText={setCheckOutDate}
-          keyboardType="numbers-and-punctuation"
-        />
-
-        <Text style={styles.fieldLabel}>Oda tipi</Text>
-        <View style={styles.chipRowWrap}>
-          {ROOM_TYPES.map((r) => (
-            <TouchableOpacity
-              key={r}
-              style={[styles.chipSmall, roomType === r && styles.chipActive]}
-              onPress={() => setRoomType(r)}
-            >
-              <Text style={[styles.chipText, roomType === r && styles.chipTextActive]}>{r}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <View style={styles.row}>
-          <View style={styles.half}>
-            <Text style={styles.fieldLabel}>Yetişkin</Text>
-            <View style={styles.stepperRow}>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setAdults((a) => Math.max(0, a - 1))}>
-                <Text style={styles.stepperText}>−</Text>
+        {/* 1. Kişisel bilgiler */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Kişisel bilgiler</Text>
+          <View style={styles.card}>
+            <Text style={styles.label}>Ad soyad *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Örn: Ahmet Yılmaz"
+              placeholderTextColor={COLORS.textSecondary}
+              value={fullName}
+              onChangeText={setFullName}
+              autoCapitalize="words"
+            />
+            <Text style={styles.label}>Kimlik türü</Text>
+            <View style={styles.chipRow}>
+              {ID_TYPES.map((opt) => (
+                <TouchableOpacity
+                  key={opt.value}
+                  style={[styles.chip, idType === opt.value && styles.chipActive]}
+                  onPress={() => setIdType(opt.value)}
+                >
+                  <Text style={[styles.chipText, idType === opt.value && styles.chipTextActive]}>{opt.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.label}>Kimlik numarası</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="TC, pasaport veya sürücü belgesi no"
+              placeholderTextColor={COLORS.textSecondary}
+              value={idNumber}
+              onChangeText={setIdNumber}
+              keyboardType="default"
+            />
+            <Text style={styles.label}>Telefon (WhatsApp) *</Text>
+            <View style={styles.phoneRow}>
+              <TouchableOpacity style={styles.countryBtn} onPress={() => setShowCountryPicker(true)}>
+                <Text style={styles.countryBtnText}>{phoneCountry.dial}</Text>
               </TouchableOpacity>
-              <Text style={styles.stepperValue}>{adults}</Text>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setAdults((a) => a + 1)}>
-                <Text style={styles.stepperText}>+</Text>
-              </TouchableOpacity>
+              <TextInput
+                style={[styles.input, styles.phoneInput]}
+                placeholder="5XX XXX XX XX"
+                placeholderTextColor={COLORS.textSecondary}
+                value={phoneNumber}
+                onChangeText={setPhoneNumber}
+                keyboardType="phone-pad"
+              />
+            </View>
+            <Text style={styles.label}>E-posta</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="ornek@email.com"
+              placeholderTextColor={COLORS.textSecondary}
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <Text style={styles.label}>Uyruk</Text>
+            <TouchableOpacity style={styles.input} onPress={() => setShowNationalityPicker(true)}>
+              <Text style={styles.inputValue}>{nationality || 'Seçiniz'}</Text>
+            </TouchableOpacity>
+            <View style={styles.row}>
+              <View style={styles.half}>
+                <Text style={styles.label}>Doğum tarihi</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="GG.AA.YYYY"
+                  placeholderTextColor={COLORS.textSecondary}
+                  value={dateOfBirth}
+                  onChangeText={setDateOfBirth}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+              <View style={styles.half}>
+                <Text style={styles.label}>Cinsiyet</Text>
+                <View style={styles.chipRow}>
+                  {GENDERS.map((opt) => (
+                    <TouchableOpacity
+                      key={opt.value}
+                      style={[styles.chip, gender === opt.value && styles.chipActive]}
+                      onPress={() => setGender(opt.value)}
+                    >
+                      <Text style={[styles.chipText, gender === opt.value && styles.chipTextActive]}>{opt.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </View>
+            <Text style={styles.label}>Adres</Text>
+            <TextInput
+              style={[styles.input, styles.inputMultiline]}
+              placeholder="Cadde, sokak, şehir"
+              placeholderTextColor={COLORS.textSecondary}
+              value={address}
+              onChangeText={setAddress}
+              multiline
+            />
+          </View>
+        </View>
+
+        {/* 2. Konaklama bilgileri */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Konaklama bilgileri</Text>
+          <View style={styles.card}>
+            <View style={styles.row}>
+              <View style={styles.half}>
+                <Text style={styles.label}>Giriş tarihi</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="GG.AA.YYYY"
+                  placeholderTextColor={COLORS.textSecondary}
+                  value={checkInDate}
+                  onChangeText={setCheckInDate}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+              <View style={styles.half}>
+                <Text style={styles.label}>Çıkış tarihi</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="GG.AA.YYYY"
+                  placeholderTextColor={COLORS.textSecondary}
+                  value={checkOutDate}
+                  onChangeText={setCheckOutDate}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+            </View>
+            <Text style={styles.label}>Oda tipi</Text>
+            <View style={styles.chipRowWrap}>
+              {ROOM_TYPES.map((r) => (
+                <TouchableOpacity
+                  key={r}
+                  style={[styles.chipSmall, roomType === r && styles.chipActive]}
+                  onPress={() => setRoomType(r)}
+                >
+                  <Text style={[styles.chipText, roomType === r && styles.chipTextActive]}>{r}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={styles.row}>
+              <View style={styles.half}>
+                <Text style={styles.label}>Yetişkin sayısı</Text>
+                <View style={styles.stepperRow}>
+                  <TouchableOpacity style={styles.stepperBtn} onPress={() => setAdults((a) => Math.max(0, a - 1))}>
+                    <Text style={styles.stepperText}>−</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.stepperValue}>{adults}</Text>
+                  <TouchableOpacity style={styles.stepperBtn} onPress={() => setAdults((a) => a + 1)}>
+                    <Text style={styles.stepperText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <View style={styles.half}>
+                <Text style={styles.label}>Çocuk (12 yaş altı)</Text>
+                <View style={styles.stepperRow}>
+                  <TouchableOpacity style={styles.stepperBtn} onPress={() => setChildren((c) => Math.max(0, c - 1))}>
+                    <Text style={styles.stepperText}>−</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.stepperValue}>{children}</Text>
+                  <TouchableOpacity style={styles.stepperBtn} onPress={() => setChildren((c) => c + 1)}>
+                    <Text style={styles.stepperText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             </View>
           </View>
-          <View style={styles.half}>
-            <Text style={styles.fieldLabel}>Çocuk (12 yaş altı)</Text>
-            <View style={styles.stepperRow}>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setChildren((c) => Math.max(0, c - 1))}>
-                <Text style={styles.stepperText}>−</Text>
-              </TouchableOpacity>
-              <Text style={styles.stepperValue}>{children}</Text>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setChildren((c) => c + 1)}>
-                <Text style={styles.stepperText}>+</Text>
-              </TouchableOpacity>
-            </View>
+        </View>
+
+        {/* 3. Sözleşme metni */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Sözleşme metni</Text>
+          <View style={styles.contractCard}>
+            {loadingContract ? (
+              <ActivityIndicator size="small" color={COLORS.accent} style={styles.loader} />
+            ) : (
+              <ScrollView style={styles.contractScroll} nestedScrollEnabled>
+                <Text style={styles.contractText}>{contractContent || 'Sözleşme metni yükleniyor…'}</Text>
+              </ScrollView>
+            )}
           </View>
         </View>
 
-        <Text style={styles.sectionLabel}>2. SÖZLEŞME METNİ</Text>
-        {loadingContract ? (
-          <ActivityIndicator size="small" color="#ed8936" style={styles.loader} />
-        ) : (
-          <View style={styles.contractBox}>
-            <Text style={styles.contractText}>{contractContent || 'Sözleşme metni yükleniyor…'}</Text>
+        {/* 4. İmza özeti */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Onay özeti</Text>
+          <View style={styles.signerCard}>
+            {signerSummary.length > 0 ? (
+              signerSummary.map((line, i) => (
+                <Text key={i} style={styles.signerLine}>
+                  {line}
+                </Text>
+              ))
+            ) : (
+              <Text style={styles.signerPlaceholder}>Formu doldurduğunuzda burada görünecektir.</Text>
+            )}
           </View>
-        )}
-
-        <Text style={styles.sectionLabel}>3. İMZALAYAN BİLGİLERİ</Text>
-        <View style={styles.signerBox}>
-          {signerSummary.length > 0 ? (
-            signerSummary.map((line, i) => (
-              <Text key={i} style={styles.signerLine}>
-                {line}
-              </Text>
-            ))
-          ) : (
-            <Text style={styles.signerPlaceholder}>Yukarıdaki formu doldurun; imzalayan bilgileri burada görünecektir.</Text>
-          )}
         </View>
 
-        <TouchableOpacity style={[styles.submitBtn, saving && styles.submitBtnDisabled]} onPress={submit} disabled={saving}>
+        <TouchableOpacity
+          style={[styles.submitBtn, saving && styles.submitBtnDisabled]}
+          onPress={submit}
+          disabled={saving}
+          activeOpacity={0.85}
+        >
           {saving ? (
             <ActivityIndicator color="#fff" size="small" />
           ) : (
@@ -492,58 +542,129 @@ export default function GuestSignOneScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#1a365d' },
+  container: { flex: 1, backgroundColor: COLORS.bg },
+  envContainer: { flex: 1, backgroundColor: COLORS.bg, padding: 24 },
+  envTitle: { fontSize: 20, fontWeight: '700', color: COLORS.text, marginBottom: 12, textAlign: 'center' },
+  envText: { fontSize: 15, color: COLORS.textSecondary, lineHeight: 24, textAlign: 'center' },
   scroll: { flex: 1 },
-  scrollContent: { padding: 20, paddingTop: 56 },
-  pageTitle: { fontSize: 24, fontWeight: '700', color: '#fff', marginBottom: 20 },
-  sectionLabel: { fontSize: 14, fontWeight: '700', color: '#ed8936', marginTop: 16, marginBottom: 10 },
-  fieldLabel: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.8)', marginBottom: 6 },
+  scrollContent: { paddingHorizontal: 20 },
+  pageTitle: { fontSize: 26, fontWeight: '700', color: COLORS.text, marginBottom: 6 },
+  pageSubtitle: { fontSize: 15, color: COLORS.textSecondary, marginBottom: 24, lineHeight: 22 },
+  section: { marginBottom: 28 },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.label,
+    marginBottom: 12,
+    letterSpacing: 0.3,
+  },
+  card: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  label: { fontSize: 14, fontWeight: '500', color: COLORS.label, marginBottom: 8 },
   input: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: COLORS.inputBg,
     borderRadius: 12,
     padding: 14,
-    color: '#fff',
+    color: COLORS.text,
     fontSize: 16,
-    marginBottom: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.inputBorder,
   },
-  inputText: { color: '#fff', fontSize: 16 },
-  inputMultiline: { minHeight: 80 },
-  phoneRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  inputValue: { color: COLORS.text, fontSize: 16 },
+  inputMultiline: { minHeight: 88 },
+  phoneRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   countryBtn: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: COLORS.inputBg,
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 14,
     justifyContent: 'center',
-    minWidth: 72,
+    minWidth: 76,
+    borderWidth: 1,
+    borderColor: COLORS.inputBorder,
   },
-  countryBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  countryBtnText: { color: COLORS.text, fontSize: 16, fontWeight: '600' },
   phoneInput: { flex: 1, marginBottom: 0 },
-  chipRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  chipRowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
-  chip: { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.12)' },
-  chipSmall: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.12)' },
-  chipActive: { backgroundColor: '#ed8936' },
-  chipText: { color: 'rgba(255,255,255,0.9)', fontSize: 14 },
-  chipTextActive: { color: '#fff', fontWeight: '600' },
-  row: { flexDirection: 'row', gap: 16, marginBottom: 12 },
+  chipRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+  chipRowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
+  chip: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: COLORS.inputBg,
+    borderWidth: 1,
+    borderColor: COLORS.inputBorder,
+  },
+  chipSmall: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.inputBg,
+    borderWidth: 1,
+    borderColor: COLORS.inputBorder,
+  },
+  chipActive: { backgroundColor: COLORS.accentLight, borderColor: COLORS.accent },
+  chipText: { color: COLORS.text, fontSize: 14 },
+  chipTextActive: { color: COLORS.accent, fontWeight: '600' },
+  row: { flexDirection: 'row', gap: 16 },
   half: { flex: 1 },
   stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  stepperBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
-  stepperText: { color: '#fff', fontSize: 20, fontWeight: '700' },
-  stepperValue: { color: '#fff', fontSize: 18, fontWeight: '600', minWidth: 28, textAlign: 'center' },
-  contractBox: { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 14, marginBottom: 12, maxHeight: 220 },
-  contractText: { color: '#fff', fontSize: 13, lineHeight: 20 },
-  loader: { marginVertical: 20 },
-  signerBox: { backgroundColor: 'rgba(237,137,54,0.2)', borderRadius: 12, padding: 14, marginBottom: 24, borderWidth: 1, borderColor: 'rgba(237,137,54,0.5)' },
-  signerLine: { color: '#fff', fontSize: 13, marginBottom: 4 },
-  signerPlaceholder: { color: 'rgba(255,255,255,0.6)', fontSize: 13 },
-  submitBtn: { backgroundColor: '#ed8936', paddingVertical: 18, borderRadius: 12, alignItems: 'center' },
+  stepperBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: COLORS.inputBg,
+    borderWidth: 1,
+    borderColor: COLORS.inputBorder,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepperText: { color: COLORS.text, fontSize: 20, fontWeight: '600' },
+  stepperValue: { color: COLORS.text, fontSize: 18, fontWeight: '600', minWidth: 32, textAlign: 'center' },
+  contractCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+    maxHeight: 260,
+  },
+  contractScroll: { maxHeight: 220 },
+  contractText: { color: COLORS.text, fontSize: 15, lineHeight: 24 },
+  loader: { marginVertical: 24 },
+  signerCard: {
+    backgroundColor: COLORS.accentLight,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+  },
+  signerLine: { color: COLORS.text, fontSize: 14, marginBottom: 6, lineHeight: 20 },
+  signerPlaceholder: { color: COLORS.textSecondary, fontSize: 14 },
+  submitBtn: {
+    backgroundColor: COLORS.accent,
+    paddingVertical: 18,
+    borderRadius: 14,
+    alignItems: 'center',
+    marginBottom: 24,
+  },
   submitBtnDisabled: { opacity: 0.7 },
-  submitBtnText: { color: '#fff', fontSize: 18, fontWeight: '700' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalDrawer: { backgroundColor: '#1a365d', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '70%', padding: 16 },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: '#fff', marginBottom: 12 },
-  modalRow: { paddingVertical: 14, paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)' },
-  modalRowText: { color: '#fff', fontSize: 16 },
+  submitBtnText: { color: '#fff', fontSize: 17, fontWeight: '600' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  modalDrawer: {
+    backgroundColor: COLORS.card,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '70%',
+    padding: 20,
+  },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 16 },
+  modalRow: { paddingVertical: 14, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: COLORS.divider },
+  modalRowText: { color: COLORS.text, fontSize: 16 },
 });
