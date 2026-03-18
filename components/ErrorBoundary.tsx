@@ -32,7 +32,7 @@ export class ErrorBoundary extends React.Component<Props, { hasError: boolean; e
           <Text style={styles.message}>
             Sayfa yüklenirken bir sorun oluştu. Lütfen sayfayı yenileyin veya daha sonra tekrar deneyin.
           </Text>
-          {__DEV__ && this.state.error && (
+          {this.state.error && (
             <Text style={styles.errorText} selectable>
               {this.state.error.message}
             </Text>

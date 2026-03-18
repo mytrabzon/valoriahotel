@@ -14,7 +14,7 @@ import {
   KeyboardAvoidingView,
   Animated,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import NetInfo from '@react-native-community/netinfo';
@@ -140,6 +140,7 @@ function OfflineWelcome({ onRetry }: { onRetry: () => void }) {
 export default function HomeScreen() {
   const { t } = useTranslation();
   const router = useRouter();
+  const params = useLocalSearchParams<{ t?: string; l?: string }>();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { user, staff, loading } = useAuthStore();
@@ -153,6 +154,14 @@ export default function HomeScreen() {
   const [guestLoginLoading, setGuestLoginLoading] = useState(false);
   const notifiedNearby = useRef(false);
   const scrollRef = useRef<ScrollViewType>(null);
+
+  // QR ile açılan web sayfası: ?t=TOKEN&l=tr → sözleşme onay sayfasına yönlendir
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !params.t?.trim()) return;
+    const t = params.t.trim();
+    const l = params.l?.trim() || 'tr';
+    router.replace({ pathname: '/guest/sign-one', params: { t, l } });
+  }, [params.t, params.l, router]);
 
   useEffect(() => {
     const sub = NetInfo.addEventListener((state) => setIsOffline(!state.isConnected));

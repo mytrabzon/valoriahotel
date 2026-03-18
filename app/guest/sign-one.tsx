@@ -12,6 +12,7 @@ import {
   Modal,
   FlatList,
   ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useTranslation } from 'react-i18next';
@@ -57,12 +58,13 @@ export default function GuestSignOneScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
-  const params = useLocalSearchParams<{ token?: string; lang?: string }>();
+  const params = useLocalSearchParams<{ token?: string; lang?: string; t?: string; l?: string }>();
   const { qrToken, roomId, roomNumber, setQR, setStep, setGuestId } = useGuestFlowStore();
   const { setAppToken } = useGuestMessagingStore();
 
-  const token = (params.token ?? qrToken ?? '').trim();
-  const lang = (params.lang ?? i18n.language ?? 'tr').toLowerCase();
+  // QR web link uses ?t= and ?l=; app deep link uses token= and lang=
+  const token = (params.token ?? params.t ?? qrToken ?? '').trim();
+  const lang = (params.lang ?? params.l ?? i18n.language ?? 'tr').toLowerCase();
 
   const [contractContent, setContractContent] = useState('');
   const [loadingContract, setLoadingContract] = useState(true);
@@ -210,7 +212,7 @@ export default function GuestSignOneScreen() {
           contract_lang: lang,
           contract_version: 2,
           contract_template_id: template?.id ?? null,
-          source: 'app',
+          source: Platform.OS === 'web' ? 'web' : 'app',
         });
       }
 

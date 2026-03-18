@@ -25,6 +25,7 @@ import {
   addNotificationReceivedListener,
   savePushTokenForStaff,
 } from '@/lib/notificationsPush';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
@@ -337,6 +338,7 @@ export default function RootLayout() {
 
   return (
     <ErrorBoundary>
+      <SafeAreaProvider>
       <StatusBar style="auto" />
       <OfflineBanner />
       {showSplashLogo ? (
@@ -360,6 +362,7 @@ export default function RootLayout() {
         <Stack.Screen name="join" options={{ headerShown: true, title: 'Personel Başvurusu' }} />
         <Stack.Screen name="go-to-notifications" options={{ headerShown: false }} />
       </Stack>
+      </SafeAreaProvider>
     </ErrorBoundary>
   );
 }

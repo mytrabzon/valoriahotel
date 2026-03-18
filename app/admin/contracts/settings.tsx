@@ -120,6 +120,7 @@ export default function ContractAppSettings() {
           <Text style={styles.readOnlyValue} selectable>{defaultContractBase || '— EXPO_PUBLIC_SUPABASE_URL gerekli'}</Text>
         </View>
         <Text style={styles.hint}>Bu adres tek QR veya oda bazlı QR base adresi olarak kullanılır. Özel domain kullanmak için aşağıdaki base URL alanını doldurun.</Text>
+        <Text style={styles.hint}>Web (Vercel) üzerinden QR ile sözleşme onayı alacaksanız: Sözleşme onay sayfası base URL alanına tam path ile girin (örn. https://valoriahotel-el4r.vercel.app/guest/sign-one). Onaylar otomatik admin ve personel paneline düşer.</Text>
 
         <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Mağaza linkleri (sözleşme onayı sonrası yönlendirme)</Text>
         {(Object.keys(KEYS) as (keyof typeof KEYS)[]).map((key) => (
