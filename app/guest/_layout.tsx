@@ -1,6 +1,18 @@
+import { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
 
+const GUEST_BG = '#1a365d';
+
 export default function GuestLayout() {
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    document.body.style.backgroundColor = GUEST_BG;
+    return () => {
+      document.body.style.backgroundColor = '';
+    };
+  }, []);
+
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />

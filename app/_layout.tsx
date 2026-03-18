@@ -27,7 +27,9 @@ import {
 } from '@/lib/notificationsPush';
 import { OfflineBanner } from '@/components/OfflineBanner';
 
-SplashScreen.preventAutoHideAsync();
+if (Platform.OS !== 'web') {
+  SplashScreen.preventAutoHideAsync();
+}
 log.info('RootLayout', 'app başlatılıyor');
 
 const splashLogoSource = require('../assets/valoria-splash-logo.png');
@@ -44,8 +46,12 @@ export default function RootLayout() {
     }
   }, []);
 
-  // Açılış logosu: çok kısa göster, hafif fade in/out (iOS ve Android aynı)
+  // Açılış logosu: çok kısa göster (web'de hemen gizle, yoksa beyaz ekran kalır)
   useEffect(() => {
+    if (Platform.OS === 'web') {
+      setShowSplashLogo(false);
+      return;
+    }
     const t = setTimeout(() => {
       Animated.sequence([
         Animated.timing(splashOpacity, { toValue: 1, duration: 120, useNativeDriver: true }),
@@ -68,8 +74,9 @@ export default function RootLayout() {
       if (!saved) AsyncStorage.setItem(LANG_STORAGE_KEY, lang);
     });
   }, []);
-  // Splash'ı hemen gizle, anasayfa/redirect görünsün
+  // Splash'ı hemen gizle, anasayfa/redirect görünsün (web'de native splash yok)
   useEffect(() => {
+    if (Platform.OS === 'web') return;
     SplashScreen.hideAsync()
       .then(() => log.info('RootLayout', 'SplashScreen gizlendi'))
       .catch((e) => log.error('RootLayout', 'SplashScreen hatası', e));
