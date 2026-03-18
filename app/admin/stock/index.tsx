@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Platform,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -22,9 +23,10 @@ function formatShortDateTime(iso: string): string {
   const d = new Date(iso);
   const day = d.getDate().toString().padStart(2, '0');
   const month = (d.getMonth() + 1).toString().padStart(2, '0');
+  const year = d.getFullYear();
   const h = d.getHours().toString().padStart(2, '0');
   const min = d.getMinutes().toString().padStart(2, '0');
-  return `${day}.${month} ${h}:${min}`;
+  return `${day}.${month}.${year} ${h}:${min}`;
 }
 
 type Category = { id: string; name: string };
@@ -38,10 +40,23 @@ type Product = {
   min_stock: number | null;
   max_stock: number | null;
   image_url: string | null;
+  created_at: string;
+  created_by: string | null;
   category: Category | null;
+  creator: { full_name: string | null } | null;
 };
 type Alert = { id: string; message: string | null; product_id: string; product?: { name: string } };
 type LastMovement = { staffName: string; createdAt: string };
+type RecentMovement = {
+  id: string;
+  product_id: string;
+  movement_type: string;
+  quantity: number;
+  created_at: string;
+  product: { name: string } | null;
+  staff: { full_name: string | null } | null;
+  photo_proof: string | null;
+};
 
 export default function StockManagement() {
   const router = useRouter();
@@ -53,6 +68,7 @@ export default function StockManagement() {
   const [search, setSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [lastMovementByProduct, setLastMovementByProduct] = useState<Record<string, LastMovement>>({});
+  const [recentMovements, setRecentMovements] = useState<RecentMovement[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
@@ -62,7 +78,7 @@ export default function StockManagement() {
     try {
       const { data: productsData, error: productsError } = await supabase
         .from('stock_products')
-        .select('id, name, barcode, unit, current_stock, min_stock, max_stock, image_url, category_id, category:stock_categories(id, name)')
+        .select('id, name, barcode, unit, current_stock, min_stock, max_stock, image_url, category_id, created_at, created_by, category:stock_categories(id, name), creator:created_by(full_name)')
         .order('name');
       if (productsError) {
         setLoadError(productsError.message || 'Ürünler yüklenemedi');
@@ -104,6 +120,17 @@ export default function StockManagement() {
       } catch {
         setLastMovementByProduct({});
       }
+
+      try {
+        const { data: recentData } = await supabase
+          .from('stock_movements')
+          .select('id, product_id, movement_type, quantity, created_at, photo_proof, product:stock_products(name), staff:staff_id(full_name)')
+          .order('created_at', { ascending: false })
+          .limit(12);
+        setRecentMovements((recentData ?? []) as RecentMovement[]);
+      } catch {
+        setRecentMovements([]);
+      }
     } catch (e) {
       setLoadError((e as Error)?.message ?? 'Veri yüklenirken hata oluştu');
       setProducts([]);
@@ -121,6 +148,30 @@ export default function StockManagement() {
     setRefreshing(true);
     await loadData();
     setRefreshing(false);
+  };
+
+  const handleDeleteProduct = (p: Product) => {
+    Alert.alert(
+      'Ürünü sil',
+      `"${p.name}" ürününü silmek istediğinize emin misiniz? Bu işlem geri alınamaz.`,
+      [
+        { text: 'İptal', style: 'cancel' },
+        {
+          text: 'Sil',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await supabase.from('stock_movements').delete().eq('product_id', p.id);
+              const { error } = await supabase.from('stock_products').delete().eq('id', p.id);
+              if (error) throw error;
+              await loadData();
+            } catch (e) {
+              Alert.alert('Hata', (e as Error)?.message ?? 'Ürün silinemedi.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const filtered = products.filter((p) => {
@@ -228,6 +279,35 @@ export default function StockManagement() {
         ))}
       </ScrollView>
 
+      {/* Son hareketler (tüm personel) */}
+      {recentMovements.length > 0 && (
+        <View style={styles.recentSection}>
+          <Text style={styles.recentSectionTitle}>📋 Son hareketler</Text>
+          <View style={styles.recentCard}>
+            {recentMovements.slice(0, 8).map((m) => {
+              const name = (m.product as { name?: string })?.name ?? '—';
+              const staffName = (m.staff as { full_name?: string })?.full_name ?? '—';
+              const shortName = staffName.split(' ')[0] + (staffName.includes(' ') ? ' ' + staffName.split(' ')[1]?.charAt(0) + '.' : '');
+              const icon = m.movement_type === 'in' ? '📥' : '📤';
+              const sign = m.movement_type === 'in' ? '+' : '-';
+              return (
+                <TouchableOpacity
+                  key={m.id}
+                  style={styles.recentRow}
+                  onPress={() => router.push(`/admin/stock/product/${m.product_id}`)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.recentRowText} numberOfLines={1}>
+                    {icon} {m.movement_type === 'in' ? 'GİRİŞ' : 'ÇIKIŞ'} — {shortName} · {name} {sign}{m.quantity}  {formatShortDateTime(m.created_at)}
+                    {m.photo_proof ? ' [📷]' : ''}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
+
       {/* Liste alanı: bölüm başlığı + liste (aşağı kaydırın, alt butonlar en altta sabit) */}
         <View style={styles.listWrapper}>
           <View style={styles.sectionHeader}>
@@ -281,34 +361,33 @@ export default function StockManagement() {
               const max = p.max_stock ?? 1;
               const pct = max > 0 ? Math.min((cur / max) * 100, 100) : 0;
               const isLow = min > 0 && cur <= min;
-              const last = lastMovementByProduct[p.id];
-              const lastLine = last
-                ? `Son giriş: ${last.staffName} (${formatShortDateTime(last.createdAt)})`
-                : 'Son giriş: —';
+              const addedBy = p.creator?.full_name ?? '—';
+              const addedAt = p.created_at ? formatShortDateTime(p.created_at) : '—';
               return (
-                <TouchableOpacity
-                  key={p.id}
-                  style={[styles.card, isLow && styles.cardLow]}
-                  onPress={() => router.push(`/admin/stock/product/${p.id}`)}
-                  activeOpacity={0.7}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${p.name} detayı`}
-                >
-                  <CachedImage
-                    uri={p.image_url || 'https://via.placeholder.com/72'}
-                    style={styles.cardImage}
-                    contentFit="cover"
-                  />
-                  <View style={styles.cardBody}>
-                    <Text style={styles.cardTitle} numberOfLines={1}>{p.name}</Text>
-                    {p.barcode ? (
-                      <Text style={styles.cardBarcode} numberOfLines={1}>Barkod: {p.barcode}</Text>
-                    ) : null}
-                    <Text style={styles.cardMetaLine}>
-                      Stok: <Text style={[styles.stockHighlight, isLow && styles.stockLabelLow]}>{cur} {p.unit ?? 'adet'}</Text>
-                      {isLow && <Text style={styles.kritikBadge}> · Kritik</Text>}
-                    </Text>
-                    <Text style={styles.cardLastEntry} numberOfLines={1}>{lastLine}</Text>
+                <View key={p.id} style={[styles.card, isLow && styles.cardLow]}>
+                  <TouchableOpacity
+                    onPress={() => router.push(`/admin/stock/product/${p.id}`)}
+                    activeOpacity={0.7}
+                    accessibilityLabel={`${p.name} detayı`}
+                  >
+                    <View style={styles.cardTop}>
+                      <Text style={styles.cardTitle} numberOfLines={1}>{p.name}</Text>
+                      <Text style={styles.cardMetaLine}>
+                        Stok: <Text style={[styles.stockHighlight, isLow && styles.stockLabelLow]}>{cur} {p.unit ?? 'adet'}</Text>
+                        {isLow && <Text style={styles.kritikBadge}> · Kritik</Text>}
+                      </Text>
+                    </View>
+                    <View style={styles.cardImageWrap}>
+                      <CachedImage
+                        uri={p.image_url || 'https://via.placeholder.com/400x200'}
+                        style={styles.cardImage}
+                        contentFit="cover"
+                      />
+                    </View>
+                    <View style={styles.cardFooter}>
+                      <Text style={styles.cardAddedBy}>📦 Ekleyen: {addedBy}</Text>
+                      <Text style={styles.cardAddedAt}>📅 {addedAt}</Text>
+                    </View>
                     <View style={styles.barBg}>
                       <View
                         style={[
@@ -318,12 +397,31 @@ export default function StockManagement() {
                         ]}
                       />
                     </View>
+                  </TouchableOpacity>
+                  <View style={styles.cardActions}>
+                    <TouchableOpacity
+                      style={styles.cardActionBtn}
+                      onPress={() => router.push(`/admin/stock/product/${p.id}`)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.cardActionBtnText}>🔍 Detay</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.cardActionBtn}
+                      onPress={() => router.push(`/admin/stock/product/${p.id}`)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.cardActionBtnText}>✏️ Düzenle</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.cardActionBtn, styles.cardActionBtnDanger]}
+                      onPress={() => handleDeleteProduct(p)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.cardActionBtnDangerText}>🗑️ Sil</Text>
+                    </TouchableOpacity>
                   </View>
-                  <View style={styles.cardAction}>
-                    <Text style={styles.cardActionText}>Detay</Text>
-                    <Ionicons name="chevron-forward" size={18} color={adminTheme.colors.accent} />
-                  </View>
-                </TouchableOpacity>
+                </View>
               );
             })
             )}
@@ -578,12 +676,10 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   card: {
-    flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: adminTheme.colors.surface,
     padding: adminTheme.spacing.md,
     borderRadius: adminTheme.radius.md,
-    marginBottom: adminTheme.spacing.sm,
+    marginBottom: adminTheme.spacing.md,
     borderWidth: 1,
     borderColor: adminTheme.colors.border,
     ...adminTheme.shadow.sm,
@@ -592,26 +688,13 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: adminTheme.colors.error,
   },
-  cardImage: {
-    width: 56,
-    height: 56,
-    borderRadius: adminTheme.radius.sm,
-    backgroundColor: adminTheme.colors.surfaceTertiary,
-  },
-  cardBody: {
-    flex: 1,
-    marginLeft: 12,
-    minWidth: 0,
+  cardTop: {
+    marginBottom: 8,
   },
   cardTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: adminTheme.colors.text,
-  },
-  cardBarcode: {
-    fontSize: 12,
-    color: adminTheme.colors.textMuted,
-    marginTop: 2,
   },
   cardMetaLine: {
     fontSize: 13,
@@ -630,11 +713,65 @@ const styles = StyleSheet.create({
     color: adminTheme.colors.error,
     fontWeight: '600',
   },
-  cardLastEntry: {
+  cardImageWrap: {
+    width: '100%',
+    aspectRatio: 2,
+    borderRadius: adminTheme.radius.sm,
+    overflow: 'hidden',
+    backgroundColor: adminTheme.colors.surfaceTertiary,
+    marginBottom: 8,
+  },
+  cardImage: {
+    width: '100%',
+    height: '100%',
+  },
+  cardFooter: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  cardAddedBy: {
     fontSize: 12,
     color: adminTheme.colors.textMuted,
-    marginTop: 2,
   },
+  cardAddedAt: {
+    fontSize: 12,
+    color: adminTheme.colors.textMuted,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: adminTheme.colors.border,
+  },
+  cardActionBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: adminTheme.radius.sm,
+    backgroundColor: adminTheme.colors.surfaceTertiary,
+    borderWidth: 1,
+    borderColor: adminTheme.colors.border,
+  },
+  cardActionBtnText: { fontSize: 12, fontWeight: '600', color: adminTheme.colors.accent },
+  cardActionBtnDanger: { borderColor: adminTheme.colors.error },
+  cardActionBtnDangerText: { fontSize: 12, fontWeight: '600', color: adminTheme.colors.error },
+  recentSection: { paddingHorizontal: adminTheme.spacing.lg, marginTop: adminTheme.spacing.md },
+  recentSectionTitle: { fontSize: 15, fontWeight: '700', color: adminTheme.colors.textSecondary, marginBottom: 8 },
+  recentCard: {
+    backgroundColor: adminTheme.colors.surface,
+    borderRadius: adminTheme.radius.md,
+    borderWidth: 1,
+    borderColor: adminTheme.colors.border,
+    overflow: 'hidden',
+  },
+  recentRow: { paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: adminTheme.colors.border },
+  recentRowText: { fontSize: 13, color: adminTheme.colors.text },
   barBg: {
     height: 5,
     backgroundColor: adminTheme.colors.surfaceTertiary,
@@ -651,17 +788,6 @@ const styles = StyleSheet.create({
   },
   barLow: {
     backgroundColor: adminTheme.colors.error,
-  },
-  cardAction: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginLeft: 8,
-    gap: 2,
-  },
-  cardActionText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: adminTheme.colors.accent,
   },
   footer: {
     position: 'absolute',

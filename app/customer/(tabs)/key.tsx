@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert } from 'react-native';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert, TextInput, ActivityIndicator, Platform } from 'react-native';
 import * as Linking from 'expo-linking';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
-import { DesignableQR } from '@/components/DesignableQR';
+import { DesignableQR, type QRCodeRef } from '@/components/DesignableQR';
 import { BarcodeScannerView } from '@/components/BarcodeScannerView';
 
 export default function DigitalKeyScreen() {
@@ -13,6 +15,11 @@ export default function DigitalKeyScreen() {
   const [checkOut, setCheckOut] = useState<string>('—');
   const [roomToken, setRoomToken] = useState<string | null>(null);
   const [showScan, setShowScan] = useState(false);
+  const [doorRoomInput, setDoorRoomInput] = useState('');
+  const [openDoorLoading, setOpenDoorLoading] = useState(false);
+  const [checkinQrRef, setCheckinQrRef] = useState<QRCodeRef>(null);
+  const [contractQrRef, setContractQrRef] = useState<QRCodeRef>(null);
+  const [qrDownloading, setQrDownloading] = useState<'checkin' | 'contract' | null>(null);
 
   const guestName = useMemo(() => {
     const n = user?.user_metadata?.full_name ?? user?.user_metadata?.name;
@@ -24,15 +31,30 @@ export default function DigitalKeyScreen() {
 
   useEffect(() => {
     (async () => {
-      if (!user?.email) return;
-      const { data: guest } = await supabase
-        .from('guests')
-        .select('room_id, check_in_at, check_out_at')
-        .eq('email', user.email)
-        .eq('status', 'checked_in')
-        .order('check_in_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      if (!user?.id) return;
+      let guest: { room_id: string; check_in_at: string | null; check_out_at: string | null } | null = null;
+      if (user.email) {
+        const { data } = await supabase
+          .from('guests')
+          .select('room_id, check_in_at, check_out_at')
+          .eq('email', user.email)
+          .eq('status', 'checked_in')
+          .order('check_in_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        guest = data as typeof guest;
+      }
+      if (!guest) {
+        const { data } = await supabase
+          .from('guests')
+          .select('room_id, check_in_at, check_out_at')
+          .eq('auth_user_id', user.id)
+          .eq('status', 'checked_in')
+          .order('check_in_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        guest = data as typeof guest;
+      }
       if (!guest?.room_id) return;
 
       const { data: room } = await supabase.from('rooms').select('room_number').eq('id', guest.room_id).maybeSingle();
@@ -50,19 +72,80 @@ export default function DigitalKeyScreen() {
         .maybeSingle();
       setRoomToken(qr?.token ?? null);
     })();
-  }, [user?.email]);
+  }, [user?.id, user?.email]);
 
   const urls = useMemo(() => {
     if (!roomToken) return { checkinUrl: null, contractUrl: null };
-    const appBase = process.env.EXPO_PUBLIC_APP_URL ?? 'https://valoria.app';
+    const defaultAppBase = 'https://valoriahotel-el4r.vercel.app';
+    const appBase = (process.env.EXPO_PUBLIC_APP_URL ?? defaultAppBase).replace(/\/$/, '');
     const checkinUrl = `${appBase}/guest?token=${encodeURIComponent(roomToken)}`;
-    const contractBase =
+    const defaultContractBase = 'https://valoriahotel-el4r.vercel.app/guest/sign-one';
+    let contractBase =
       process.env.EXPO_PUBLIC_PUBLIC_CONTRACT_URL ??
-      `${process.env.EXPO_PUBLIC_SUPABASE_URL ?? ''}/functions/v1/public-contract`;
-    return { checkinUrl, contractUrl: `${contractBase}?t=${encodeURIComponent(roomToken)}&l=tr` };
+      (process.env.EXPO_PUBLIC_SUPABASE_URL ? `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/public-contract` : null) ??
+      defaultContractBase;
+    if (contractBase.includes('valoria.app')) contractBase = defaultContractBase;
+    const base = String(contractBase).replace(/\?.*$/, '').replace(/\/$/, '');
+    return { checkinUrl, contractUrl: `${base}?t=${encodeURIComponent(roomToken)}&l=tr` };
   }, [roomToken]);
 
   const isValid = !!roomToken;
+
+  const downloadQrAsImage = useCallback(async (ref: QRCodeRef, label: string) => {
+    if (!ref?.toDataURL) {
+      if (Platform.OS === 'web') Alert.alert('Bilgi', 'Web\'de QR indirmek için sağ tıklayıp "Resmi farklı kaydet" kullanın.');
+      return;
+    }
+    ref.toDataURL(async (data: string) => {
+      try {
+        const base64 = data.startsWith('data:') ? data.replace(/^data:image\/\w+;base64,/, '') : data;
+        const filename = `valoria-qr-${label}-${Date.now()}.png`;
+        const path = `${FileSystem.cacheDirectory}${filename}`;
+        await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
+        const canShare = await Sharing.isAvailableAsync();
+        if (canShare) await Sharing.shareAsync(path, { mimeType: 'image/png', dialogTitle: `QR Kod – ${label}` });
+        else Alert.alert('Kaydedildi', path);
+      } catch (e) {
+        Alert.alert('Hata', (e as Error)?.message ?? 'QR indirilemedi.');
+      }
+      setQrDownloading(null);
+    });
+  }, []);
+
+  const startDownloadQr = (which: 'checkin' | 'contract') => {
+    const ref = which === 'checkin' ? checkinQrRef : contractQrRef;
+    if (!ref?.toDataURL) {
+      if (Platform.OS === 'web') Alert.alert('Bilgi', 'Web\'de QR indirmek için QR görseline sağ tıklayıp "Resmi farklı kaydet" kullanın.');
+      return;
+    }
+    setQrDownloading(which);
+    downloadQrAsImage(ref, which === 'checkin' ? 'checkin' : 'sozlesme');
+  };
+
+  const openDoor = async () => {
+    const num = doorRoomInput.trim() || (roomNumber !== '—' ? roomNumber : '');
+    if (!num) {
+      Alert.alert('Oda numarası girin', 'Açmak istediğiniz kapının oda numarasını yazın (örn. 101).');
+      return;
+    }
+    setOpenDoorLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('open-door', {
+        body: { room_number: num },
+      });
+      if (error) throw error;
+      const result = data?.result ?? data?.success ? 'granted' : 'denied';
+      const message = (data?.message as string) || (result === 'granted' ? 'Kapı açıldı.' : 'Yetkiniz yok.');
+      if (result === 'granted') {
+        Alert.alert('Başarılı', message);
+      } else {
+        Alert.alert('Açılamadı', message);
+      }
+    } catch (e: unknown) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'Kapı açma isteği gönderilemedi.');
+    }
+    setOpenDoorLoading(false);
+  };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -77,17 +160,41 @@ export default function DigitalKeyScreen() {
       <View style={[styles.card, !isValid && styles.cardDisabled]}>
         <Text style={styles.cardTitle}>Dijital Anahtar</Text>
         <Text style={styles.note}>
-          NFC şu an devre dışı. Dijital anahtar için Bluetooth/QR akışı kullanılacak.
+          Telefonla kapı açma: oda numarasını yazıp "Kapıyı aç" butonuna basın. Check-in yapmış olmalısınız.
         </Text>
-        <Text style={styles.cardHint}>🔵 Bluetooth ile otomatik aç (yaklaşınca)</Text>
-        <Text style={styles.or}>veya</Text>
-        <Text style={styles.cardHint}>📸 QR Kod göster (kapı okutur)</Text>
         {!isValid && (
           <Text style={styles.invalidHint}>
             Check-in yaptıktan sonra dijital anahtarınız aktif olacaktır.
           </Text>
         )}
       </View>
+
+      {isValid && (
+        <View style={styles.openDoorCard}>
+          <Text style={styles.sectionTitle}>Kapıyı aç</Text>
+          <Text style={styles.openDoorHint}>Oda numarasını girin (kapıda yazan numara)</Text>
+          <TextInput
+            style={styles.doorInput}
+            value={doorRoomInput}
+            onChangeText={setDoorRoomInput}
+            placeholder={roomNumber !== '—' ? roomNumber : '101'}
+            placeholderTextColor="#9ca3af"
+            keyboardType="number-pad"
+            maxLength={10}
+          />
+          <TouchableOpacity
+            style={[styles.openDoorBtn, openDoorLoading && styles.openDoorBtnDisabled]}
+            onPress={openDoor}
+            disabled={openDoorLoading}
+          >
+            {openDoorLoading ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.openDoorBtnText}>Kapıyı aç</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
 
       {isValid && urls.checkinUrl && (
         <View style={styles.qrSection}>
@@ -98,7 +205,15 @@ export default function DigitalKeyScreen() {
               value={urls.checkinUrl}
               size={190}
               design={{ useLogo: true, backgroundColor: '#ffffff', foregroundColor: '#111827', shape: 'rounded', logoSizeRatio: 0.22 }}
+              getRef={setCheckinQrRef}
             />
+            <TouchableOpacity
+              style={[styles.qrDownloadBtn, qrDownloading === 'checkin' && styles.qrDownloadBtnDisabled]}
+              onPress={() => startDownloadQr('checkin')}
+              disabled={qrDownloading !== null}
+            >
+              <Text style={styles.qrDownloadBtnText}>QR İndir</Text>
+            </TouchableOpacity>
           </View>
           {urls.contractUrl && (
             <View style={styles.qrCard}>
@@ -107,8 +222,16 @@ export default function DigitalKeyScreen() {
                 value={urls.contractUrl}
                 size={190}
                 design={{ useLogo: true, backgroundColor: '#ffffff', foregroundColor: '#1a365d', shape: 'dots', logoSizeRatio: 0.22 }}
+                getRef={setContractQrRef}
               />
               <Text style={styles.qrSub}>Bu QR uygulama indirmeden web’de açılır ve onay kaydeder.</Text>
+              <TouchableOpacity
+                style={[styles.qrDownloadBtn, qrDownloading === 'contract' && styles.qrDownloadBtnDisabled]}
+                onPress={() => startDownloadQr('contract')}
+                disabled={qrDownloading !== null}
+              >
+                <Text style={styles.qrDownloadBtnText}>QR İndir</Text>
+              </TouchableOpacity>
             </View>
           )}
           <TouchableOpacity style={styles.scanBtn} onPress={() => setShowScan(true)} activeOpacity={0.85}>
@@ -118,7 +241,7 @@ export default function DigitalKeyScreen() {
       )}
 
       <Text style={styles.sectionTitle}>Açabileceğiniz kapılar</Text>
-      <Text style={styles.doorsList}>Oda kapınız, otopark, havuz, spor salonu</Text>
+      <Text style={styles.doorsList}>Oda kapınız (check-in sonrası). Ek yetkiler Admin → Kart Tanımlama ile verilir.</Text>
 
       <View style={styles.shareRow}>
         <TouchableOpacity style={styles.shareBtn}>
@@ -185,6 +308,31 @@ const styles = StyleSheet.create({
   },
   qrTitle: { fontSize: 14, fontWeight: '800', color: '#111827', marginBottom: 12, textAlign: 'center' },
   qrSub: { marginTop: 10, fontSize: 12, color: '#6b7280', textAlign: 'center', lineHeight: 18 },
+  qrDownloadBtn: { marginTop: 10, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: '#2d3748', borderRadius: 10, alignSelf: 'center' },
+  qrDownloadBtnDisabled: { opacity: 0.7 },
+  qrDownloadBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
   scanBtn: { backgroundColor: '#1a365d', paddingVertical: 14, borderRadius: 14, alignItems: 'center' },
   scanBtnText: { color: '#fff', fontWeight: '800', fontSize: 16 },
+  openDoorCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  openDoorHint: { fontSize: 13, color: '#718096', marginBottom: 10 },
+  doorInput: {
+    backgroundColor: '#f7fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 18,
+    color: '#1a202c',
+    marginBottom: 14,
+  },
+  openDoorBtn: { backgroundColor: '#059669', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
+  openDoorBtnDisabled: { opacity: 0.7 },
+  openDoorBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
 });

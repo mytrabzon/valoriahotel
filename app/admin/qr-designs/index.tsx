@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import { DesignableQR, type QRDesign } from '@/components/DesignableQR';
+import { FIXED_CONTRACT_QR_URL } from '@/constants/contractQr';
 
 type Template = {
   id: string;
@@ -35,7 +36,7 @@ type SettingsRow = {
   template?: Template | null;
 };
 
-const SAMPLE_QR_VALUE = 'https://valoria.app/guest?token=sample';
+const SAMPLE_QR_VALUE = FIXED_CONTRACT_QR_URL;
 const SHAPE_LABELS: Record<string, string> = {
   square: 'Kare',
   rounded: 'Yuvarlatılmış',

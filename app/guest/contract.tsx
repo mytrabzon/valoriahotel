@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, useWindowDimensions, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +14,8 @@ export default function ContractScreen() {
   const [contractLang, setContractLang] = useState<string>(i18n.language || lang || 'tr');
   const [content, setContent] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const [translating, setTranslating] = useState(false);
+  const translatedCache = useRef<Record<string, string>>({});
   const { height } = useWindowDimensions();
 
   const fetchContract = useCallback(async (lng: string) => {
@@ -25,20 +27,62 @@ export default function ContractScreen() {
       .eq('version', 2)
       .eq('is_active', true)
       .maybeSingle();
-    if (v2?.content) {
-      setContent(v2.content);
-      setLoading(false);
-      return;
+    let text = v2?.content?.trim() ?? '';
+    if (!text) {
+      const { data: v1 } = await supabase
+        .from('contract_templates')
+        .select('content')
+        .eq('lang', lng)
+        .eq('is_active', true)
+        .order('version', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      text = v1?.content?.trim() ?? '';
     }
-    const { data: v1 } = await supabase
-      .from('contract_templates')
-      .select('content')
-      .eq('lang', lng)
-      .eq('is_active', true)
-      .order('version', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    setContent(v1?.content ?? t('contract'));
+    if (!text && lng !== 'tr') {
+      if (translatedCache.current[lng]) {
+        setContent(translatedCache.current[lng]);
+        setLoading(false);
+        return;
+      }
+      setTranslating(true);
+      try {
+        const { data: trData } = await supabase
+          .from('contract_templates')
+          .select('content')
+          .eq('lang', 'tr')
+          .eq('version', 2)
+          .eq('is_active', true)
+          .maybeSingle();
+        const trContent = trData?.content?.trim() ?? '';
+        if (trContent) {
+          const { data: fnData, error: fnError } = await supabase.functions.invoke('translate-contract', {
+            body: { sourceTitle: 'Konaklama Sözleşmesi ve Otel Kuralları', sourceContent: trContent },
+          });
+          if (!fnError && fnData) {
+            const translations = (fnData as { translations?: Record<string, { content: string }> })?.translations;
+            const translated = translations?.[lng]?.content?.trim();
+            if (translated) {
+              translatedCache.current[lng] = translated;
+              text = translated;
+            }
+          }
+        }
+        if (!text) {
+          const { data: trFallback } = await supabase
+            .from('contract_templates')
+            .select('content')
+            .eq('lang', 'tr')
+            .eq('is_active', true)
+            .order('version', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          text = trFallback?.content ?? '';
+        }
+      } catch (_) {}
+      setTranslating(false);
+    }
+    setContent(text || t('contract'));
     setLoading(false);
   }, [t]);
 
@@ -108,16 +152,17 @@ export default function ContractScreen() {
         {LANGUAGES.map(({ code, label }) => (
           <TouchableOpacity
             key={code}
-            style={[styles.langBtn, contractLang === code && styles.langBtnActive]}
+            style={[styles.langBtn, contractLang === code && styles.langBtnActive, (loading || translating) && styles.langBtnDisabled]}
             onPress={() => onSelectLang(code)}
+            disabled={loading || translating}
           >
             <Text style={[styles.langBtnText, contractLang === code && styles.langBtnTextActive]}>{label}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
 
-      {loading ? (
-        <Text style={styles.loading}>{t('loading')}</Text>
+      {loading || translating ? (
+        <Text style={styles.loading}>{translating ? (t('loading') + ' / ' + 'Çeviriliyor…') : t('loading')}</Text>
       ) : (
         <>
           <View style={[styles.webWrap, { height: height * 0.45 }]}>
@@ -154,6 +199,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   langBtnActive: { backgroundColor: '#ed8936' },
+  langBtnDisabled: { opacity: 0.6 },
   langBtnText: { color: 'rgba(255,255,255,0.9)', fontSize: 13 },
   langBtnTextActive: { color: '#fff', fontWeight: '600' },
   loading: { color: '#fff', padding: 24 },

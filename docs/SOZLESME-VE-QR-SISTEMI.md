@@ -1,5 +1,24 @@
 # Sözleşme, QR URL ve Mağaza Yönlendirme Sistemi
 
+## Sözleşme metnini anlık değiştirme (GitHub push gerekmez)
+
+Sözleşme metni **kodda değil, veritabanında** (`contract_templates` tablosu) tutulur. Değişiklikler anında yansır; deploy veya GitHub push gerekmez.
+
+**Nasıl değiştirirsiniz?**
+
+1. **Admin panele girin** (yönetici hesabıyla).
+2. **Sözleşmeler** menüsüne gidin.
+3. İki seçenek:
+   - **"📋 Kurallar sözleşmesi (Türkçe) – Düzenle"**  
+     Türkçe metni düzenler; kaydedince "Kaydet ve 6 dile çevir" ile diğer dillere otomatik çeviri yapılabilir.
+   - **"Dil bazlı sözleşmeler"** listesinden bir dil (Türkçe, English, Arapça vb.) kartına tıklayın  
+     O dildeki sözleşmeyi doğrudan düzenleyip kaydedin.
+4. **Kaydet**’e bastığınız anda yeni metin tüm kullanıcılara (misafir sözleşme sayfası, QR ile gelenler) anında görünür.
+
+Özet: Sözleşmeyi değiştirmek için sadece admin paneli kullanın; kod değişikliği veya GitHub push yapmanız gerekmez.
+
+---
+
 ## 1. Admin panelden yapılabilecekler
 
 ### Sözleşme içeriği (Kurallar – Düzenle)

@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { theme } from '@/constants/theme';
+import { shareContractPdf, type GuestForPdf } from '@/lib/contractPdf';
 
 type RoomRow = { id: string; room_number: string; floor: number | null; status: string };
 
@@ -23,7 +24,9 @@ type AcceptanceRow = {
   room_id: string | null;
   contract_lang: string;
   accepted_at: string;
+  guest_id: string | null;
   room_number?: string | null;
+  signer_name?: string | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -43,12 +46,13 @@ export default function StaffAcceptancesScreen() {
   const [roomModalVisible, setRoomModalVisible] = useState(false);
   const [assignTarget, setAssignTarget] = useState<AcceptanceRow | null>(null);
   const [assigning, setAssigning] = useState(false);
+  const [pdfLoadingId, setPdfLoadingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!staffId) return;
     const { data: list } = await supabase
       .from('contract_acceptances')
-      .select('id, token, room_id, contract_lang, accepted_at')
+      .select('id, token, room_id, contract_lang, accepted_at, guest_id, guests(full_name)')
       .eq('assigned_staff_id', staffId)
       .order('accepted_at', { ascending: false })
       .limit(100);
@@ -61,10 +65,15 @@ export default function StaffAcceptancesScreen() {
     }
 
     setRows(
-      (list ?? []).map((r) => ({
-        ...r,
-        room_number: r.room_id ? roomNumbers[r.room_id] ?? '—' : null,
-      }))
+      (list ?? []).map((r) => {
+        const guests = r.guests as { full_name: string | null } | { full_name: string | null }[] | null;
+        const guestObj = Array.isArray(guests) ? guests[0] : guests;
+        return {
+          ...r,
+          room_number: r.room_id ? roomNumbers[r.room_id] ?? '—' : null,
+          signer_name: guestObj?.full_name ?? null,
+        };
+      })
     );
   }, [staffId]);
 
@@ -129,6 +138,35 @@ export default function StaffAcceptancesScreen() {
     setAssigning(false);
   };
 
+  const downloadPdf = async (item: AcceptanceRow) => {
+    if (!item.guest_id) {
+      Alert.alert('Bilgi', 'Bu onay kaydında imzalayan misafir bilgisi yok; PDF oluşturulamaz.');
+      return;
+    }
+    setPdfLoadingId(item.id);
+    try {
+      const { data: guest, error } = await supabase
+        .from('guests')
+        .select('full_name, phone, email, id_number, verified_at, created_at, signature_data, rooms(room_number), contract_templates(title, content)')
+        .eq('id', item.guest_id)
+        .single();
+      if (error || !guest) throw new Error(error?.message ?? 'Misafir bulunamadı.');
+      if (!guest.signature_data) {
+        Alert.alert('Uyarı', 'Bu misafir henüz sözleşmeyi imzalamamış.');
+        return;
+      }
+      const forPdf: GuestForPdf = {
+        ...guest,
+        rooms: Array.isArray(guest.rooms) ? (guest.rooms[0] ?? null) : guest.rooms,
+        contract_templates: Array.isArray(guest.contract_templates) ? (guest.contract_templates[0] ?? null) : guest.contract_templates,
+      };
+      await shareContractPdf(forPdf);
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'PDF oluşturulamadı.');
+    }
+    setPdfLoadingId(null);
+  };
+
   if (!staffId) return null;
 
   if (loading) {
@@ -172,15 +210,37 @@ export default function StaffAcceptancesScreen() {
                 </View>
                 <Text style={styles.date}>{new Date(item.accepted_at).toLocaleString('tr-TR')}</Text>
               </View>
+              {item.signer_name ? (
+                <View style={styles.signerRow}>
+                  <Ionicons name="create-outline" size={14} color="#0f766e" />
+                  <Text style={styles.signerText}>İmzalayan: {item.signer_name}</Text>
+                </View>
+              ) : null}
               <View style={styles.roomRow}>
                 <Text style={styles.roomLabel}>Oda:</Text>
                 <Text style={styles.roomValue}>{item.room_number ?? '— Atanmadı'}</Text>
               </View>
               <Text style={styles.meta}>Dil: {item.contract_lang.toUpperCase()}</Text>
-              <TouchableOpacity style={styles.assignRoomBtn} onPress={() => openRoomModal(item)}>
-                <Ionicons name="bed-outline" size={18} color="#fff" />
-                <Text style={styles.assignRoomBtnText}>{item.room_id ? 'Oda değiştir' : 'Oda ata'}</Text>
-              </TouchableOpacity>
+              <View style={styles.cardActions}>
+                <TouchableOpacity style={styles.assignRoomBtn} onPress={() => openRoomModal(item)}>
+                  <Ionicons name="bed-outline" size={18} color="#fff" />
+                  <Text style={styles.assignRoomBtnText}>{item.room_id ? 'Oda değiştir' : 'Oda ata'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.pdfBtn, (pdfLoadingId === item.id || !item.guest_id) && styles.pdfBtnDisabled]}
+                  onPress={() => downloadPdf(item)}
+                  disabled={pdfLoadingId !== null}
+                >
+                  {pdfLoadingId === item.id ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="document-text-outline" size={18} color="#fff" />
+                      <Text style={styles.pdfBtnText}>PDF</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
           )}
         />
@@ -280,11 +340,15 @@ const styles = StyleSheet.create({
   tokenBadge: { backgroundColor: theme.colors.backgroundSecondary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   tokenText: { fontSize: 13, fontWeight: '600', color: theme.colors.text },
   date: { fontSize: 12, color: theme.colors.textMuted },
+  signerRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  signerText: { fontSize: 13, color: '#0f766e', fontWeight: '600' },
   roomRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   roomLabel: { fontSize: 14, color: theme.colors.textSecondary, marginRight: 6 },
   roomValue: { fontSize: 15, fontWeight: '600', color: theme.colors.text },
   meta: { fontSize: 12, color: theme.colors.textMuted, marginBottom: 12 },
+  cardActions: { flexDirection: 'row', gap: 10 },
   assignRoomBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -294,6 +358,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   assignRoomBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+  pdfBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#2d3748',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+  },
+  pdfBtnDisabled: { opacity: 0.6 },
+  pdfBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',

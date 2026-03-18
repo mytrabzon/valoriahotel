@@ -15,6 +15,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase, supabaseUrl } from '@/lib/supabase';
+import { FIXED_CONTRACT_QR_URL } from '@/constants/contractQr';
 
 const KEYS = {
   contract_qr_base_url: 'Sözleşme onay sayfası base URL (tek ayar – tüm QR\'lar buraya gider)',
@@ -26,15 +27,20 @@ const KEYS = {
 const SUPABASE_CONTRACT_PATH = '/functions/v1/public-contract';
 const defaultContractBase = supabaseUrl ? `${supabaseUrl.replace(/\/$/, '')}${SUPABASE_CONTRACT_PATH}` : '';
 
-/** Tek tip QR sözleşme URL'si – Vercel/custom domain sonrası /guest/sign-one olmalı */
+/** Tek tip QR sözleşme URL'si – Vercel/custom domain. valoria.app satılık olduğu için varsayılan hep Vercel. */
 const CONTRACT_SIGN_ONE_PATH = '/guest/sign-one';
-const recommendedContractBase =
-  (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_PUBLIC_CONTRACT_URL
-    ? String(process.env.EXPO_PUBLIC_PUBLIC_CONTRACT_URL).replace(/\/$/, '')
-    : '') ||
-  (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_APP_URL
-    ? `${String(process.env.EXPO_PUBLIC_APP_URL).replace(/\/$/, '')}${CONTRACT_SIGN_ONE_PATH}`
-    : 'https://valoriahotel-el4r.vercel.app/guest/sign-one');
+const VERCEL_CONTRACT_BASE = 'https://valoriahotel-el4r.vercel.app/guest/sign-one';
+const recommendedContractBase = (() => {
+  const fromContract = typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_PUBLIC_CONTRACT_URL
+    ? String(process.env.EXPO_PUBLIC_PUBLIC_CONTRACT_URL).replace(/\/$/, '').replace(/\?.*$/, '')
+    : '';
+  if (fromContract && !fromContract.includes('valoria.app')) return fromContract;
+  const fromApp = typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_APP_URL
+    ? String(process.env.EXPO_PUBLIC_APP_URL).replace(/\/$/, '')
+    : '';
+  if (fromApp && !fromApp.includes('valoria.app')) return `${fromApp}${CONTRACT_SIGN_ONE_PATH}`;
+  return VERCEL_CONTRACT_BASE;
+})();
 
 export default function ContractAppSettings() {
   const insets = useSafeAreaInsets();
@@ -66,17 +72,15 @@ export default function ContractAppSettings() {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      const base = (map.contract_qr_base_url || defaultContractBase).replace(/\/$/, '');
-      if (lobbyRow?.token && base) {
-        setSingleQrUrl(`${base}?t=${encodeURIComponent(lobbyRow.token)}&l=tr`);
-      }
+      setSingleQrUrl(FIXED_CONTRACT_QR_URL);
       setLoading(false);
     })();
   }, []);
 
   const setOne = (key: string, v: string) => setValues((prev) => ({ ...prev, [key]: v }));
 
-  const contractBase = (values.contract_qr_base_url || defaultContractBase).replace(/\/$/, '');
+  let contractBase = (values.contract_qr_base_url || defaultContractBase).replace(/\/$/, '').replace(/\?.*$/, '');
+  if (contractBase.includes('valoria.app')) contractBase = VERCEL_CONTRACT_BASE;
 
   const copyOrShare = async (text: string, label: string) => {
     try {
@@ -89,20 +93,15 @@ export default function ContractAppSettings() {
   const generateLobbyToken = async () => {
     setGeneratingToken(true);
     try {
-      const { data: token, error } = await supabase.rpc('generate_contract_lobby_token');
-      if (error) throw error;
-      if (token && contractBase) {
-        const url = `${contractBase}?t=${encodeURIComponent(token)}&l=tr`;
-        setSingleQrUrl(url);
-        try {
-          await Share.share({ message: url, title: 'Sözleşme onay sayfası (tek QR)' });
-        } catch {
-          // paylaşım iptal veya destek yok
-        }
-        Alert.alert('Token oluşturuldu', 'Tek QR URL kopyalandı / paylaşıldı. Bu linki QR koduna basabilirsiniz.');
+      setSingleQrUrl(FIXED_CONTRACT_QR_URL);
+      try {
+        await Share.share({ message: FIXED_CONTRACT_QR_URL, title: 'Sözleşme onay sayfası (tek QR)' });
+      } catch {
+        // paylaşım iptal veya destek yok
       }
+      Alert.alert('Hazır', 'Tüm sözleşme QR\'ları bu tek URL\'ye gider. Link kopyalandı / paylaşıldı.');
     } catch (e) {
-      Alert.alert('Hata', e instanceof Error ? e.message : 'Token oluşturulamadı');
+      Alert.alert('Hata', e instanceof Error ? e.message : 'Paylaşılamadı');
     }
     setGeneratingToken(false);
   };
@@ -177,25 +176,23 @@ export default function ContractAppSettings() {
         <Text style={styles.hint}>
           Tek bir QR ile misafir doğrudan sözleşme onay sayfasına gider. Oda seçimi yok; onay sonrası admin çalışan atar, çalışan oda ataması yapar.
         </Text>
-        <TouchableOpacity style={styles.tokenBtn} onPress={generateLobbyToken} disabled={generatingToken || !contractBase}>
+        <TouchableOpacity style={styles.tokenBtn} onPress={generateLobbyToken} disabled={generatingToken}>
           {generatingToken ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.tokenBtnText}>Yeni token oluştur (tek QR URL)</Text>}
         </TouchableOpacity>
-        {singleQrUrl ? (
-          <View style={styles.field}>
-            <Text style={styles.label}>Tek QR tam URL (kopyalayıp QR yapın)</Text>
-            <View style={styles.copyRow}>
-              <TextInput style={[styles.input, styles.readOnlyInput, styles.copyInput]} value={singleQrUrl} editable={false} selectable />
-              <TouchableOpacity
-                style={styles.copyBtn}
-                onPress={() => copyOrShare(singleQrUrl, 'Tek QR URL')}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="copy-outline" size={22} color="#fff" />
-                <Text style={styles.copyBtnText}>Paylaş / Kopyala</Text>
-              </TouchableOpacity>
-            </View>
+        <View style={styles.field}>
+          <Text style={styles.label}>Tek QR tam URL (tüm sözleşme QR’ları bu adrese gider)</Text>
+          <View style={styles.copyRow}>
+            <TextInput style={[styles.input, styles.readOnlyInput, styles.copyInput]} value={singleQrUrl || FIXED_CONTRACT_QR_URL} editable={false} selectable />
+            <TouchableOpacity
+              style={styles.copyBtn}
+              onPress={() => copyOrShare(singleQrUrl || FIXED_CONTRACT_QR_URL, 'Tek QR URL')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="copy-outline" size={22} color="#fff" />
+              <Text style={styles.copyBtnText}>Paylaş / Kopyala</Text>
+            </TouchableOpacity>
           </View>
-        ) : null}
+        </View>
 
         <Text style={styles.hint}>Kaydettikten sonra hem "Yeni token oluştur (tek QR URL)" hem oda sözleşme QR’ları bu adresi kullanır. Onaylar Admin → Sözleşme onayları ve Personel uygulamasında görünür.</Text>
 

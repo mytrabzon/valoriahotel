@@ -693,6 +693,7 @@ return new Response(html, { status: 200, headers: HTML_HEADERS });
 
     const fullName = (formData.full_name ?? "").trim();
     const hasFullForm = fullName.length > 0;
+    let insertedGuestId: string | null = null;
 
     if (hasFullForm) {
       const phoneCountry = (formData.phone_country_code ?? "+90").trim();
@@ -735,13 +736,18 @@ return new Response(html, { status: 200, headers: HTML_HEADERS });
         status: "pending",
       };
 
-      const { error: guestErr } = await supabase.from("guests").insert(guestPayload);
+      const { data: insertedGuest, error: guestErr } = await supabase
+        .from("guests")
+        .insert(guestPayload)
+        .select("id")
+        .single();
       if (guestErr) {
         return new Response(
           `Kayıt oluşturulamadı: ${guestErr.message}`,
           { status: 500, headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" } }
         );
       }
+      if (insertedGuest?.id) insertedGuestId = insertedGuest.id;
     }
 
     await supabase.from("contract_acceptances").insert({
@@ -753,6 +759,7 @@ return new Response(html, { status: 200, headers: HTML_HEADERS });
       user_agent: ua,
       ip_address: ip,
       source: "web",
+      guest_id: insertedGuestId,
     });
 
     const { data: settingsRows } = await supabase.from("app_settings").select("key, value").in("key", ["google_play_url", "app_store_url", "contract_font_size", "contract_theme", "contract_compact"]);

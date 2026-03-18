@@ -7,6 +7,7 @@ export default function StaffStockLayout() {
       <Stack.Screen name="entry" options={{ title: 'Stok Girişi' }} />
       <Stack.Screen name="exit" options={{ title: 'Stok Çıkışı' }} />
       <Stack.Screen name="scan" options={{ title: 'Barkod Okut', headerShown: false }} />
+      <Stack.Screen name="product/[id]" options={{ title: 'Ürün Detayı' }} />
     </Stack>
   );
 }

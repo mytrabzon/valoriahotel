@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { theme } from '@/constants/theme';
+import { formatDateShort, formatTime } from '@/lib/date';
 
 const EXIT_REASONS = [
   { value: 'room', label: 'Oda kullanımı' },
@@ -24,6 +25,14 @@ const EXIT_REASONS = [
 
 type Product = { id: string; name: string; unit: string | null; current_stock: number | null };
 type ExitItem = { productId: string; name: string; currentStock: number; quantity: string; unit: string };
+type RecentExit = {
+  id: string;
+  quantity: number;
+  notes: string | null;
+  created_at: string;
+  product: { name: string } | null;
+  staff: { full_name: string | null } | null;
+};
 
 export default function StaffStockExitScreen() {
   const router = useRouter();
@@ -36,6 +45,11 @@ export default function StaffStockExitScreen() {
   const [notes, setNotes] = useState('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
+  const [recentExits, setRecentExits] = useState<RecentExit[]>([]);
+
+  const now = new Date();
+  const displayDate = formatDateShort(now.toISOString());
+  const displayTime = formatTime(now.toISOString());
 
   useEffect(() => {
     supabase
@@ -43,6 +57,16 @@ export default function StaffStockExitScreen() {
       .select('id, name, unit, current_stock')
       .order('name')
       .then(({ data }) => setProducts((data ?? []) as Product[]));
+  }, []);
+
+  useEffect(() => {
+    supabase
+      .from('stock_movements')
+      .select('id, quantity, notes, created_at, product:stock_products(name), staff:staff_id(full_name)')
+      .eq('movement_type', 'out')
+      .order('created_at', { ascending: false })
+      .limit(15)
+      .then(({ data }) => setRecentExits((data ?? []) as RecentExit[]));
   }, []);
 
   useEffect(() => {
@@ -114,6 +138,13 @@ export default function StaffStockExitScreen() {
         if (error) throw error;
       }
 
+      const { data } = await supabase
+        .from('stock_movements')
+        .select('id, quantity, notes, created_at, product:stock_products(name), staff:staff_id(full_name)')
+        .eq('movement_type', 'out')
+        .order('created_at', { ascending: false })
+        .limit(15);
+      setRecentExits((data ?? []) as RecentExit[]);
       Alert.alert('Kaydedildi', 'Stok çıkışı admin onayından sonra işlenecek.', () => router.back());
     } catch (e) {
       Alert.alert('Hata', (e as Error)?.message ?? 'İşlem başarısız.');
@@ -126,13 +157,14 @@ export default function StaffStockExitScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <View style={styles.card}>
+        <Text style={styles.sectionTitle}>📦 Çıkış yapılacak ürünler</Text>
         <TouchableOpacity
           style={styles.primaryBtn}
           onPress={() => router.push({ pathname: '/staff/stock/scan', params: { returnTo: 'exit' } })}
           activeOpacity={0.8}
         >
           <Ionicons name="barcode-outline" size={22} color="#fff" />
-          <Text style={styles.primaryBtnText}>📷 Barkod Okut</Text>
+          <Text style={styles.primaryBtnText}>📸 Barkod Okut (Hızlı çıkış için)</Text>
         </TouchableOpacity>
 
         <Text style={styles.label}>Ürün ara</Text>
@@ -159,25 +191,33 @@ export default function StaffStockExitScreen() {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>📋 Çıkış yapılacak ürünler</Text>
           {items.map((i) => (
-            <View key={i.productId} style={styles.row}>
-              <View style={styles.rowLeft}>
-                <Text style={styles.rowName}>{i.name}</Text>
-                <Text style={styles.rowSub}>Stok: {i.currentStock} {i.unit}</Text>
-                <View style={styles.qtyRow}>
-                  <Text style={styles.qtyLabel}>Çıkış:</Text>
-                  <TextInput
-                    style={styles.qtyInput}
-                    value={i.quantity}
-                    onChangeText={(v) => setItems((prev) => prev.map((x) => (x.productId === i.productId ? { ...x, quantity: v } : x)))}
-                    placeholder="0"
-                    placeholderTextColor={theme.colors.textMuted}
-                    keyboardType="numeric"
-                  />
-                  <Text style={styles.qtyUnit}>{i.unit}</Text>
-                </View>
+            <View key={i.productId} style={styles.exitBlock}>
+              <Text style={styles.rowName}>{i.name}</Text>
+              <Text style={styles.rowSub}>Stok: {i.currentStock} {i.unit}</Text>
+              <View style={styles.qtyRow}>
+                <Text style={styles.qtyLabel}>Çıkış miktarı:</Text>
+                <TextInput
+                  style={styles.qtyInput}
+                  value={i.quantity}
+                  onChangeText={(v) => setItems((prev) => prev.map((x) => (x.productId === i.productId ? { ...x, quantity: v } : x)))}
+                  placeholder="0"
+                  placeholderTextColor={theme.colors.textMuted}
+                  keyboardType="numeric"
+                />
+                <Text style={styles.qtyUnit}>adet</Text>
+              </View>
+              <View style={styles.metaRow}>
+                <Text style={styles.metaLabel}>👤 Çıkaran:</Text>
+                <Text style={styles.metaValue}>{staff?.full_name ?? '—'}</Text>
+              </View>
+              <View style={styles.metaRow}>
+                <Text style={styles.metaLabel}>📅 Tarih:</Text>
+                <Text style={styles.metaValue}>{displayDate}</Text>
+                <Text style={[styles.metaLabel, { marginLeft: 12 }]}>🕒 Saat:</Text>
+                <Text style={styles.metaValue}>{displayTime}</Text>
               </View>
               <TouchableOpacity onPress={() => removeItem(i.productId)} hitSlop={12} style={styles.removeBtn}>
-                <Ionicons name="trash-outline" size={22} color={theme.colors.error} />
+                <Ionicons name="trash-outline" size={20} color={theme.colors.error} />
               </TouchableOpacity>
             </View>
           ))}
@@ -203,10 +243,10 @@ export default function StaffStockExitScreen() {
             </TouchableOpacity>
           ))}
 
-          <Text style={[styles.label, { marginTop: 12 }]}>Not (isteğe bağlı)</Text>
+          <Text style={[styles.label, { marginTop: 12 }]}>📝 Çıkış nedeni (detay)</Text>
           <TextInput
             style={[styles.input, styles.textArea]}
-            placeholder="Açıklama..."
+            placeholder="Örn: Oda 102 temizliği için..."
             placeholderTextColor={theme.colors.textMuted}
             value={notes}
             onChangeText={setNotes}
@@ -219,10 +259,29 @@ export default function StaffStockExitScreen() {
             disabled={loading}
             activeOpacity={0.8}
           >
-            {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.submitBtnText}>💾 Çıkışı Tamamla</Text>}
+            {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.submitBtnText}>✅ Çıkış yap</Text>}
           </TouchableOpacity>
         </View>
       )}
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>📋 Son çıkışlar</Text>
+        {recentExits.length === 0 ? (
+          <Text style={styles.emptyText}>Henüz çıkış kaydı yok.</Text>
+        ) : (
+          <View style={styles.recentList}>
+            {recentExits.map((m) => (
+              <View key={m.id} style={styles.recentRow}>
+                <Text style={styles.recentLeft}>
+                  {formatDateShort(m.created_at)} · {(m.staff as { full_name?: string })?.full_name ?? '—'} · {(m.product as { name?: string })?.name ?? '—'} ({m.quantity})
+                </Text>
+                <Text style={styles.recentRight}>{formatTime(m.created_at)}</Text>
+                {m.notes ? <Text style={styles.recentNotes} numberOfLines={1}>{m.notes}</Text> : null}
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
     </ScrollView>
   );
 }
@@ -266,8 +325,13 @@ const styles = StyleSheet.create({
   searchItemName: { fontSize: 15, fontWeight: '600', color: theme.colors.text },
   searchItemStock: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
   sectionTitle: { fontSize: 14, fontWeight: '800', color: theme.colors.text, marginBottom: 10 },
-  row: { flexDirection: 'row', gap: 12, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.borderLight },
-  rowLeft: { flex: 1, minWidth: 0 },
+  exitBlock: {
+    paddingVertical: 12,
+    paddingHorizontal: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.borderLight,
+    position: 'relative',
+  },
   rowName: { fontSize: 15, fontWeight: '700', color: theme.colors.text },
   rowSub: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
   qtyRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
@@ -284,7 +348,16 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
   },
   qtyUnit: { fontSize: 13, color: theme.colors.textMuted },
-  removeBtn: { padding: 6, justifyContent: 'center' },
+  metaRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginTop: 6, gap: 4 },
+  metaLabel: { fontSize: 12, color: theme.colors.textMuted },
+  metaValue: { fontSize: 13, color: theme.colors.text },
+  removeBtn: { position: 'absolute', top: 8, right: 0, padding: 6 },
+  recentList: { marginTop: 4 },
+  recentRow: { paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.borderLight },
+  recentLeft: { fontSize: 13, color: theme.colors.text },
+  recentRight: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
+  recentNotes: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2, fontStyle: 'italic' },
+  emptyText: { fontSize: 13, color: theme.colors.textMuted, fontStyle: 'italic' },
   reasonRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 6, borderRadius: theme.radius.md },
   reasonRowSelected: { backgroundColor: `${theme.colors.primary}14` },
   reasonLabel: { fontSize: 14, color: theme.colors.text },

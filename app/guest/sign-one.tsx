@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,9 @@ import { useGuestFlowStore } from '@/stores/guestFlowStore';
 import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
 import { supabase, supabaseUrl, supabaseAnonKey } from '@/lib/supabase';
 import { COUNTRY_PHONE_CODES, type CountryCode } from '@/constants/countryPhoneCodes';
+import { LANGUAGES } from '@/i18n';
+
+const CONTRACT_LANGS = LANGUAGES;
 
 function parseDDMMYYYY(s: string): string | null {
   const trimmed = (s || '').trim();
@@ -91,10 +94,13 @@ export default function GuestSignOneScreen() {
   }
 
   const [contractContent, setContractContent] = useState('');
+  const [contractLang, setContractLang] = useState(lang);
   const [loadingContract, setLoadingContract] = useState(true);
+  const [translating, setTranslating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [showNationalityPicker, setShowNationalityPicker] = useState(false);
+  const translatedCache = useRef<Record<string, string>>({});
 
   const [fullName, setFullName] = useState('');
   const [idType, setIdType] = useState<'tc' | 'passport' | 'other'>('tc');
@@ -112,34 +118,78 @@ export default function GuestSignOneScreen() {
   const [adults, setAdults] = useState(1);
   const [children, setChildren] = useState(0);
 
-  const fetchContract = useCallback(async () => {
+  const fetchContract = useCallback(async (lng: string) => {
     setLoadingContract(true);
     const { data } = await supabase
       .from('contract_templates')
       .select('content')
-      .eq('lang', lang)
+      .eq('lang', lng)
       .eq('version', 2)
       .eq('is_active', true)
       .maybeSingle();
-    if (!data) {
+    let content = data?.content?.trim() ?? '';
+    if (!content) {
       const { data: fallback } = await supabase
         .from('contract_templates')
         .select('content')
-        .eq('lang', lang)
+        .eq('lang', lng)
         .eq('is_active', true)
         .order('version', { ascending: false })
         .limit(1)
         .maybeSingle();
-      setContractContent(fallback?.content ?? '');
-    } else {
-      setContractContent(data.content ?? '');
+      content = fallback?.content?.trim() ?? '';
     }
+    if (!content && lng !== 'tr') {
+      if (translatedCache.current[lng]) {
+        setContractContent(translatedCache.current[lng]);
+        setLoadingContract(false);
+        setTranslating(false);
+        return;
+      }
+      setTranslating(true);
+      try {
+        const { data: trData } = await supabase
+          .from('contract_templates')
+          .select('content')
+          .eq('lang', 'tr')
+          .eq('version', 2)
+          .eq('is_active', true)
+          .maybeSingle();
+        const trContent = trData?.content?.trim() ?? '';
+        if (trContent) {
+          const { data: fnData, error: fnError } = await supabase.functions.invoke('translate-contract', {
+            body: { sourceTitle: 'Konaklama Sözleşmesi ve Otel Kuralları', sourceContent: trContent },
+          });
+          if (!fnError && fnData) {
+            const translations = (fnData as { translations?: Record<string, { content: string }> })?.translations;
+            const translated = translations?.[lng]?.content?.trim();
+            if (translated) {
+              translatedCache.current[lng] = translated;
+              content = translated;
+            }
+          }
+        }
+        if (!content) {
+          const { data: trFallback } = await supabase
+            .from('contract_templates')
+            .select('content')
+            .eq('lang', 'tr')
+            .eq('is_active', true)
+            .order('version', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          content = trFallback?.content ?? '';
+        }
+      } catch (_) {}
+      setTranslating(false);
+    }
+    setContractContent(content);
     setLoadingContract(false);
-  }, [lang]);
+  }, []);
 
   useEffect(() => {
-    fetchContract();
-  }, [fetchContract]);
+    fetchContract(contractLang);
+  }, [contractLang, fetchContract]);
 
   useEffect(() => {
     if (token) {
@@ -237,6 +287,7 @@ export default function GuestSignOneScreen() {
           contract_version: 2,
           contract_template_id: template?.id ?? null,
           source: Platform.OS === 'web' ? 'web' : 'app',
+          guest_id: guest?.id ?? null,
         });
       }
 
@@ -289,8 +340,10 @@ export default function GuestSignOneScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.pageTitle}>Konaklama sözleşmesi</Text>
-        <Text style={styles.pageSubtitle}>Bilgilerinizi doldurup sözleşmeyi okuyarak onaylayın.</Text>
+        <View style={styles.pageTitleWrap}>
+          <Text style={styles.pageTitle}>Konaklama sözleşmesi</Text>
+          <Text style={styles.pageSubtitle}>Bilgilerinizi doldurup sözleşmeyi okuyarak onaylayın.</Text>
+        </View>
 
         {/* 1. Kişisel bilgiler */}
         <View style={styles.section}>
@@ -462,18 +515,32 @@ export default function GuestSignOneScreen() {
           </View>
         </View>
 
-        {/* 3. Sözleşme metni */}
+        {/* 3. Sözleşme metni - Kutudan çıkarıldı, sayfa üzerinde doğrudan */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Sözleşme metni</Text>
-          <View style={styles.contractCard}>
-            {loadingContract ? (
-              <ActivityIndicator size="small" color={COLORS.accent} style={styles.loader} />
-            ) : (
-              <ScrollView style={styles.contractScroll} nestedScrollEnabled>
-                <Text style={styles.contractText}>{contractContent || 'Sözleşme metni yükleniyor…'}</Text>
-              </ScrollView>
-            )}
-          </View>
+          <Text style={styles.sectionHint}>Dil seçin; sözleşme seçilen dilde tam metin olarak çevrilir.</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.langStrip} contentContainerStyle={styles.langStripContent}>
+            {CONTRACT_LANGS.map(({ code, label }) => (
+              <TouchableOpacity
+                key={code}
+                style={[styles.langChip, contractLang === code && styles.langChipActive]}
+                onPress={() => {
+                  setContractLang(code);
+                  fetchContract(code);
+                }}
+                disabled={loadingContract || translating}
+              >
+                <Text style={[styles.langChipText, contractLang === code && styles.langChipTextActive]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          {loadingContract || translating ? (
+            <ActivityIndicator size="small" color={COLORS.accent} style={styles.loader} />
+          ) : (
+            <View style={styles.contractBody}>
+              <Text style={styles.contractText}>{contractContent || 'Sözleşme metni yükleniyor…'}</Text>
+            </View>
+          )}
         </View>
 
         {/* 4. İmza özeti */}
@@ -548,8 +615,9 @@ const styles = StyleSheet.create({
   envText: { fontSize: 15, color: COLORS.textSecondary, lineHeight: 24, textAlign: 'center' },
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 20 },
-  pageTitle: { fontSize: 26, fontWeight: '700', color: COLORS.text, marginBottom: 6 },
-  pageSubtitle: { fontSize: 15, color: COLORS.textSecondary, marginBottom: 24, lineHeight: 22 },
+  pageTitleWrap: { alignItems: 'center', marginBottom: 24 },
+  pageTitle: { fontSize: 26, fontWeight: '700', color: COLORS.text, marginBottom: 6, textAlign: 'center' },
+  pageSubtitle: { fontSize: 15, color: COLORS.textSecondary, lineHeight: 22, textAlign: 'center' },
   section: { marginBottom: 28 },
   sectionTitle: {
     fontSize: 15,
@@ -558,6 +626,21 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     letterSpacing: 0.3,
   },
+  sectionHint: { fontSize: 13, color: COLORS.textSecondary, marginBottom: 12 },
+  langStrip: { maxHeight: 44, marginBottom: 12 },
+  langStripContent: { paddingVertical: 4, gap: 8, alignItems: 'center', paddingRight: 16 },
+  langChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: COLORS.inputBg,
+    borderWidth: 1,
+    borderColor: COLORS.inputBorder,
+    marginRight: 8,
+  },
+  langChipActive: { backgroundColor: COLORS.accentLight, borderColor: COLORS.accent },
+  langChipText: { color: COLORS.text, fontSize: 13 },
+  langChipTextActive: { color: COLORS.accent, fontWeight: '600' },
   card: {
     backgroundColor: COLORS.card,
     borderRadius: 16,
@@ -627,16 +710,8 @@ const styles = StyleSheet.create({
   },
   stepperText: { color: COLORS.text, fontSize: 20, fontWeight: '600' },
   stepperValue: { color: COLORS.text, fontSize: 18, fontWeight: '600', minWidth: 32, textAlign: 'center' },
-  contractCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: COLORS.cardBorder,
-    maxHeight: 260,
-  },
-  contractScroll: { maxHeight: 220 },
-  contractText: { color: COLORS.text, fontSize: 15, lineHeight: 24 },
+  contractBody: { paddingVertical: 8 },
+  contractText: { color: COLORS.text, fontSize: 16, lineHeight: 26 },
   loader: { marginVertical: 24 },
   signerCard: {
     backgroundColor: COLORS.accentLight,

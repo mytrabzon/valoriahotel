@@ -23,6 +23,7 @@ type CardRow = {
   valid_until: string | null;
   is_active: boolean;
   all_doors: boolean;
+  notes: string | null;
   guests: { full_name: string | null } | null;
   staff: { full_name: string | null } | null;
 };
@@ -43,28 +44,37 @@ function formatDate(s: string | null) {
   return d.toLocaleDateString('tr-TR');
 }
 
+type FilterStatus = 'all' | 'active' | 'revoked';
+const FILTER_LABELS: Record<FilterStatus, string> = { all: 'Tümü', active: 'Aktif', revoked: 'İptal' };
+
 export default function AccessCardsScreen() {
   const router = useRouter();
   const [cards, setCards] = useState<CardRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
+  const [filterType, setFilterType] = useState<string>('');
 
   const load = useCallback(async () => {
-    const { data, error } = await supabase
+    let q = supabase
       .from('access_cards')
-      .select('id, serial_number, card_type, guest_id, staff_id, valid_from, valid_until, is_active, all_doors, guests(full_name), staff(full_name)')
+      .select('id, serial_number, card_type, guest_id, staff_id, valid_from, valid_until, is_active, all_doors, notes, guests(full_name), staff!staff_id(full_name)')
       .order('created_at', { ascending: false });
+    if (filterStatus === 'active') q = q.eq('is_active', true);
+    if (filterStatus === 'revoked') q = q.eq('is_active', false);
+    if (filterType) q = q.eq('card_type', filterType);
+    const { data, error } = await q;
     if (error) {
       Alert.alert('Hata', error.message);
       return;
     }
     setCards((data as CardRow[]) ?? []);
-  }, []);
+  }, [filterStatus, filterType]);
 
   useEffect(() => {
     load();
     setLoading(false);
-  }, [load]);
+  }, [load, filterStatus, filterType]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -98,12 +108,33 @@ export default function AccessCardsScreen() {
     );
   }
 
+  const filteredCards = cards;
+
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.addBtn} onPress={() => router.push('/admin/access/cards/new')}>
         <Ionicons name="add-circle" size={22} color="#fff" />
         <Text style={styles.addBtnText}>Yeni kart tanımla</Text>
       </TouchableOpacity>
+      <View style={styles.filterRow}>
+        <View style={styles.filterChips}>
+          {(['all', 'active', 'revoked'] as FilterStatus[]).map((f) => (
+            <TouchableOpacity key={f} style={[styles.filterChip, filterStatus === f && styles.filterChipActive]} onPress={() => setFilterStatus(f)}>
+              <Text style={[styles.filterChipText, filterStatus === f && styles.filterChipTextActive]}>{FILTER_LABELS[f]}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <View style={styles.filterChips}>
+          <TouchableOpacity style={[styles.filterChip, !filterType && styles.filterChipActive]} onPress={() => setFilterType('')}>
+            <Text style={[styles.filterChipText, !filterType && styles.filterChipTextActive]}>Tüm tipler</Text>
+          </TouchableOpacity>
+          {Object.entries(CARD_TYPE_LABELS).map(([value, label]) => (
+            <TouchableOpacity key={value} style={[styles.filterChip, filterType === value && styles.filterChipActive]} onPress={() => setFilterType(value)}>
+              <Text style={[styles.filterChipText, filterType === value && styles.filterChipTextActive]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
       <FlatList
         data={cards}
         keyExtractor={(c) => c.id}
@@ -132,6 +163,7 @@ export default function AccessCardsScreen() {
                     {formatDate(item.valid_from)} – {formatDate(item.valid_until)}
                     {item.all_doors ? ' · Tüm kapılar' : ''}
                   </Text>
+                  {item.notes ? <Text style={styles.notes} numberOfLines={1}>{item.notes}</Text> : null}
                   {expired && <Text style={styles.expired}>Süresi dolmuş</Text>}
                 </View>
                 <Ionicons name="chevron-forward" size={22} color="#a0aec0" />
@@ -190,7 +222,14 @@ const styles = StyleSheet.create({
   expired: { fontSize: 12, color: '#e53e3e', marginTop: 2 },
   revokeBtn: { marginTop: 10, alignSelf: 'flex-start' },
   revokeText: { fontSize: 13, color: '#e53e3e' },
+  notes: { fontSize: 12, color: '#718096', marginTop: 4 },
   empty: { padding: 32, alignItems: 'center' },
   emptyText: { fontSize: 16, color: '#4a5568' },
   emptyHint: { fontSize: 14, color: '#718096', marginTop: 8, textAlign: 'center' },
+  filterRow: { paddingHorizontal: 16, paddingBottom: 12, gap: 10 },
+  filterChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  filterChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: '#e2e8f0' },
+  filterChipActive: { backgroundColor: '#1a365d' },
+  filterChipText: { fontSize: 13, color: '#4a5568' },
+  filterChipTextActive: { color: '#fff', fontWeight: '600' },
 });

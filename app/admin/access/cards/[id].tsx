@@ -37,6 +37,7 @@ export default function EditCardScreen() {
   const [all_doors, setAllDoors] = useState(false);
   const [is_active, setIsActive] = useState(true);
   const [doorIds, setDoorIds] = useState<string[]>([]);
+  const [notes, setNotes] = useState('');
   const [doors, setDoors] = useState<DoorRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
@@ -60,6 +61,7 @@ export default function EditCardScreen() {
       setValidUntil(card.valid_until ? new Date(card.valid_until).toISOString().slice(0, 10) : '');
       setAllDoors(card.all_doors ?? false);
       setIsActive(card.is_active ?? true);
+      setNotes(card.notes ?? '');
       if (!card.all_doors) {
         const { data: perms } = await supabase.from('card_door_permissions').select('door_id').eq('card_id', id);
         setDoorIds((perms ?? []).map((p) => p.door_id));
@@ -95,7 +97,9 @@ export default function EditCardScreen() {
           valid_until: validUntilDate,
           all_doors,
           is_active,
+          notes: notes.trim() || null,
           updated_at: new Date().toISOString(),
+          ...(is_active ? { revoked_at: null } : {}),
         })
         .eq('id', id);
       if (cardError) throw cardError;
@@ -141,6 +145,16 @@ export default function EditCardScreen() {
             </TouchableOpacity>
           ))}
         </View>
+        <Text style={styles.label}>Not</Text>
+        <TextInput
+          style={[styles.input, styles.inputMultiline]}
+          value={notes}
+          onChangeText={setNotes}
+          placeholder="Kart notu"
+          placeholderTextColor="#9ca3af"
+          multiline
+          numberOfLines={2}
+        />
         <Text style={styles.label}>Geçerlilik başlangıç *</Text>
         <TextInput
           style={styles.input}
@@ -158,9 +172,12 @@ export default function EditCardScreen() {
           placeholderTextColor="#9ca3af"
         />
         <View style={styles.switchRow}>
-          <Text style={styles.switchLabel}>Kart aktif</Text>
+          <Text style={styles.switchLabel}>Kart aktif (iptal etmek için kapatın)</Text>
           <Switch value={is_active} onValueChange={setIsActive} trackColor={{ false: '#cbd5e0', true: '#1a365d' }} thumbColor="#fff" />
         </View>
+        {!is_active && (
+          <Text style={styles.reactivateHint}>İptal edilmiş kartı yeniden kullanmak için "Kart aktif"i açıp Güncelle'e basın.</Text>
+        )}
         <View style={styles.switchRow}>
           <Text style={styles.switchLabel}>Tüm kapılar</Text>
           <Switch value={all_doors} onValueChange={setAllDoors} trackColor={{ false: '#cbd5e0', true: '#1a365d' }} thumbColor="#fff" />
@@ -209,7 +226,9 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 13, color: '#4a5568' },
   chipTextActive: { color: '#fff', fontWeight: '600' },
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: 12, backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e8f0' },
-  switchLabel: { fontSize: 15, color: '#1a202c' },
+  switchLabel: { fontSize: 15, color: '#1a202c', flex: 1 },
+  reactivateHint: { fontSize: 13, color: '#718096', marginTop: 8, fontStyle: 'italic' },
+  inputMultiline: { minHeight: 72 },
   pickerWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   pickerItem: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0' },
   pickerItemActive: { backgroundColor: '#1a365d', borderColor: '#1a365d' },

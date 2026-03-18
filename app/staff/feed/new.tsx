@@ -46,11 +46,11 @@ export default function NewFeedPostScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.All,
       allowsEditing: false,
       quality: 0.8,
-      base64: true,
+      base64: false,
     });
     if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
-    const uri = asset.uri ?? (asset.base64 ? `data:${asset.type === 'video' ? 'video/mp4' : 'image/jpeg'};base64,${asset.base64}` : null);
+    const uri = asset.uri ?? null;
     if (!uri) {
       Alert.alert('Hata', 'Görsel yüklenemedi. Tekrar deneyin.');
       return;
@@ -69,11 +69,11 @@ export default function NewFeedPostScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.All,
       allowsEditing: false,
       quality: 0.8,
-      base64: true,
+      base64: false,
     });
     if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
-    const uri = asset.uri ?? (asset.base64 ? `data:${asset.type === 'video' ? 'video/mp4' : 'image/jpeg'};base64,${asset.base64}` : null);
+    const uri = asset.uri ?? null;
     if (!uri) {
       Alert.alert('Hata', 'Fotoğraf yüklenemedi. Tekrar deneyin.');
       return;

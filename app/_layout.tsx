@@ -236,8 +236,25 @@ export default function RootLayout() {
       if (!parsed) return;
       log.info('RootLayout', 'Deep link', parsed);
 
-      // Tek sayfa sözleşme onayı: doğrudan /guest/sign-one
+      // Tek sayfa sözleşme onayı: doğrudan /guest/sign-one (QR okutulunca sayfa hızlıca açılsın)
       if (parsed.type === 'sign-one') {
+        if (Platform.OS === 'web') {
+          router.replace({ pathname: '/guest/sign-one', params: { t: parsed.token ?? '', l: parsed.lang ?? 'tr' } });
+          if (parsed.token) {
+            supabase
+              .from('room_qr_codes')
+              .select('room_id, rooms(room_number)')
+              .eq('token', parsed.token)
+              .gt('expires_at', new Date().toISOString())
+              .maybeSingle()
+              .then(({ data }) => {
+                const roomId = (data as { room_id?: string })?.room_id ?? '';
+                const roomNumber = (data as { rooms?: { room_number?: string } })?.rooms?.room_number ?? '';
+                setQR(parsed.token!, roomId, roomNumber);
+              });
+          }
+          return;
+        }
         if (parsed.token) {
           const { data } = await supabase
             .from('room_qr_codes')
@@ -248,11 +265,6 @@ export default function RootLayout() {
           const roomId = (data as { room_id?: string })?.room_id ?? '';
           const roomNumber = (data as { rooms?: { room_number?: string } })?.rooms?.room_number ?? '';
           setQR(parsed.token, roomId, roomNumber);
-        }
-        // Web: QR ile açılan sayfada gizlilik ekranına yönlendirme; doğrudan sözleşme formunu göster
-        if (Platform.OS === 'web') {
-          router.replace({ pathname: '/guest/sign-one', params: { t: parsed.token ?? '', l: parsed.lang ?? 'tr' } });
-          return;
         }
         const accepted = await hasPolicyConsent();
         if (accepted) {

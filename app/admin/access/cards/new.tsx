@@ -41,6 +41,7 @@ export default function NewCardScreen() {
   const [valid_until, setValidUntil] = useState('');
   const [all_doors, setAllDoors] = useState(false);
   const [doorIds, setDoorIds] = useState<string[]>([]);
+  const [notes, setNotes] = useState('');
   const [guests, setGuests] = useState<GuestRow[]>([]);
   const [staffList, setStaffList] = useState<StaffRow[]>([]);
   const [doors, setDoors] = useState<DoorRow[]>([]);
@@ -96,6 +97,7 @@ export default function NewCardScreen() {
           all_doors,
           is_active: true,
           created_by: currentStaff?.id ?? null,
+          notes: notes.trim() || null,
         })
         .select('id')
         .single();
@@ -173,6 +175,16 @@ export default function NewCardScreen() {
             ))}
           </View>
         )}
+        <Text style={styles.label}>Not (isteğe bağlı)</Text>
+        <TextInput
+          style={[styles.input, styles.inputMultiline]}
+          value={notes}
+          onChangeText={setNotes}
+          placeholder="RFID formatı, tedarikçi, kullanım amacı vb."
+          placeholderTextColor="#9ca3af"
+          multiline
+          numberOfLines={2}
+        />
         <Text style={styles.label}>Geçerlilik başlangıç *</Text>
         <TextInput
           style={styles.input}
@@ -261,6 +273,7 @@ const styles = StyleSheet.create({
   pickerItemTextActive: { color: '#fff', fontWeight: '600' },
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, padding: 12, backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e8f0' },
   switchLabel: { fontSize: 15, color: '#1a202c' },
+  inputMultiline: { minHeight: 72 },
   submitBtn: { marginTop: 28, padding: 16, backgroundColor: '#1a365d', borderRadius: 12, alignItems: 'center' },
   submitDisabled: { opacity: 0.6 },
   submitText: { color: '#fff', fontWeight: '600', fontSize: 16 },

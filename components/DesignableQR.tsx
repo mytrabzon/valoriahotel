@@ -12,17 +12,22 @@ export type QRDesign = {
   logoSizeRatio?: number;
 };
 
+/** Ref: toDataURL(callback) ile QR'ı PNG base64 veya data URL olarak alırsınız. */
+export type QRCodeRef = { toDataURL: (callback: (data: string) => void) => void } | null;
+
 type DesignableQRProps = {
   value: string;
   size?: number;
   design: QRDesign;
   logo?: ImageSourcePropType;
+  /** Ref almak için (QR indirme vb.). ref.toDataURL(cb) ile resim alınır. */
+  getRef?: (ref: QRCodeRef) => void;
 };
 
 const defaultLogo = require('../assets/icon.png');
 
 /** Sade QR: beyaz/siyah veya seçilen iki renk, isteğe bağlı logo. Karışık görünüm yok. */
-export function DesignableQR({ value, size = 180, design, logo = defaultLogo }: DesignableQRProps) {
+export function DesignableQR({ value, size = 180, design, logo = defaultLogo, getRef }: DesignableQRProps) {
   const {
     useLogo,
     backgroundColor,
@@ -58,6 +63,7 @@ export function DesignableQR({ value, size = 180, design, logo = defaultLogo }: 
         logoSize={useLogo ? logoSize : undefined}
         logoBackgroundColor={backgroundColor}
         logoMargin={2}
+        getRef={getRef}
       />
     </View>
   );

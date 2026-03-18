@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { sendNotification } from '@/lib/notificationService';
 import { GUEST_TYPES, GUEST_MESSAGE_TEMPLATES } from '@/lib/notifications';
-import { formatDateTime } from '@/lib/date';
+import { shareContractPdf, type GuestForPdf } from '@/lib/contractPdf';
 
 type ContractTemplate = { title: string; content: string } | null;
 type Guest = {
@@ -28,64 +26,6 @@ type Guest = {
   contract_lang: string;
   contract_templates: ContractTemplate;
 };
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function buildContractHtml(guest: Guest): string {
-  const name = escapeHtml(guest.full_name);
-  const phone = guest.phone ? escapeHtml(guest.phone) : '—';
-  const email = guest.email ? escapeHtml(guest.email) : '—';
-  const idNo = guest.id_number ? escapeHtml(guest.id_number) : '—';
-  const room = guest.rooms?.room_number ? escapeHtml(String(guest.rooms.room_number)) : '—';
-  const date = formatDateTime(guest.verified_at ?? guest.created_at);
-  const title = guest.contract_templates?.title
-    ? escapeHtml(guest.contract_templates.title)
-    : 'Konaklama Sözleşmesi';
-  const content = guest.contract_templates?.content
-    ? escapeHtml(guest.contract_templates.content).replace(/\n/g, '<br/>')
-    : '';
-  const sigImg = guest.signature_data
-    ? `<img src="${guest.signature_data}" alt="İmza" style="max-width:280px;height:auto;margin-top:16px;" />`
-    : '';
-
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: system-ui, sans-serif; padding: 24px; color: #1a202c; font-size: 14px; line-height: 1.5; }
-    h1 { font-size: 18px; margin-bottom: 16px; color: #1a365d; }
-    .info { background: #f7fafc; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
-    .info p { margin: 4px 0; }
-    .contract { white-space: pre-wrap; margin: 16px 0; }
-    .signature { margin-top: 24px; }
-  </style>
-</head>
-<body>
-  <h1>VALORIA HOTEL – ${title}</h1>
-  <div class="info">
-    <p><strong>Misafir:</strong> ${name}</p>
-    <p><strong>Telefon:</strong> ${phone}</p>
-    <p><strong>E-posta:</strong> ${email}</p>
-    <p><strong>Kimlik No:</strong> ${idNo}</p>
-    <p><strong>Oda:</strong> ${room}</p>
-    <p><strong>Onay Tarihi:</strong> ${date}</p>
-  </div>
-  <div class="contract">${content}</div>
-  <div class="signature">
-    <p><strong>Dijital imza:</strong></p>
-    ${sigImg}
-  </div>
-</body>
-</html>`;
-}
 
 export default function GuestDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -111,27 +51,14 @@ export default function GuestDetail() {
   }, [id]);
 
   const exportPdf = async () => {
-    if (!guest?.signature_data) {
-      Alert.alert('Uyarı', 'Bu misafir henüz sözleşmeyi imzalamamış.');
-      return;
-    }
+    if (!guest) return;
     setPdfLoading(true);
     try {
-      const html = buildContractHtml(guest);
-      const { uri } = await Print.printToFileAsync({
-        html,
-        width: 595,
-        height: 842,
-        margins: { top: 40, bottom: 40, left: 40, right: 40 },
-      });
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Sözleşmeyi Kaydet' });
-      } else {
-        Alert.alert('PDF hazır', `Dosya: ${uri}`);
-      }
+      await shareContractPdf(guest as GuestForPdf);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'PDF oluşturulamadı.');
+      const msg = (e as Error)?.message ?? 'PDF oluşturulamadı.';
+      if (msg.startsWith('PDF hazır:')) Alert.alert('PDF hazır', msg);
+      else Alert.alert('Hata', msg);
     }
     setPdfLoading(false);
   };
