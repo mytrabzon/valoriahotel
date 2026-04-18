@@ -28,16 +28,38 @@ export class GatewayClient {
     const ts = Date.now();
     const { body, signature } = this.sign(payload, 'POST', path, ts);
     const f = this.args.fetchImpl ?? fetch;
+    const url = `${this.args.baseUrl}${path}`;
 
-    const res = await f(`${this.args.baseUrl}${path}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-gw-ts': String(ts),
-        'x-gw-signature': signature
-      },
-      body
-    });
+    const controller = new AbortController();
+    const timeoutMs = 45_000;
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+
+    let res: Response;
+    try {
+      res = await f(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-gw-ts': String(ts),
+          'x-gw-signature': signature
+        },
+        body,
+        signal: controller.signal
+      });
+    } catch (e) {
+      clearTimeout(t);
+      const msg = e instanceof Error ? e.message : 'Gateway fetch failed';
+      const aborted = e instanceof Error && e.name === 'AbortError';
+      return {
+        ok: false,
+        error: {
+          code: aborted ? 'GATEWAY_TIMEOUT' : 'GATEWAY_UNREACHABLE',
+          message: aborted ? `Gateway request timed out after ${timeoutMs}ms` : msg,
+          details: { url }
+        }
+      };
+    }
+    clearTimeout(t);
 
     const json = (await res.json().catch(() => null)) as GatewayResult<T> | null;
     if (!json) return { ok: false, error: { code: 'GATEWAY_INVALID_RESPONSE', message: 'Invalid gateway response' } };
