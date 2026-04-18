@@ -28,6 +28,29 @@ export function getLastApiDebug() {
   return lastApiDebug;
 }
 
+function coerceApiResult<T>(json: any): ApiResult<T> {
+  if (json && typeof json === 'object' && typeof json.ok === 'boolean') return json as ApiResult<T>;
+
+  // Common gateway/proxy error shapes: { status:"error", code:502, message:"..." }
+  const msg =
+    typeof json?.error?.message === 'string'
+      ? json.error.message
+      : typeof json?.message === 'string'
+        ? json.message
+        : 'Unexpected server response';
+
+  const code =
+    typeof json?.error?.code === 'string'
+      ? json.error.code
+      : typeof json?.code === 'string'
+        ? json.code
+        : typeof json?.code === 'number'
+          ? String(json.code)
+          : 'NETWORK';
+
+  return { ok: false, error: { code, message: msg, details: json } };
+}
+
 async function getAccessToken(): Promise<string | null> {
   const { data } = await supabase.auth.getSession();
   return data.session?.access_token ?? null;
@@ -69,7 +92,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<ApiResult
       }
     };
   }
-  const json = (await res.json().catch(() => null)) as ApiResult<T> | null;
+  const json = (await res.json().catch(() => null)) as any;
   if (!json) {
     lastApiDebug = {
       ts: new Date().toISOString(),
@@ -82,7 +105,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<ApiResult
     return { ok: false, error: { code: 'NETWORK', message: 'Invalid JSON response' } };
   }
   lastApiDebug = { ts: new Date().toISOString(), method: 'POST', url, status: res.status, contentType, note: 'json_ok' };
-  return json;
+  return coerceApiResult<T>(json);
 }
 
 export async function apiGet<T>(path: string): Promise<ApiResult<T>> {
@@ -119,7 +142,7 @@ export async function apiGet<T>(path: string): Promise<ApiResult<T>> {
       }
     };
   }
-  const json = (await res.json().catch(() => null)) as ApiResult<T> | null;
+  const json = (await res.json().catch(() => null)) as any;
   if (!json) {
     lastApiDebug = {
       ts: new Date().toISOString(),
@@ -132,6 +155,6 @@ export async function apiGet<T>(path: string): Promise<ApiResult<T>> {
     return { ok: false, error: { code: 'NETWORK', message: 'Invalid JSON response' } };
   }
   lastApiDebug = { ts: new Date().toISOString(), method: 'GET', url, status: res.status, contentType, note: 'json_ok' };
-  return json;
+  return coerceApiResult<T>(json);
 }
 

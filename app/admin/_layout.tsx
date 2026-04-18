@@ -122,10 +122,6 @@ export default function AdminLayout() {
       <Stack.Screen name="sales/[id]" options={{ title: 'Satış detayı', headerRight: renderHeaderRight }} />
       <Stack.Screen name="hmb-reports/index" options={{ title: t('adminHmbReports'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="contracts" options={{ title: t('adminContracts'), headerShown: false }} />
-      <Stack.Screen
-        name="contracts/contact-directory"
-        options={{ title: 'İletişim rehberi', headerRight: renderHeaderRight }}
-      />
       <Stack.Screen name="stock/index" options={{ headerShown: false }} />
       <Stack.Screen name="stock/all" options={{ title: 'Tüm stoklar', headerRight: renderHeaderRight }} />
       <Stack.Screen name="stock/product/[id]" options={{ title: t('adminProductDetail'), headerRight: renderHeaderRight }} />

@@ -21,6 +21,7 @@ export default function ContractsLayout() {
     >
       <Stack.Screen name="form-fields" options={{ title: 'Hangi bilgi alınacak' }} />
       <Stack.Screen name="all" options={{ title: 'Tüm Sözleşmelerim' }} />
+      <Stack.Screen name="contact-directory" options={{ title: 'İletişim rehberi' }} />
     </Stack>
   );
 }

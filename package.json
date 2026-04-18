@@ -4,6 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node scripts/start-railway-or-dev.js",
+    "start:ops-api": "node railway-service/dist/app/server.js",
     "start:dev": "expo start --dev-client --scheme exp+valoria-hotel",
     "start:dev:lan": "node scripts/dev-host.js",
     "start:dev:clear": "expo start --dev-client --scheme exp+valoria-hotel --clear",

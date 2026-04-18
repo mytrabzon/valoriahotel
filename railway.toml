@@ -1,0 +1,12 @@
+# Valoria OPS API (railway-service) — tek süreç olarak dinler (spawn / npm start zinciri yok).
+# https://docs.railway.app/guides/config-as-code
+
+[build]
+builder = "nixpacks"
+buildCommand = "npm run build"
+
+[deploy]
+startCommand = "npm run start:ops-api"
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"

@@ -24,26 +24,42 @@ export default function AdminKbsSettingsScreen() {
     defaultValues: { facilityCode: '', username: '', password: '', apiKey: '', providerType: 'default', isActive: true },
   });
 
+  const formatUnknownError = (e: unknown) => {
+    if (e instanceof Error) return e.message;
+    return typeof e === 'string' ? e : 'Unknown error';
+  };
+
+  const formatApiError = (res: any) => {
+    const message = res?.error?.message ?? 'Request failed';
+    const detailsObj = res?.error?.details;
+    const details = detailsObj ? `\n\n${JSON.stringify(detailsObj, null, 2)}` : '';
+    return `${message}${details}`;
+  };
+
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const res = await apiGet<any>('/admin/kbs-settings');
-      setLoading(false);
-      if (!res.ok) {
-        const details = res.error.details ? `\n\n${JSON.stringify(res.error.details, null, 2)}` : '';
-        Alert.alert('Yükleme hatası', `${res.error.message}${details}`);
-        return;
+      try {
+        const res = await apiGet<any>('/admin/kbs-settings');
+        setLoading(false);
+        if (!res.ok) {
+          Alert.alert('Yükleme hatası', formatApiError(res));
+          return;
+        }
+        const d = res.data;
+        if (!d) return;
+        reset({
+          facilityCode: d.facility_code ?? '',
+          username: d.username ?? '',
+          password: '',
+          apiKey: '',
+          providerType: d.provider_type ?? 'default',
+          isActive: !!d.is_active,
+        });
+      } catch (e) {
+        setLoading(false);
+        Alert.alert('Yükleme hatası', formatUnknownError(e));
       }
-      const d = res.data;
-      if (!d) return;
-      reset({
-        facilityCode: d.facility_code ?? '',
-        username: d.username ?? '',
-        password: '',
-        apiKey: '',
-        providerType: d.provider_type ?? 'default',
-        isActive: !!d.is_active,
-      });
     };
     load();
   }, [reset]);
@@ -75,36 +91,46 @@ export default function AdminKbsSettingsScreen() {
     if (values.password && values.password.trim()) payload.password = values.password.trim();
     if (values.apiKey && values.apiKey.trim()) payload.apiKey = values.apiKey.trim();
 
-    const res = await apiPost('/admin/kbs-settings', payload);
-    setLoading(false);
-    if (!res.ok) {
-      refreshLastApiInfo();
-      const details = res.error.details ? `\n\n${JSON.stringify(res.error.details, null, 2)}` : '';
-      Alert.alert('Kayıt hatası', `${res.error.message}${details}`);
-      return;
-    }
-    Alert.alert('Kaydedildi', 'KBS ayarları güncellendi.');
-    reset({ ...values, password: '', apiKey: '' });
+    try {
+      const res = await apiPost('/admin/kbs-settings', payload);
+      setLoading(false);
+      if (!res.ok) {
+        refreshLastApiInfo();
+        Alert.alert('Kayıt hatası', formatApiError(res));
+        return;
+      }
+      Alert.alert('Kaydedildi', 'KBS ayarları güncellendi.');
+      reset({ ...values, password: '', apiKey: '' });
 
-    // Re-fetch to prove persistence
-    const verify = await apiGet<any>('/admin/kbs-settings');
-    refreshLastApiInfo();
-    if (verify.ok && verify.data) {
-      Alert.alert('Doğrulandı', 'Kaydedildi ve geri okundu.');
+      // Re-fetch to prove persistence
+      const verify = await apiGet<any>('/admin/kbs-settings');
+      refreshLastApiInfo();
+      if (verify.ok && verify.data) {
+        Alert.alert('Doğrulandı', 'Kaydedildi ve geri okundu.');
+      }
+    } catch (e) {
+      setLoading(false);
+      refreshLastApiInfo();
+      Alert.alert('Kayıt hatası', formatUnknownError(e));
     }
   });
 
   const onTest = async () => {
     setTesting(true);
-    const res = await apiPost<any>('/admin/kbs-settings/test-connection', {});
-    setTesting(false);
-    if (!res.ok) {
+    try {
+      const res = await apiPost<any>('/admin/kbs-settings/test-connection', {});
+      setTesting(false);
+      if (!res.ok) {
+        refreshLastApiInfo();
+        Alert.alert('Bağlantı testi', formatApiError(res));
+        return;
+      }
+      Alert.alert('Bağlantı testi', res.data?.message ?? 'OK');
+    } catch (e) {
+      setTesting(false);
       refreshLastApiInfo();
-      const details = res.error.details ? `\n\n${JSON.stringify(res.error.details, null, 2)}` : '';
-      Alert.alert('Bağlantı testi', `${res.error.message}${details}`);
-      return;
+      Alert.alert('Bağlantı testi', formatUnknownError(e));
     }
-    Alert.alert('Bağlantı testi', res.data?.message ?? 'OK');
   };
 
   const debugHealth = async () => {
