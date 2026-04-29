@@ -1,10 +1,11 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Animated, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { adminTheme } from '@/constants/adminTheme';
 import { AdminButton, AdminCard } from '@/components/admin';
+const DONE_GRACE_MS = 60 * 1000;
 
 type Room = {
   id: string;
@@ -14,6 +15,7 @@ type Room = {
   view_type: string | null;
   bed_type: string | null;
   price_per_night: number | null;
+  previewSignerName?: string | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -33,6 +35,7 @@ const statusColor: Record<string, string> = {
 };
 
 function RoomCard({ item, onPress }: { item: Room; onPress: () => void }) {
+  const preview = item.previewSignerName?.trim();
   const scale = useRef(new Animated.Value(1)).current;
   const handlePressIn = () => {
     Animated.spring(scale, { toValue: 0.98, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
@@ -67,6 +70,11 @@ function RoomCard({ item, onPress }: { item: Room; onPress: () => void }) {
         {item.price_per_night != null && (
           <Text style={styles.price}>₺{item.price_per_night} <Text style={styles.priceUnit}>/ gece</Text></Text>
         )}
+        {preview ? (
+          <Text style={styles.previewHint} numberOfLines={2}>
+            Önizleme (sözleşme): {preview}
+          </Text>
+        ) : null}
       </TouchableOpacity>
     </Animated.View>
   );
@@ -76,6 +84,42 @@ export default function RoomsList() {
   const router = useRouter();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
+  const [cleaningPlanLocked, setCleaningPlanLocked] = useState(false);
+  const [cleaningPlanApproved, setCleaningPlanApproved] = useState(false);
+
+  const loadCleaningPlanLockState = async () => {
+    const now = new Date();
+    const todayIso = now.toISOString().slice(0, 10);
+
+    const { data: planRows } = await supabase
+      .from('room_cleaning_plans')
+      .select('id, target_date')
+      .gte('target_date', todayIso)
+      .order('target_date', { ascending: true })
+      .limit(1);
+
+    const activePlanId = planRows?.[0]?.id as string | undefined;
+    const activePlanDate = (planRows?.[0]?.target_date as string | undefined) ?? null;
+    let allRoomsDone = false;
+    if (activePlanId) {
+      const { data: planRoomRows } = await supabase
+        .from('room_cleaning_plan_rooms')
+        .select('id, is_done, done_at')
+        .eq('plan_id', activePlanId);
+
+      const rows = (planRoomRows ?? []) as { id: string; is_done: boolean; done_at: string | null }[];
+      allRoomsDone = rows.length > 0 && rows.every((r) => {
+        if (!r.is_done || !r.done_at) return false;
+        const doneAtMs = new Date(r.done_at).getTime();
+        return !Number.isNaN(doneAtMs) && now.getTime() - doneAtMs >= DONE_GRACE_MS;
+      });
+    }
+
+    const dayPassed = activePlanDate ? todayIso > activePlanDate : false;
+    const shouldLock = dayPassed || allRoomsDone;
+    setCleaningPlanLocked(shouldLock);
+    setCleaningPlanApproved(shouldLock);
+  };
 
   useEffect(() => {
     (async () => {
@@ -83,10 +127,35 @@ export default function RoomsList() {
         .from('rooms')
         .select('id, room_number, floor, status, view_type, bed_type, price_per_night')
         .order('room_number');
-      setRooms(data ?? []);
+      const base = (data ?? []) as Room[];
+      const ids = base.map((r) => r.id);
+      const previewByRoom: Record<string, string> = {};
+      if (ids.length > 0) {
+        const { data: cas } = await supabase
+          .from('contract_acceptances')
+          .select('room_id, guests(full_name, status, room_id)')
+          .in('room_id', ids)
+          .not('guest_id', 'is', null);
+        for (const row of cas ?? []) {
+          const rid = row.room_id as string | null;
+          if (!rid || previewByRoom[rid]) continue;
+          const g = Array.isArray(row.guests) ? row.guests[0] : row.guests;
+          if (g && g.status === 'pending' && !g.room_id && g.full_name?.trim()) {
+            previewByRoom[rid] = g.full_name.trim();
+          }
+        }
+      }
+      setRooms(base.map((r) => ({ ...r, previewSignerName: previewByRoom[r.id] ?? null })));
+      await loadCleaningPlanLockState();
       setLoading(false);
     })();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadCleaningPlanLockState();
+    }, [])
+  );
 
   if (loading) {
     return (
@@ -101,6 +170,26 @@ export default function RoomsList() {
   return (
     <View style={styles.container}>
       <View style={styles.topBar}>
+        <AdminButton
+          title={cleaningPlanApproved ? 'Yarın temizlenecek odalar - ONAYLANDI' : 'Yarın temizlenecek odalar'}
+          onPress={() => {
+            if (cleaningPlanLocked) return;
+            router.push('/admin/rooms/cleaning-plan');
+          }}
+          variant={cleaningPlanApproved ? 'primary' : 'secondary'}
+          size="md"
+          leftIcon={
+            <Ionicons
+              name={cleaningPlanApproved ? 'checkmark-circle' : 'checkbox-outline'}
+              size={18}
+              color={cleaningPlanApproved ? '#fff' : adminTheme.colors.text}
+            />
+          }
+          disabled={cleaningPlanLocked}
+          style={[{ marginBottom: 10 }, cleaningPlanApproved ? styles.cleaningApprovedBtn : undefined]}
+          textStyle={cleaningPlanApproved ? styles.cleaningApprovedBtnText : undefined}
+          fullWidth
+        />
         <AdminButton
           title="Yeni oda ekle"
           onPress={() => router.push('/admin/rooms/new')}
@@ -214,9 +303,23 @@ const styles = StyleSheet.create({
     color: adminTheme.colors.textSecondary,
     fontSize: 13,
   },
+  previewHint: {
+    marginTop: 10,
+    fontSize: 13,
+    fontWeight: '600',
+    color: adminTheme.colors.info,
+    lineHeight: 18,
+  },
   emptyText: {
     fontSize: 15,
     color: adminTheme.colors.textSecondary,
     textAlign: 'center',
+  },
+  cleaningApprovedBtn: {
+    backgroundColor: adminTheme.colors.success,
+    opacity: 1,
+  },
+  cleaningApprovedBtnText: {
+    color: '#fff',
   },
 });

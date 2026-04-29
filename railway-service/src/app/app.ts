@@ -58,6 +58,8 @@ export function buildApp() {
     protectedScope.register(adminKbsSettingsRoutes, { prefix: '/' });
     const { adminPermissionsRoutes } = await import('../modules/admin/adminPermissionsRoutes.js');
     protectedScope.register(adminPermissionsRoutes, { prefix: '/' });
+    const { adminOpsRoomsRoutes } = await import('../modules/admin/adminOpsRoomsRoutes.js');
+    protectedScope.register(adminOpsRoomsRoutes, { prefix: '/' });
   });
 
   return app;

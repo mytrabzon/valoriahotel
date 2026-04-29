@@ -14,6 +14,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { theme } from '@/constants/theme';
 import { CachedImage } from '@/components/CachedImage';
+import { useTranslation } from 'react-i18next';
 
 type Category = { id: string; name: string; sort_order: number };
 type MenuItem = {
@@ -30,6 +31,7 @@ type MenuItem = {
 type CartItem = { item: MenuItem; quantity: number };
 
 export default function RoomServiceScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const { user } = useAuthStore();
   const [categories, setCategories] = useState<Category[]>([]);
@@ -90,7 +92,7 @@ export default function RoomServiceScreen() {
 
   const placeOrder = async () => {
     if (cart.length === 0) {
-      Alert.alert('Sepet boş', 'Lütfen en az bir ürün ekleyin.');
+      Alert.alert(t('roomServiceCartEmptyTitle'), t('roomServiceCartEmptyBody'));
       return;
     }
     setSubmitting(true);
@@ -112,10 +114,7 @@ export default function RoomServiceScreen() {
         }
       }
       if (!guestId) {
-        Alert.alert(
-          'Sipariş verilemedi',
-          'Oda servisi için giriş yapmış ve check-in yapılmış olmanız gerekir.'
-        );
+        Alert.alert(t('roomServiceNotEligibleTitle'), t('roomServiceNotEligibleBody'));
         setSubmitting(false);
         return;
       }
@@ -127,7 +126,10 @@ export default function RoomServiceScreen() {
         .single();
 
       if (orderErr || !order) {
-        Alert.alert('Hata', 'Sipariş oluşturulamadı: ' + (orderErr?.message ?? 'Bilinmeyen hata'));
+        Alert.alert(
+          t('error'),
+          t('roomServiceOrderFailed') + ': ' + (orderErr?.message ?? t('unknownErrorShort'))
+        );
         setSubmitting(false);
         return;
       }
@@ -142,20 +144,20 @@ export default function RoomServiceScreen() {
       const { error: itemsErr } = await supabase.from('room_service_order_items').insert(rows);
 
       if (itemsErr) {
-        Alert.alert('Hata', 'Sipariş kalemleri eklenemedi.');
+        Alert.alert(t('error'), t('roomServiceItemsAddFailed'));
         setSubmitting(false);
         return;
       }
 
       const { notifyAdmins } = await import('@/lib/notificationService');
       notifyAdmins({
-        title: '🍽️ Yeni oda servisi siparişi',
-        body: 'Misafir oda servisi siparişi verdi. Panelden takip edebilirsiniz.',
+        title: t('roomServiceAdminNotifyTitle'),
+        body: t('roomServiceAdminNotifyBody'),
         data: { url: '/admin' },
       }).catch(() => {});
 
       setCart([]);
-      Alert.alert('Sipariş alındı', 'Siparişiniz odaya getirilecektir.');
+      Alert.alert(t('roomServicePlacedTitle'), t('roomServicePlacedBody'));
       router.back();
     } finally {
       setSubmitting(false);
@@ -179,7 +181,7 @@ export default function RoomServiceScreen() {
     <View style={styles.container}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <Text style={styles.title}>🍽️ Oda servisi</Text>
-        <Text style={styles.subtitle}>Menüden seçin, siparişiniz odaya getirilsin.</Text>
+        <Text style={styles.subtitle}>{t('roomServiceScreenSubtitle')}</Text>
 
         {byCategory.map(
           (cat) =>

@@ -4,6 +4,9 @@
 import { File } from 'expo-file-system';
 import { encode as encodeBase64 } from 'base64-arraybuffer';
 import { supabase, supabaseUrl, supabaseAnonKey } from '@/lib/supabase';
+import { log } from '@/lib/logger';
+import { uriToArrayBuffer } from '@/lib/uploadMedia';
+import { uploadBufferToPublicBucket } from '@/lib/storagePublicUpload';
 import type { MessagingActor, Message, Conversation, ConversationWithMeta } from '@/lib/messaging';
 
 // ----- Staff (authenticated) -----
@@ -24,7 +27,7 @@ export async function staffListConversations(staffId: string): Promise<Conversat
   const convIds = participants.map((p: { conversation_id: string }) => p.conversation_id);
   const { data: convsData, error: convErr } = await supabase
     .from('conversations')
-    .select('id, type, name, avatar, created_by, created_by_type, created_at, updated_at, last_message_id, last_message_at')
+    .select('id, type, name, avatar, group_theme_color, created_by, created_by_type, created_at, updated_at, last_message_id, last_message_at')
     .in('id', convIds);
 
   if (convErr || !convsData?.length) return [];
@@ -326,7 +329,7 @@ export async function staffGetConversationHeader(
 ): Promise<{ name: string; avatar: string | null }> {
   const { data: conv, error: convErr } = await supabase
     .from('conversations')
-    .select('type, name, avatar')
+    .select('type, name, avatar, group_theme_color')
     .eq('id', conversationId)
     .single();
   if (convErr || !conv) return { name: 'Sohbet', avatar: null };
@@ -522,6 +525,9 @@ export async function guestSendMessage(
     p_message_type: messageType,
     p_media_url: mediaUrl ?? null,
   });
+  if (error) {
+    log.warn('messagingApi', 'guestSendMessage RPC', error.message, error.code, error.details);
+  }
   if (error || data == null) return { messageId: null, conversationId: resolvedConversationId ?? conversationId };
   return { messageId: data as string, conversationId: resolvedConversationId ?? conversationId };
 }
@@ -587,17 +593,20 @@ const MESSAGE_MEDIA_BUCKET = 'message-media';
 
 /** Personel ses dosyasını storage'a yükler (authenticated). */
 export async function uploadVoiceMessageForStaff(localUri: string): Promise<string | null> {
-  const file = new File(localUri);
-  const buffer = await file.arrayBuffer();
-  const binary = new Uint8Array(buffer);
-  const fileName = `voice/${crypto.randomUUID()}.m4a`;
-  const { error } = await supabase.storage.from(MESSAGE_MEDIA_BUCKET).upload(fileName, binary, {
-    contentType: 'audio/m4a',
-    upsert: true,
-  });
-  if (error) return null;
-  const { data: urlData } = supabase.storage.from(MESSAGE_MEDIA_BUCKET).getPublicUrl(fileName);
-  return urlData.publicUrl;
+  try {
+    const buffer = await uriToArrayBuffer(localUri);
+    const { publicUrl } = await uploadBufferToPublicBucket({
+      bucketId: MESSAGE_MEDIA_BUCKET,
+      buffer,
+      contentType: 'audio/m4a',
+      extension: 'm4a',
+      subfolder: 'voice',
+    });
+    return publicUrl;
+  } catch (e) {
+    console.warn('[messagingApi] uploadVoiceMessageForStaff', e);
+    return null;
+  }
 }
 
 /** Misafir resim mesajı: önce imzalı URL alınır (küçük istek), sonra resim doğrudan Storage’a yüklenir. */
@@ -643,17 +652,13 @@ export async function uploadImageMessageForGuest(
 /** Personel resim mesajını storage'a yükler (authenticated). arrayBuffer: uriToArrayBuffer(uri) ile alınır. Hata durumunda throw eder. */
 export async function uploadImageMessageForStaff(arrayBuffer: ArrayBuffer, mimeType: string): Promise<string> {
   console.log('[messagingApi] uploadImageMessageForStaff: mimeType=', mimeType, 'size=', arrayBuffer?.byteLength);
-  const binary = new Uint8Array(arrayBuffer);
   const ext = mimeType.includes('png') ? 'png' : 'jpg';
-  const fileName = `images/${crypto.randomUUID()}.${ext}`;
-  const { error } = await supabase.storage.from(MESSAGE_MEDIA_BUCKET).upload(fileName, binary, {
+  const { publicUrl } = await uploadBufferToPublicBucket({
+    bucketId: MESSAGE_MEDIA_BUCKET,
+    buffer: arrayBuffer,
     contentType: mimeType,
-    upsert: false,
+    extension: ext,
+    subfolder: 'images',
   });
-  if (error) {
-    console.warn('[messagingApi] uploadImageMessageForStaff storage error:', error?.message, error);
-    throw new Error(error?.message || 'Resim yüklenemedi.');
-  }
-  const { data: urlData } = supabase.storage.from(MESSAGE_MEDIA_BUCKET).getPublicUrl(fileName);
-  return urlData.publicUrl;
+  return publicUrl;
 }

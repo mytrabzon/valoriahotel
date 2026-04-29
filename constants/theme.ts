@@ -10,7 +10,7 @@ export const theme = {
     borderLight: '#f1f3f5',
     text: '#1a1d21',
     textSecondary: '#6c757d',
-    textMuted: '#adb5bd',
+    textMuted: '#6b7280',
     primary: '#b8860b',
     primaryLight: '#d4a84b',
     primaryDark: '#8b6914',

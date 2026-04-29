@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,13 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase, supabaseUrl, supabaseAnonKey } from '@/lib/supabase';
+import * as Print from 'expo-print';
+import { sendPdfToPrinterEmail } from '@/lib/printerEmail';
+import { exportStaffDetailPdf, buildStaffDetailHtml } from '@/lib/staffDetailPdf';
+import { sendNotification } from '@/lib/notificationService';
+import { CachedImage } from '@/components/CachedImage';
+import { ImagePreviewModal } from '@/components/ImagePreviewModal';
+import { getDocumentsBucketPublicUrl, isDocumentImageMime } from '@/lib/documentsSignedUrl';
 
 const DEPARTMENTS = [
   { value: 'housekeeping', label: 'Temizlik' },
@@ -21,6 +28,8 @@ const DEPARTMENTS = [
   { value: 'receptionist', label: 'Resepsiyon' },
   { value: 'security', label: 'Güvenlik' },
   { value: 'reception_chief', label: 'Resepsiyon Şefi' },
+  { value: 'kitchen', label: 'Mutfak' },
+  { value: 'restaurant', label: 'Restoran' },
 ];
 
 const ROLES = [
@@ -51,14 +60,30 @@ const CONTRACT_TYPES: { value: string; label: string }[] = [
 const APP_PERMISSIONS = [
   { key: 'stok_giris', label: 'Stok girişi yapabilir' },
   { key: 'mesajlasma', label: 'Müşterilerle mesajlaşabilir' },
+  { key: 'misafir_mesaj_alabilir', label: 'Müşteriden direkt mesaj alabilir' },
   { key: 'video_paylasim', label: 'Video/resim paylaşabilir' },
   { key: 'ekip_sohbet', label: 'Ekip sohbetini görebilir' },
+  { key: 'dokuman_yukle', label: 'Doküman yükleyebilir / yönetebilir' },
   { key: 'gorev_ata', label: 'Görev atayabilir' },
   { key: 'personel_ekle', label: 'Personel ekleyebilir (sadece yönetici)' },
   { key: 'raporlar', label: 'Raporları görebilir' },
   { key: 'satis_komisyon', label: 'Satış / komisyon modülüne erişebilir' },
   { key: 'tum_sozlesmeler', label: 'Tüm sözleşmeleri görüntüleyebilir' },
+  { key: 'kahvalti_teyit_olustur', label: 'Kahvaltı teyidi oluşturabilir' },
+  { key: 'kahvalti_teyit_departman', label: 'Kahvaltı teyitlerini (mutfak) görüntüleyebilir / düzenleyebilir' },
+  { key: 'kahvalti_teyit_onayla', label: 'Kahvaltı teyitlerini onaylayabilir' },
+  { key: 'kahvalti_rapor', label: 'Kahvaltı raporlarını görebilir' },
+  { key: 'transfer_tour_services', label: 'Transfer & Tur: hizmetleri yönet' },
+  { key: 'transfer_tour_requests', label: 'Transfer & Tur: talepleri yönet' },
+  { key: 'dining_venues', label: 'Yemek & Mekanlar: rehberi yönet (ekle, düzenle, sil)' },
+  { key: 'yarin_oda_temizlik_listesi', label: 'Yarın temizlenecek odalar listesini yönetebilir' },
+  { key: 'kbs_mrz_scan', label: 'Pasaport / MRZ tarama (KBS)' },
 ];
+
+const APP_PERMISSION_LABELS: Record<string, string> = APP_PERMISSIONS.reduce<Record<string, string>>((acc, item) => {
+  acc[item.key] = item.label;
+  return acc;
+}, {});
 
 const DAYS = [
   { value: 1, label: 'Pzt' },
@@ -73,13 +98,24 @@ const DAYS = [
 const DEFAULT_PERMISSIONS: Record<string, boolean> = {
   stok_giris: true,
   mesajlasma: true,
+  misafir_mesaj_alabilir: true,
   video_paylasim: true,
   ekip_sohbet: true,
+  dokuman_yukle: false,
   gorev_ata: false,
   personel_ekle: false,
   raporlar: false,
   satis_komisyon: false,
   tum_sozlesmeler: false,
+  kahvalti_teyit_olustur: false,
+  kahvalti_teyit_departman: false,
+  kahvalti_teyit_onayla: false,
+  kahvalti_rapor: false,
+  transfer_tour_services: false,
+  transfer_tour_requests: false,
+  dining_venues: false,
+  yarin_oda_temizlik_listesi: false,
+  kbs_mrz_scan: false,
 };
 
 type OrgRow = { id: string; name: string; slug: string; kind: string };
@@ -96,6 +132,7 @@ type StaffDetail = {
   id_number: string | null;
   address: string | null;
   hire_date: string | null;
+  tenure_note?: string | null;
   personnel_no: string | null;
   salary: number | null;
   sgk_no: string | null;
@@ -105,9 +142,13 @@ type StaffDetail = {
   notes: string | null;
   is_active: boolean | null;
   office_location: string | null;
+  bio?: string | null;
   achievements: string[] | null;
   emergency_contact_name: string | null;
   emergency_contact_phone: string | null;
+  emergency_contact2_name?: string | null;
+  emergency_contact2_phone?: string | null;
+  previous_work_experience?: string | null;
   whatsapp: string | null;
   verification_badge: 'blue' | 'yellow' | null;
   organization_id: string | null;
@@ -117,6 +158,21 @@ type StaffDetail = {
   certifications_summary?: string | null;
   kvkk_consent_at?: string | null;
   drives_vehicle?: boolean | null;
+};
+
+type StaffRelatedDocument = {
+  id: string;
+  title: string;
+  status: string;
+  updated_at: string;
+  current_version_id: string | null;
+};
+
+type StaffRelatedVersion = {
+  id: string;
+  file_name: string;
+  file_path: string;
+  mime_type: string | null;
 };
 
 export default function EditStaffScreen() {
@@ -136,6 +192,7 @@ export default function EditStaffScreen() {
   const [id_number, setIdNumber] = useState('');
   const [address, setAddress] = useState('');
   const [hire_date, setHireDate] = useState('');
+  const [tenure_note, setTenureNote] = useState('');
   const [personnel_no, setPersonnelNo] = useState('');
   const [salary, setSalary] = useState('');
   const [sgk_no, setSgkNo] = useState('');
@@ -145,9 +202,13 @@ export default function EditStaffScreen() {
   const [notes, setNotes] = useState('');
   const [is_active, setIsActive] = useState(true);
   const [office_location, setOfficeLocation] = useState('');
+  const [bio, setBio] = useState('');
   const [achievements, setAchievements] = useState('');
   const [emergency_contact_name, setEmergencyContactName] = useState('');
   const [emergency_contact_phone, setEmergencyContactPhone] = useState('');
+  const [emergency_contact2_name, setEmergencyContact2Name] = useState('');
+  const [emergency_contact2_phone, setEmergencyContact2Phone] = useState('');
+  const [previous_work_experience, setPreviousWorkExperience] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
   const [verification_badge, setVerificationBadge] = useState<'blue' | 'yellow' | ''>('');
   const [organizations, setOrganizations] = useState<OrgRow[]>([]);
@@ -158,6 +219,14 @@ export default function EditStaffScreen() {
   const [certifications_summary, setCertificationsSummary] = useState('');
   const [kvkk_consent_at, setKvkkConsentAt] = useState('');
   const [drives_vehicle, setDrivesVehicle] = useState(false);
+  const [nonAdminRole, setNonAdminRole] = useState<string>('receptionist');
+  /** Uzak DB’de migration 211 uygulanmadıysa tenure_note yok; güncellemede göndermeyelim. */
+  const [supportsTenureNoteColumn, setSupportsTenureNoteColumn] = useState(true);
+  const [staffDocs, setStaffDocs] = useState<StaffRelatedDocument[]>([]);
+  const [staffDocVersions, setStaffDocVersions] = useState<Record<string, StaffRelatedVersion>>({});
+  const [staffDocPreviewUrlByPath, setStaffDocPreviewUrlByPath] = useState<Record<string, string>>({});
+  const [staffDocsLoading, setStaffDocsLoading] = useState(false);
+  const [previewImageUri, setPreviewImageUri] = useState<string | null>(null);
 
   useEffect(() => {
     supabase
@@ -170,13 +239,27 @@ export default function EditStaffScreen() {
   useEffect(() => {
     if (!id) return;
     (async () => {
-      const { data, error } = await supabase
+      const STAFF_SELECT_FULL =
+        'id, full_name, email, role, department, position, phone, birth_date, id_number, address, hire_date, tenure_note, personnel_no, salary, sgk_no, app_permissions, work_days, shift_type, notes, is_active, office_location, bio, achievements, emergency_contact_name, emergency_contact_phone, emergency_contact2_name, emergency_contact2_phone, previous_work_experience, whatsapp, verification_badge, organization_id, contract_type, termination_date, internal_extension, certifications_summary, kvkk_consent_at, drives_vehicle';
+      const STAFF_SELECT_LEGACY =
+        'id, full_name, email, role, department, position, phone, birth_date, id_number, address, hire_date, personnel_no, salary, sgk_no, app_permissions, work_days, shift_type, notes, is_active, office_location, bio, achievements, emergency_contact_name, emergency_contact_phone, whatsapp, verification_badge, organization_id, contract_type, termination_date, internal_extension, certifications_summary, kvkk_consent_at, drives_vehicle';
+      let { data, error } = await supabase
         .from('staff')
-        .select(
-          'id, full_name, email, role, department, position, phone, birth_date, id_number, address, hire_date, personnel_no, salary, sgk_no, app_permissions, work_days, shift_type, notes, is_active, office_location, achievements, emergency_contact_name, emergency_contact_phone, whatsapp, verification_badge, organization_id, contract_type, termination_date, internal_extension, certifications_summary, kvkk_consent_at, drives_vehicle'
-        )
+        .select(STAFF_SELECT_FULL)
         .eq('id', id)
         .single();
+      const msg = String(error?.message ?? '');
+      const tenureMissing =
+        msg.includes('tenure_note') ||
+        msg.includes('does not exist') ||
+        /schema cache/i.test(msg) ||
+        /PGRST204/i.test(msg);
+      if (error && tenureMissing) {
+        setSupportsTenureNoteColumn(false);
+        ({ data, error } = await supabase.from('staff').select(STAFF_SELECT_LEGACY).eq('id', id).single());
+      } else if (!error) {
+        setSupportsTenureNoteColumn(true);
+      }
       if (error || !data) {
         Alert.alert('Hata', 'Çalışan bulunamadı.');
         router.back();
@@ -187,6 +270,7 @@ export default function EditStaffScreen() {
       setFullName(s.full_name ?? '');
       setEmail(s.email ?? '');
       setRole(s.role ?? 'receptionist');
+      setNonAdminRole((s.role && s.role !== 'admin' ? s.role : 'receptionist') ?? 'receptionist');
       setDepartment(s.department ?? '');
       setPosition(s.position ?? '');
       setPhone(s.phone ?? '');
@@ -194,6 +278,7 @@ export default function EditStaffScreen() {
       setIdNumber(s.id_number ?? '');
       setAddress(s.address ?? '');
       setHireDate(s.hire_date ?? '');
+      setTenureNote(s.tenure_note ?? '');
       setPersonnelNo(s.personnel_no ?? '');
       setSalary(s.salary != null ? String(s.salary) : '');
       setSgkNo(s.sgk_no ?? '');
@@ -203,9 +288,13 @@ export default function EditStaffScreen() {
       setNotes(s.notes ?? '');
       setIsActive(s.is_active ?? true);
       setOfficeLocation(s.office_location ?? '');
+      setBio(s.bio ?? '');
       setAchievements(Array.isArray(s.achievements) ? s.achievements.join(', ') : '');
       setEmergencyContactName(s.emergency_contact_name ?? '');
       setEmergencyContactPhone(s.emergency_contact_phone ?? '');
+      setEmergencyContact2Name(s.emergency_contact2_name ?? '');
+      setEmergencyContact2Phone(s.emergency_contact2_phone ?? '');
+      setPreviousWorkExperience(s.previous_work_experience ?? '');
       setWhatsapp(s.whatsapp ?? '');
       setVerificationBadge(s.verification_badge === 'blue' || s.verification_badge === 'yellow' ? s.verification_badge : '');
       setOrganizationId(s.organization_id ?? null);
@@ -218,6 +307,56 @@ export default function EditStaffScreen() {
     })().finally(() => setLoading(false));
   }, [id]);
 
+  const loadStaffDocuments = useCallback(async () => {
+    if (!id) return;
+    setStaffDocsLoading(true);
+    try {
+      const docsRes = await supabase
+        .from('documents')
+        .select('id, title, status, updated_at, current_version_id')
+        .eq('related_staff_id', id)
+        .is('archived_at', null)
+        .order('updated_at', { ascending: false })
+        .limit(20);
+      if (docsRes.error) throw docsRes.error;
+
+      const docs = (docsRes.data as StaffRelatedDocument[]) ?? [];
+      setStaffDocs(docs);
+      const versionIds = Array.from(new Set(docs.map((d) => d.current_version_id).filter(Boolean) as string[]));
+      if (versionIds.length === 0) {
+        setStaffDocVersions({});
+        setStaffDocPreviewUrlByPath({});
+        return;
+      }
+
+      const versionsRes = await supabase
+        .from('document_versions')
+        .select('id, file_name, file_path, mime_type')
+        .in('id', versionIds);
+      if (versionsRes.error) throw versionsRes.error;
+
+      const versionsMap: Record<string, StaffRelatedVersion> = {};
+      const previewUrlMap: Record<string, string> = {};
+      for (const row of (versionsRes.data as StaffRelatedVersion[]) ?? []) {
+        versionsMap[row.id] = row;
+        const url = getDocumentsBucketPublicUrl(row.file_path);
+        if (url) previewUrlMap[row.file_path] = url;
+      }
+      setStaffDocVersions(versionsMap);
+      setStaffDocPreviewUrlByPath(previewUrlMap);
+    } catch {
+      setStaffDocs([]);
+      setStaffDocVersions({});
+      setStaffDocPreviewUrlByPath({});
+    } finally {
+      setStaffDocsLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    loadStaffDocuments();
+  }, [loadStaffDocuments]);
+
   const toggleDay = (d: number) => {
     setWorkDays((prev) =>
       prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort((a, b) => a - b)
@@ -226,6 +365,21 @@ export default function EditStaffScreen() {
 
   const togglePermission = (key: string) => {
     setAppPermissions((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+  const guestMessagesBlocked = app_permissions.misafir_mesaj_alabilir === false;
+  const toggleGuestMessagesBlocked = (blocked: boolean) => {
+    setAppPermissions((prev) => ({ ...prev, misafir_mesaj_alabilir: !blocked }));
+  };
+
+  const isAdmin = role === 'admin';
+  const toggleFullAdmin = (next: boolean) => {
+    if (next) {
+      if (role && role !== 'admin') setNonAdminRole(role);
+      setRole('admin');
+      Alert.alert('Tam admin', 'Kaydedince kullanıcı tam admin yetkisi alacak ve Admin sekmesi görünecek.');
+      return;
+    }
+    setRole(nonAdminRole || 'receptionist');
   };
 
   const submit = async () => {
@@ -275,9 +429,13 @@ export default function EditStaffScreen() {
           is_active,
           whatsapp: whatsapp.trim() || null,
           office_location: office_location.trim() || null,
+          bio: bio.trim() || null,
           achievements: achievements ? achievements.split(',').map((s) => s.trim()).filter(Boolean) : [],
           emergency_contact_name: emergency_contact_name.trim() || null,
           emergency_contact_phone: emergency_contact_phone.trim() || null,
+          emergency_contact2_name: emergency_contact2_name.trim() || null,
+          emergency_contact2_phone: emergency_contact2_phone.trim() || null,
+          previous_work_experience: previous_work_experience.trim() || null,
           verification_badge: verification_badge === 'blue' || verification_badge === 'yellow' ? verification_badge : null,
           organization_id: organizationId ?? undefined,
           contract_type: contract_type.trim() ? contract_type.trim() : null,
@@ -291,25 +449,70 @@ export default function EditStaffScreen() {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
       if (data?.error) throw new Error(data.error);
-      const { error: updateErr } = await supabase
-        .from('staff')
-        .update({
-          notes: notes.trim() || null,
-          office_location: office_location.trim() || null,
-          achievements: achievements ? achievements.split(',').map((s) => s.trim()).filter(Boolean) : [],
-          emergency_contact_name: emergency_contact_name.trim() || null,
-          emergency_contact_phone: emergency_contact_phone.trim() || null,
-          whatsapp: whatsapp.trim() || null,
-          verification_badge: verification_badge === 'blue' || verification_badge === 'yellow' ? verification_badge : null,
-          contract_type: contract_type.trim() ? contract_type.trim() : null,
-          termination_date: termination_date.trim() || null,
-          internal_extension: internal_extension.trim() || null,
-          certifications_summary: certifications_summary.trim() || null,
-          kvkk_consent_at: kvkk_consent_at.trim() || null,
-          drives_vehicle,
-        })
-        .eq('id', id);
-      if (updateErr) throw new Error(updateErr.message);
+      const staffExtraUpdate: Record<string, unknown> = {
+        notes: notes.trim() || null,
+        office_location: office_location.trim() || null,
+        bio: bio.trim() || null,
+        achievements: achievements ? achievements.split(',').map((s) => s.trim()).filter(Boolean) : [],
+        emergency_contact_name: emergency_contact_name.trim() || null,
+        emergency_contact_phone: emergency_contact_phone.trim() || null,
+        emergency_contact2_name: emergency_contact2_name.trim() || null,
+        emergency_contact2_phone: emergency_contact2_phone.trim() || null,
+        previous_work_experience: previous_work_experience.trim() || null,
+        whatsapp: whatsapp.trim() || null,
+        verification_badge: verification_badge === 'blue' || verification_badge === 'yellow' ? verification_badge : null,
+        contract_type: contract_type.trim() ? contract_type.trim() : null,
+        termination_date: termination_date.trim() || null,
+        internal_extension: internal_extension.trim() || null,
+        certifications_summary: certifications_summary.trim() || null,
+        kvkk_consent_at: kvkk_consent_at.trim() || null,
+        drives_vehicle,
+      };
+      if (supportsTenureNoteColumn) {
+        staffExtraUpdate.tenure_note = tenure_note.trim() || null;
+      }
+      const { error: updateErr } = await supabase.from('staff').update(staffExtraUpdate).eq('id', id);
+      if (updateErr) {
+        const umsg = String(updateErr.message ?? '');
+        if (
+          supportsTenureNoteColumn &&
+          (umsg.includes('tenure_note') || /schema cache/i.test(umsg) || /PGRST204/i.test(umsg))
+        ) {
+          setSupportsTenureNoteColumn(false);
+          const { tenure_note: _drop, ...retry } = staffExtraUpdate as { tenure_note?: unknown } & Record<string, unknown>;
+          const { error: retryErr } = await supabase.from('staff').update(retry).eq('id', id);
+          if (retryErr) throw new Error(retryErr.message);
+        } else {
+          throw new Error(updateErr.message);
+        }
+      }
+      const previousPermissions = staff.app_permissions ?? {};
+      const changedPermissionKeys = Object.keys(app_permissions).filter(
+        (key) => (previousPermissions[key] ?? false) !== (app_permissions[key] ?? false)
+      );
+      if (changedPermissionKeys.length > 0) {
+        const enabledLabels = changedPermissionKeys
+          .filter((key) => app_permissions[key] === true)
+          .map((key) => APP_PERMISSION_LABELS[key] ?? key);
+        const disabledLabels = changedPermissionKeys
+          .filter((key) => app_permissions[key] === false)
+          .map((key) => APP_PERMISSION_LABELS[key] ?? key);
+        const parts: string[] = [];
+        if (enabledLabels.length > 0) parts.push(`Açılan: ${enabledLabels.join(', ')}`);
+        if (disabledLabels.length > 0) parts.push(`Kapatılan: ${disabledLabels.join(', ')}`);
+        const body =
+          parts.length > 0
+            ? parts.join(' | ').slice(0, 500)
+            : 'Uygulama yetkileriniz admin tarafından güncellendi.';
+        void sendNotification({
+          staffId: id,
+          title: 'Yetki güncellemesi',
+          body,
+          notificationType: 'staff_permission_updated',
+          category: 'staff',
+          data: { screen: 'notifications', changedKeys: changedPermissionKeys },
+        });
+      }
       Alert.alert('Başarılı', 'Çalışan bilgileri güncellendi.', [
         { text: 'Tamam', onPress: () => router.back() },
       ]);
@@ -317,6 +520,65 @@ export default function EditStaffScreen() {
       Alert.alert('Hata', (e as Error)?.message ?? 'Güncellenemedi.');
     }
     setSaving(false);
+  };
+
+  const staffPdfData = {
+    fullName: full_name || '—',
+    email,
+    phone,
+    whatsapp,
+    role,
+    department,
+    position,
+    organizationName: organizations.find((o) => o.id === organizationId)?.name ?? null,
+    address,
+    officeLocation: office_location,
+    hireDate: hire_date,
+    terminationDate: termination_date,
+    personnelNo: personnel_no,
+    sgkNo: sgk_no,
+    contractType: contract_type,
+    emergency1Name: emergency_contact_name,
+    emergency1Phone: emergency_contact_phone,
+    emergency2Name: emergency_contact2_name,
+    emergency2Phone: emergency_contact2_phone,
+    achievements,
+    certificationsSummary: certifications_summary,
+    previousWorkExperience: previous_work_experience,
+    drivesVehicle: drives_vehicle,
+    kvkkConsentAt: kvkk_consent_at,
+    notes,
+  };
+
+  const previewPdf = async () => {
+    try {
+      await Print.printAsync({ html: buildStaffDetailHtml(staffPdfData) });
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'PDF önizleme açılamadı.');
+    }
+  };
+
+  const downloadPdf = async () => {
+    try {
+      await exportStaffDetailPdf(staffPdfData);
+      Alert.alert('Hazır', 'PDF oluşturuldu. Paylaşım ekranından indirebilirsiniz.');
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'PDF oluşturulamadı.');
+    }
+  };
+
+  const sendToPrinter = async () => {
+    try {
+      const pdfUri = await exportStaffDetailPdf(staffPdfData);
+      await sendPdfToPrinterEmail({
+        pdfUri,
+        subject: `Personel Detay - ${full_name || 'Personel'}`,
+        fileName: `PERSONEL-${(full_name || 'DETAY').replace(/\s+/g, '-')}.pdf`,
+      });
+      Alert.alert('Başarılı', 'Personel detayı yazıcı e-postasına gönderildi.');
+    } catch (e) {
+      Alert.alert('Hata', (e as Error)?.message ?? 'Yazıcıya gönderilemedi.');
+    }
   };
 
   if (loading || !staff) {
@@ -368,6 +630,10 @@ export default function EditStaffScreen() {
         <TextInput style={styles.input} value={emergency_contact_name} onChangeText={setEmergencyContactName} placeholder="Ad Soyad" placeholderTextColor="#9ca3af" />
         <Text style={styles.label}>Acil durum telefonu</Text>
         <TextInput style={styles.input} value={emergency_contact_phone} onChangeText={setEmergencyContactPhone} placeholder="0532 111 22 33" keyboardType="phone-pad" placeholderTextColor="#9ca3af" />
+        <Text style={styles.label}>2. yakın kişi</Text>
+        <TextInput style={styles.input} value={emergency_contact2_name} onChangeText={setEmergencyContact2Name} placeholder="Ad Soyad" placeholderTextColor="#9ca3af" />
+        <Text style={styles.label}>2. yakın telefonu</Text>
+        <TextInput style={styles.input} value={emergency_contact2_phone} onChangeText={setEmergencyContact2Phone} placeholder="05xx xxx xx xx" keyboardType="phone-pad" placeholderTextColor="#9ca3af" />
 
         <Text style={styles.sectionTitle}>🏢 Çalışan bilgileri</Text>
         <Text style={styles.label}>İşletme</Text>
@@ -382,18 +648,35 @@ export default function EditStaffScreen() {
             </TouchableOpacity>
           ))}
         </View>
-        <Text style={styles.label}>Rol</Text>
-        <View style={styles.chips}>
-          {ROLES.map((r) => (
-            <TouchableOpacity
-              key={r.value}
-              style={[styles.chip, role === r.value && styles.chipActive]}
-              onPress={() => setRole(r.value)}
-            >
-              <Text style={[styles.chipText, role === r.value && styles.chipTextActive]}>{r.label}</Text>
-            </TouchableOpacity>
-          ))}
+        <Text style={styles.sectionTitle}>🔑 Yönetici</Text>
+        <Text style={styles.label}>Tam admin (tüm yönetim paneli)</Text>
+        <View style={styles.rowSwitch}>
+          <Text style={[styles.label, { marginBottom: 0, flex: 1 }]}>
+            {isAdmin ? 'Bu kullanıcı tam admin.' : 'Kapalıysa kullanıcı admin panelini görmez.'}
+          </Text>
+          <Switch value={isAdmin} onValueChange={toggleFullAdmin} trackColor={{ false: '#cbd5e0', true: '#1a365d' }} thumbColor="#fff" />
         </View>
+
+        {!isAdmin ? (
+          <>
+            <Text style={styles.label}>Rol</Text>
+            <View style={styles.chips}>
+              {ROLES.map((r) => (
+                <TouchableOpacity
+                  key={r.value}
+                  style={[styles.chip, role === r.value && styles.chipActive]}
+                  onPress={() => setRole(r.value)}
+                >
+                  <Text style={[styles.chipText, role === r.value && styles.chipTextActive]}>{r.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </>
+        ) : (
+          <Text style={styles.hint}>
+            Tam admin açıkken rol otomatik <Text style={{ fontWeight: '700' }}>admin</Text> olur. Kapatırsanız önceki rolüne döner.
+          </Text>
+        )}
         <Text style={styles.label}>Departman</Text>
         <View style={styles.chips}>
           {DEPARTMENTS.map((d) => (
@@ -410,12 +693,38 @@ export default function EditStaffScreen() {
         <TextInput style={styles.input} value={position} onChangeText={setPosition} placeholder="Pozisyon" placeholderTextColor="#9ca3af" />
         <Text style={styles.label}>İşe başlama tarihi</Text>
         <TextInput style={styles.input} value={hire_date} onChangeText={setHireDate} placeholder="YYYY-MM-DD" placeholderTextColor="#9ca3af" />
+        <Text style={styles.label}>Kıdem notu (profil göstergesi alt metni)</Text>
+        <TextInput
+          style={styles.input}
+          value={tenure_note}
+          onChangeText={setTenureNote}
+          placeholder="Örn: Ön büro kıdem sorumlusu"
+          placeholderTextColor="#9ca3af"
+        />
         <Text style={styles.label}>Personel no</Text>
         <TextInput style={styles.input} value={personnel_no} onChangeText={setPersonnelNo} placeholder="Personel no" placeholderTextColor="#9ca3af" />
         <Text style={styles.label}>Ofis / Konum</Text>
         <TextInput style={styles.input} value={office_location} onChangeText={setOfficeLocation} placeholder="Örn: 2. Kat Ofisi" placeholderTextColor="#9ca3af" />
+        <Text style={styles.label}>Hakkında</Text>
+        <TextInput
+          style={[styles.input, styles.textArea]}
+          value={bio}
+          onChangeText={setBio}
+          placeholder="Personel hakkında kısa bilgi. Link eklerseniz profilde tıklanabilir görünür."
+          placeholderTextColor="#9ca3af"
+          multiline
+        />
         <Text style={styles.label}>Başarılar (virgülle)</Text>
         <TextInput style={styles.input} value={achievements} onChangeText={setAchievements} placeholder="Örn: Ayın Personeli 2024, En İyi Müşteri Yorumu" placeholderTextColor="#9ca3af" />
+        <Text style={styles.label}>Geçmişte çalıştığı işler / deneyim</Text>
+        <TextInput
+          style={[styles.input, styles.textArea]}
+          value={previous_work_experience}
+          onChangeText={setPreviousWorkExperience}
+          placeholder={'Örn:\n- 2021-2023 Resepsiyon\n- 2023-2025 Ön Büro'}
+          placeholderTextColor="#9ca3af"
+          multiline
+        />
         <Text style={styles.sectionTitle}>💰 Maaş bilgileri</Text>
         <Text style={styles.label}>Maaş (TL)</Text>
         <TextInput style={styles.input} value={salary} onChangeText={setSalary} placeholder="Maaş" keyboardType="decimal-pad" placeholderTextColor="#9ca3af" />
@@ -498,7 +807,21 @@ export default function EditStaffScreen() {
         </View>
 
         <Text style={styles.sectionTitle}>📱 Uygulama yetkileri</Text>
-        {APP_PERMISSIONS.map((p) => (
+        <View style={styles.rowSwitch}>
+          <Text style={[styles.label, { flex: 1, marginBottom: 0 }]}>
+            Bu personel misafirden mesaj alamaz
+          </Text>
+          <Switch
+            value={guestMessagesBlocked}
+            onValueChange={toggleGuestMessagesBlocked}
+            trackColor={{ false: '#cbd5e0', true: '#1a365d' }}
+            thumbColor="#fff"
+          />
+        </View>
+        <Text style={styles.hint}>
+          Açıksa, misafir ekranında "Güvenlik nedeniyle otel tarafından mesaja kapatıldı" uyarısı gösterilir.
+        </Text>
+        {APP_PERMISSIONS.filter((p) => p.key !== 'misafir_mesaj_alabilir').map((p) => (
           <TouchableOpacity key={p.key} style={styles.checkRow} onPress={() => togglePermission(p.key)}>
             <Text style={styles.checkbox}>{app_permissions[p.key] ? '☑' : '☐'}</Text>
             <Text style={styles.checkLabel}>{p.label}</Text>
@@ -533,9 +856,92 @@ export default function EditStaffScreen() {
           </TouchableOpacity>
         </View>
 
+        <Text style={styles.sectionTitle}>⭐ Yönetim değerlendirmesi</Text>
+        <Text style={styles.label}>
+          Takım çalışması, disiplin, kurallara uyum vb. yıldızlı değerlendirme kaydı oluşturun; personel kendi ekranında görür.
+        </Text>
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={() => router.push(`/admin/staff/evaluation/${id}`)}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.primaryButtonText}>Değerlendirme ekranına git</Text>
+        </TouchableOpacity>
+
         <Text style={styles.sectionTitle}>📝 Admin notları</Text>
         <Text style={styles.label}>Not (sadece admin görür)</Text>
         <TextInput style={[styles.input, styles.textArea]} value={notes} onChangeText={setNotes} placeholder="Çalışkan, terfi düşünülebilir..." placeholderTextColor="#9ca3af" multiline />
+
+        <Text style={styles.sectionTitle}>📎 Personel evrakları</Text>
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={() =>
+            router.push({
+              pathname: '/admin/documents/new',
+              params: {
+                relatedStaffId: id,
+                relatedStaffName: full_name || undefined,
+              },
+            })
+          }
+          activeOpacity={0.85}
+        >
+          <Text style={styles.primaryButtonText}>Sabıka kaydı / evrak yükle</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.secondaryButton} onPress={loadStaffDocuments} activeOpacity={0.8}>
+          <Text style={styles.secondaryButtonText}>Evrak listesini yenile</Text>
+        </TouchableOpacity>
+        {staffDocsLoading ? (
+          <ActivityIndicator size="small" color="#1a365d" style={{ marginTop: 8 }} />
+        ) : staffDocs.length === 0 ? (
+          <Text style={styles.hint}>Bu personele bağlı evrak yok.</Text>
+        ) : (
+          <View style={styles.docList}>
+            {staffDocs.map((doc) => {
+              const ver = doc.current_version_id ? staffDocVersions[doc.current_version_id] : undefined;
+              const isImage = ver ? isDocumentImageMime(ver.mime_type, ver.file_name, ver.file_path) : false;
+              const previewUrl = ver?.file_path ? staffDocPreviewUrlByPath[ver.file_path] : undefined;
+              return (
+                <View key={doc.id} style={styles.docCard}>
+                  {isImage && previewUrl ? (
+                    <TouchableOpacity
+                      style={styles.docThumb}
+                      onPress={() => setPreviewImageUri(previewUrl)}
+                      activeOpacity={0.85}
+                    >
+                      <CachedImage uri={previewUrl} style={styles.docThumbImage} contentFit="cover" />
+                    </TouchableOpacity>
+                  ) : (
+                    <View style={styles.docThumbFallback}>
+                      <Text style={styles.docThumbFallbackText}>DOSYA</Text>
+                    </View>
+                  )}
+                  <TouchableOpacity
+                    style={{ flex: 1 }}
+                    onPress={() => router.push(`/admin/documents/${doc.id}`)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.docTitle} numberOfLines={1}>{doc.title}</Text>
+                    <Text style={styles.docMeta} numberOfLines={1}>
+                      {ver?.file_name ?? 'Dosya'} · {new Date(doc.updated_at).toLocaleDateString('tr-TR')}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        <Text style={styles.sectionTitle}>🖨️ Personel Detay PDF</Text>
+        <TouchableOpacity style={styles.primaryButton} onPress={previewPdf} activeOpacity={0.85}>
+          <Text style={styles.primaryButtonText}>PDF Önizle / Yazdır</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.primaryButton} onPress={downloadPdf} activeOpacity={0.85}>
+          <Text style={styles.primaryButtonText}>PDF Oluştur / İndir</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.primaryButton} onPress={sendToPrinter} activeOpacity={0.85}>
+          <Text style={styles.primaryButtonText}>Yazıcıya Mail Gönder</Text>
+        </TouchableOpacity>
 
         {saving ? (
           <ActivityIndicator size="large" color="#1a365d" style={{ marginTop: 24 }} />
@@ -550,6 +956,11 @@ export default function EditStaffScreen() {
           </>
         )}
       </ScrollView>
+      <ImagePreviewModal
+        visible={previewImageUri !== null}
+        uri={previewImageUri}
+        onClose={() => setPreviewImageUri(null)}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -583,4 +994,34 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: '#fff', fontSize: 18, fontWeight: '600' },
   secondaryButton: { paddingVertical: 16, alignItems: 'center' },
   secondaryButtonText: { color: '#718096', fontSize: 16 },
+  docList: { marginTop: 6, marginBottom: 8, gap: 10 },
+  docCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 10,
+  },
+  docThumb: {
+    width: 64,
+    height: 64,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#edf2f7',
+  },
+  docThumbImage: { width: '100%', height: '100%' },
+  docThumbFallback: {
+    width: 64,
+    height: 64,
+    borderRadius: 10,
+    backgroundColor: '#edf2f7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  docThumbFallbackText: { color: '#4a5568', fontSize: 11, fontWeight: '700' },
+  docTitle: { color: '#1a202c', fontWeight: '700', fontSize: 14 },
+  docMeta: { color: '#4a5568', marginTop: 4, fontSize: 12 },
 });

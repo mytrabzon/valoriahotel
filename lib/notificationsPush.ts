@@ -8,9 +8,40 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '@/lib/supabase';
 import { log } from '@/lib/logger';
+import { isPostgrestSchemaCacheError, sleepMs } from '@/lib/supabaseTransientErrors';
 import { emitPermissionLiveChange } from '@/lib/permissionLive';
 
 const EXPO_PUSH_TOKEN_KEY = 'valoria_expo_push_token';
+const STAFF_ROOM_CLEANING_SOUND_PREF_KEY = 'staff_notif_room_cleaning_mark_sound_enabled';
+const STAFF_FEATURE_SOUND_PREF_KEY_PREFIX = 'staff_notif_sound_enabled:';
+
+function normalizeRpcError(error: unknown): {
+  message: string;
+  code?: string;
+  details?: string;
+  hint?: string;
+  raw: string;
+} {
+  if (!error || typeof error !== 'object') {
+    return {
+      message: 'Unknown RPC error',
+      raw: String(error),
+    };
+  }
+
+  const e = error as { message?: unknown; code?: unknown; details?: unknown; hint?: unknown };
+  const message = typeof e.message === 'string' && e.message.trim().length > 0
+    ? e.message
+    : 'RPC returned an empty message';
+
+  return {
+    message,
+    code: typeof e.code === 'string' ? e.code : undefined,
+    details: typeof e.details === 'string' ? e.details : undefined,
+    hint: typeof e.hint === 'string' ? e.hint : undefined,
+    raw: JSON.stringify(error),
+  };
+}
 
 /** Expo Go içinde çalışıyoruz; push bildirimleri dev build'de çalışır */
 export const isExpoGo = Constants.appOwnership === 'expo';
@@ -18,31 +49,72 @@ export const isExpoGo = Constants.appOwnership === 'expo';
 async function getNotifications() {
   if (isExpoGo) return null;
   const Notifications = await import('expo-notifications');
-  return Notifications.default;
+  return Notifications;
 }
 
 /** Uygulama açıkken gelen bildirim: üst banner + liste + ses (Expo SDK 54+). Android'de ses kapalıysa heads-up da gelmez. */
 const VALORIA_CHANNEL_ID = 'valoria_urgent';
+// Android notification channels are immutable on many devices; version the silent channel ID
+// so users with older sound-enabled channel config reliably get a truly silent channel.
+const SILENT_CHANNEL_ID = 'valoria_silent_v2';
+const EMERGENCY_CHANNEL_ID = 'valoria_emergency_alert';
+const EMERGENCY_SOUND_NAME = 'emergency_alert.wav';
 
 let pushPresentationInitialized = false;
+
+function normalizeNotificationType(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().toLowerCase();
+}
+
+async function shouldMuteByStaffFeaturePreference(notificationType: string): Promise<boolean> {
+  if (!notificationType || notificationType === 'message' || notificationType === 'admin_announcement') {
+    return false;
+  }
+  const stored = await AsyncStorage.getItem(`${STAFF_FEATURE_SOUND_PREF_KEY_PREFIX}${notificationType}`);
+  return stored === '0';
+}
 
 /** Root veya modül yükünde bir kez çağrılmalı; gecikmeli import ile handler bazen geç kalıyordu. */
 export async function initPushNotificationsPresentation(): Promise<void> {
   if (isExpoGo || pushPresentationInitialized) return;
   try {
     const ExpoN = await import('expo-notifications');
-    const Notifications = ExpoN.default;
+    const Notifications = ExpoN;
 
     Notifications.setNotificationHandler({
-      handleNotification: async () => ({
+      handleNotification: async (notification) => {
+        const data =
+          notification?.request?.content?.data && typeof notification.request.content.data === 'object'
+            ? (notification.request.content.data as Record<string, unknown>)
+            : {};
+        const muteSoundRaw = data.muteSound;
+        const muteByPayload =
+          muteSoundRaw === true ||
+          muteSoundRaw === 'true' ||
+          muteSoundRaw === 1 ||
+          muteSoundRaw === '1';
+        const notificationTypeRaw = data.notificationType ?? data.notification_type;
+        const notificationType = normalizeNotificationType(notificationTypeRaw);
+        const roomCleaningMarked = notificationType === 'staff_room_cleaning_status';
+        const roomCleaningSoundPref = await AsyncStorage.getItem(STAFF_ROOM_CLEANING_SOUND_PREF_KEY);
+        const roomCleaningSoundEnabled = roomCleaningSoundPref == null ? true : roomCleaningSoundPref === '1';
+        const muteByLocalPref = roomCleaningMarked && !roomCleaningSoundEnabled;
+        const muteByFeaturePref = await shouldMuteByStaffFeaturePreference(notificationType);
+        return {
+          // Sunucudan muteSound gelmese bile (deploy gecikmesi vb.) local tercih bu tipte sesi kapatir.
+          shouldPlaySound: !(muteByPayload || muteByLocalPref || muteByFeaturePref),
         shouldShowBanner: true,
         shouldShowList: true,
-        shouldPlaySound: true,
-        shouldSetBadge: true,
-        ...(Platform.OS === 'android'
-          ? { priority: ExpoN.AndroidNotificationPriority.MAX }
-          : {}),
-      }),
+        // Rozeti burada değil, gelen push içindeki badge / data.app_badge ile
+        // applyBadgeFromExpoNotificationPayload + AppState await sonrası setOsAppIconBadgeCount ile uyguluyoruz
+        // (iOS arka planda aps.badge hâlâ sisteme aittir; çift/yanlış sayı yarışı önlensin).
+        shouldSetBadge: false,
+          ...(Platform.OS === 'android'
+            ? { priority: ExpoN.AndroidNotificationPriority.MAX }
+            : {}),
+        };
+      },
     });
     pushPresentationInitialized = true;
 
@@ -81,6 +153,28 @@ export async function initPushNotificationsPresentation(): Promise<void> {
           vibrationPattern: [0, 250, 250, 250],
           showBadge: true,
         });
+        await Notifications.setNotificationChannelAsync(SILENT_CHANNEL_ID, {
+          name: 'Sessiz Bildirimler',
+          importance: ExpoN.AndroidImportance.MAX,
+          enableVibrate: true,
+          enableLights: true,
+          lockscreenVisibility: ExpoN.AndroidNotificationVisibility.PUBLIC,
+          sound: null,
+          vibrationPattern: [0, 250, 250, 250],
+          showBadge: true,
+          description: 'Ses kapali ama gorunur bildirimler',
+        });
+        await Notifications.setNotificationChannelAsync(EMERGENCY_CHANNEL_ID, {
+          name: 'Acil Durum Bildirimleri',
+          importance: ExpoN.AndroidImportance.MAX,
+          enableVibrate: true,
+          enableLights: true,
+          lockscreenVisibility: ExpoN.AndroidNotificationVisibility.PUBLIC,
+          sound: EMERGENCY_SOUND_NAME,
+          vibrationPattern: [0, 350, 200, 350, 200, 350],
+          showBadge: true,
+          description: 'Personel acil durum alarmlari',
+        });
       } catch (e) {
         log.warn('notificationsPush', 'Android kanal ayarı', e);
       }
@@ -103,7 +197,7 @@ export function registerIOSPushTokenListener(): () => void {
   let removed = false;
   import('expo-notifications').then((Notifications) => {
     if (removed) return;
-    const addListener = (Notifications.default as { addPushTokenListener?: (cb: (token: unknown) => void) => { remove: () => void } }).addPushTokenListener;
+    const addListener = (Notifications as { addPushTokenListener?: (cb: (token: unknown) => void) => { remove: () => void } }).addPushTokenListener;
     if (typeof addListener !== 'function') return;
     addListener((payload: unknown) => {
       const data = payload && typeof payload === 'object' && 'data' in payload ? (payload as { data: string }).data : payload;
@@ -158,6 +252,28 @@ export async function getExpoPushTokenAsync(): Promise<string | null> {
           vibrationPattern: [0, 250, 250, 250],
           showBadge: true,
         });
+        await Notifications.setNotificationChannelAsync(SILENT_CHANNEL_ID, {
+          name: 'Sessiz Bildirimler',
+          importance: Notifications.AndroidImportance.MAX,
+          enableVibrate: true,
+          enableLights: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          sound: null,
+          vibrationPattern: [0, 250, 250, 250],
+          showBadge: true,
+          description: 'Ses kapali ama gorunur bildirimler',
+        });
+        await Notifications.setNotificationChannelAsync(EMERGENCY_CHANNEL_ID, {
+          name: 'Acil Durum Bildirimleri',
+          importance: Notifications.AndroidImportance.MAX,
+          enableVibrate: true,
+          enableLights: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          sound: EMERGENCY_SOUND_NAME,
+          vibrationPattern: [0, 350, 200, 350, 200, 350],
+          showBadge: true,
+          description: 'Personel acil durum alarmlari',
+        });
       } catch (e) {
         log.warn('notificationsPush', 'Android kanal (token öncesi)', e);
       }
@@ -165,7 +281,11 @@ export async function getExpoPushTokenAsync(): Promise<string | null> {
     const { status: existing } = await Notifications.getPermissionsAsync();
     let final = existing;
     if (existing !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
+      const { status } = await Notifications.requestPermissionsAsync(
+        Platform.OS === 'ios'
+          ? { ios: { allowAlert: true, allowBadge: true, allowSound: true } }
+          : undefined
+      );
       final = status;
       emitPermissionLiveChange();
     }
@@ -234,6 +354,51 @@ export async function getStoredExpoPushToken(): Promise<string | null> {
   return AsyncStorage.getItem(EXPO_PUSH_TOKEN_KEY);
 }
 
+/** Ana ekrandaki uygulama simgesi rozet sayısı (iOS’ta kesin; Android launcher desteğine bağlı). */
+export async function setOsAppIconBadgeCount(count: number): Promise<void> {
+  if (Platform.OS === 'web' || isExpoGo) return;
+  try {
+    const Notifications = await getNotifications();
+    if (!Notifications || typeof Notifications.setBadgeCountAsync !== 'function') return;
+    const n = Math.max(0, Math.min(999, Math.floor(count)));
+    await Notifications.setBadgeCountAsync(n);
+  } catch (e) {
+    log.warn('notificationsPush', 'setOsAppIconBadgeCount', e);
+  }
+}
+
+/**
+ * Gelen Expo/FCM/APNs bildirimindeki rozet (content.badge veya data.app_badge) — ön planda anında.
+ * Arka planda yalnızca sistem (push payload) güncelleyebilir; bu fonksiyon o durumda çağrılmaz.
+ */
+export async function applyBadgeFromExpoNotificationPayload(
+  n: { request?: { content?: import('expo-notifications').NotificationContent } } | null | undefined
+): Promise<void> {
+  if (Platform.OS === 'web' || isExpoGo) return;
+  const c = n?.request?.content;
+  if (!c) return;
+  if (c.badge != null && c.badge !== undefined) {
+    const raw = c.badge;
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+      await setOsAppIconBadgeCount(Math.min(999, Math.floor(raw)));
+      return;
+    }
+  }
+  const d = c.data;
+  if (d && typeof d === 'object' && d !== null) {
+    const o = d as Record<string, unknown>;
+    const ab = o.app_badge;
+    if (typeof ab === 'number' && ab >= 0) {
+      await setOsAppIconBadgeCount(Math.min(999, Math.floor(ab)));
+      return;
+    }
+    if (typeof ab === 'string' && /^\d+$/.test(ab)) {
+      await setOsAppIconBadgeCount(Math.min(999, parseInt(ab, 10)));
+      return;
+    }
+  }
+}
+
 /** Personel giriş yaptığında: push token'ı backend'e kaydet. RLS yüzünden doğrudan upsert aynı cihazda hesap değişince başarısız olabiliyordu; RPC kullanılır. */
 export async function savePushTokenForStaff(staffId: string): Promise<void> {
   if (isExpoGo) return;
@@ -241,12 +406,43 @@ export async function savePushTokenForStaff(staffId: string): Promise<void> {
   if (!token) token = await getExpoPushTokenAsync();
   if (!token) return;
   try {
-    const { error } = await supabase.rpc('upsert_staff_push_token', {
-      p_token: token,
-      p_device_info: { platform: Platform.OS },
-    });
-    if (error) log.error('notificationsPush', 'savePushTokenForStaff RPC', error);
-    else log.info('notificationsPush', 'Staff push token kaydedildi', { staffId: staffId.slice(0, 8) });
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const { error } = await supabase.rpc('upsert_staff_push_token', {
+        p_token: token,
+        p_device_info: { platform: Platform.OS },
+      });
+      if (!error) {
+        log.info('notificationsPush', 'Staff push token kaydedildi', { staffId: staffId.slice(0, 8) });
+        return;
+      }
+      if (isPostgrestSchemaCacheError(error) && attempt < maxAttempts) {
+        await sleepMs(350 * attempt);
+        continue;
+      }
+      if (isPostgrestSchemaCacheError(error)) {
+        const normalized = normalizeRpcError(error);
+        log.warn('notificationsPush', 'savePushTokenForStaff RPC (geçici şema/PostgREST, sonra tekrar denenecek)', {
+          message: normalized.message,
+          code: normalized.code,
+          details: normalized.details,
+          hint: normalized.hint,
+          raw: normalized.raw,
+          staffIdPrefix: staffId.slice(0, 8),
+        });
+      } else {
+        const normalized = normalizeRpcError(error);
+        log.error('notificationsPush', 'savePushTokenForStaff RPC', {
+          message: normalized.message,
+          code: normalized.code,
+          details: normalized.details,
+          hint: normalized.hint,
+          raw: normalized.raw,
+          staffIdPrefix: staffId.slice(0, 8),
+        });
+      }
+      return;
+    }
   } catch (e) {
     log.error('notificationsPush', 'savePushTokenForStaff', e);
   }
@@ -260,12 +456,35 @@ export async function savePushTokenForGuest(appToken: string): Promise<void> {
   if (!token) token = await getExpoPushTokenAsync();
   if (!token) return;
   try {
-    const { error } = await supabase.rpc('upsert_guest_push_token', {
-      p_app_token: appToken,
-      p_token: token,
-    });
-    if (error) log.error('notificationsPush', 'savePushTokenForGuest RPC', error);
-    else log.info('notificationsPush', 'Guest push token kaydedildi');
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const { error } = await supabase.rpc('upsert_guest_push_token', {
+        p_app_token: appToken,
+        p_token: token,
+      });
+      if (!error) {
+        log.info('notificationsPush', 'Guest push token kaydedildi');
+        return;
+      }
+      if (isPostgrestSchemaCacheError(error) && attempt < maxAttempts) {
+        await sleepMs(350 * attempt);
+        continue;
+      }
+      if (isPostgrestSchemaCacheError(error)) {
+        log.warn('notificationsPush', 'savePushTokenForGuest RPC (geçici şema/PostgREST)', {
+          message: error.message,
+          code: (error as { code?: string }).code,
+        });
+      } else {
+        log.error('notificationsPush', 'savePushTokenForGuest RPC', {
+          message: error.message,
+          code: (error as { code?: string }).code,
+          details: (error as { details?: string }).details,
+          hint: (error as { hint?: string }).hint,
+        });
+      }
+      return;
+    }
   } catch (e) {
     log.error('notificationsPush', 'savePushTokenForGuest', e);
   }
@@ -296,7 +515,7 @@ export function addNotificationResponseListener(
   const noop = (): void => {};
   const cleanup = { remove: noop };
   import('expo-notifications').then((Notifications) => {
-    const sub = Notifications.default.addNotificationResponseReceivedListener(
+    const sub = Notifications.addNotificationResponseReceivedListener(
       handler as (r: import('expo-notifications').NotificationResponse) => void
     );
     cleanup.remove = () => sub.remove();
@@ -306,13 +525,13 @@ export function addNotificationResponseListener(
 
 /** Uygulama öndeyken bildirim geldiğinde çağrılır (uyarı göstermek için). Expo Go'da no-op. */
 export function addNotificationReceivedListener(
-  handler: (notification: { request: { content: { title?: string; body?: string; data?: Record<string, unknown> } } }) => void
+  handler: (notification: import('expo-notifications').Notification) => void
 ): () => void {
   if (isExpoGo) return () => {};
   const noop = (): void => {};
   const cleanup = { remove: noop };
   import('expo-notifications').then((Notifications) => {
-    const sub = Notifications.default.addNotificationReceivedListener(
+    const sub = Notifications.addNotificationReceivedListener(
       handler as (n: import('expo-notifications').Notification) => void
     );
     cleanup.remove = () => sub.remove();

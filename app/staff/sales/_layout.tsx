@@ -1,7 +1,9 @@
 import { Stack } from 'expo-router';
 import { theme } from '@/constants/theme';
+import { useTranslation } from 'react-i18next';
 
 export default function StaffSalesLayout() {
+  const { t } = useTranslation();
   return (
     <Stack
       screenOptions={{
@@ -12,9 +14,9 @@ export default function StaffSalesLayout() {
         contentStyle: { backgroundColor: theme.colors.background },
       }}
     >
-      <Stack.Screen name="index" options={{ title: 'Satış & Komisyon' }} />
-      <Stack.Screen name="new" options={{ title: 'Yeni satış kaydı' }} />
-      <Stack.Screen name="[id]" options={{ title: 'Satış detayı' }} />
+      <Stack.Screen name="index" options={{ title: t('adminSalesAndCommission') }} />
+      <Stack.Screen name="new" options={{ title: t('adminNewSale') }} />
+      <Stack.Screen name="[id]" options={{ title: t('adminSaleDetail') }} />
     </Stack>
   );
 }

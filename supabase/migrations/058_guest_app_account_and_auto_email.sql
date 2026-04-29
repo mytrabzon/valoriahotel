@@ -9,6 +9,7 @@ COMMENT ON COLUMN public.guests.is_guest_app_account IS 'Uygulama "Misafir olara
 COMMENT ON COLUMN public.guests.welcome_email_sent_at IS 'Misafir hesap oluşturulduğunda admin bildirim e-postası gönderildi mi.';
 
 -- get_or_create_guest_for_caller: silinmiş hesabı döndürme (yeni oluştur), anonymous ise is_guest_app_account + otomatik e-posta
+DROP FUNCTION IF EXISTS public.get_or_create_guest_for_caller(TEXT);
 CREATE OR REPLACE FUNCTION public.get_or_create_guest_for_caller(p_full_name TEXT DEFAULT NULL)
 RETURNS TABLE(guest_id UUID, app_token TEXT, is_new BOOLEAN)
 LANGUAGE plpgsql
@@ -119,6 +120,7 @@ COMMENT ON FUNCTION public.get_or_create_guest_for_caller(TEXT) IS
   'Çağıran kullanıcı için misafir: email/auth_user_id ile bulur veya oluşturur. Silinmiş hesap varsa yeni oluşturur. Anonymous = misafir hesap (otomatik e-posta atanır).';
 
 -- admin_list_guests: is_guest_app_account döndür
+DROP FUNCTION IF EXISTS public.admin_list_guests(text);
 CREATE OR REPLACE FUNCTION public.admin_list_guests(p_filter text DEFAULT 'all')
 RETURNS TABLE (
   id uuid,

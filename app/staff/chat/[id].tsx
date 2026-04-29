@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, Stack, useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/stores/authStore';
 import {
@@ -37,6 +38,7 @@ import { theme } from '@/constants/theme';
 import { VoiceMessagePlayer } from '@/components/VoiceMessagePlayer';
 import * as ImagePicker from 'expo-image-picker';
 import { uriToArrayBuffer, getMimeAndExt } from '@/lib/uploadMedia';
+import { uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
 import { ensureCameraPermission } from '@/lib/cameraPermission';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
 import { CachedImage } from '@/components/CachedImage';
@@ -47,16 +49,25 @@ import {
   BUBBLE_OTHER_DIRECT,
   BUBBLE_COLOR_OPTIONS,
 } from '@/stores/messagingBubbleStore';
+import { useTranslation } from 'react-i18next';
 
 const ALL_STAFF_GROUP_NAME = 'Tüm Çalışanlar';
+const STAFF_CHAT_CACHE_PREFIX = 'staff_chat_cache_v1:';
+type StaffChatCacheEntry = {
+  messages: Message[];
+  headerName: string;
+  headerAvatar: string | null;
+  updatedAt: number;
+};
+const staffChatMemoryCache: Record<string, StaffChatCacheEntry> = {};
 
 function formatMessageTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 function formatMessageDateAndTime(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 function MessageBubble({
@@ -74,10 +85,11 @@ function MessageBubble({
   onDelete?: (msg: Message) => void;
   bubbleColor?: string;
 }) {
+  const { t } = useTranslation();
   const voiceUri = msg.message_type === 'voice' ? (msg.media_url || msg.content) : null;
   const isImage = msg.message_type === 'image' && (msg.media_url || msg.media_thumbnail);
   const imageUri = msg.media_url || msg.media_thumbnail || '';
-  const displayName = msg.sender_name?.trim() || (msg.sender_type === 'guest' ? 'Misafir' : null) || '?';
+  const displayName = msg.sender_name?.trim() || (msg.sender_type === 'guest' ? t('guestDefaultName') : null) || '?';
   const initial = displayName.charAt(0).toUpperCase();
   const timeStr = isGroup ? formatMessageDateAndTime(msg.created_at) : formatMessageTime(msg.created_at);
   const color = bubbleColor ?? BUBBLE_OTHER_DIRECT;
@@ -161,15 +173,18 @@ export default function StaffChatScreen() {
   const { openGroupSettings } = useLocalSearchParams<{ openGroupSettings?: string }>();
   const navigation = useNavigation();
   const router = useRouter();
+  const { t } = useTranslation();
   const { staff } = useAuthStore();
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversationType, setConversationType] = useState<string>('direct');
-  const [conversationName, setConversationName] = useState<string>('Sohbet');
+  const [conversationName, setConversationName] = useState<string>(() => t('screenChat'));
   const [headerAvatar, setHeaderAvatar] = useState<string | null>(null);
   const [isAllStaffGroup, setIsAllStaffGroup] = useState(false);
   const [showGroupSettings, setShowGroupSettings] = useState(false);
   const [editGroupName, setEditGroupName] = useState('');
   const [editGroupAvatar, setEditGroupAvatar] = useState<string | null>(null);
+  const [groupThemeColor, setGroupThemeColor] = useState<string>(theme.colors.primary);
+  const [editGroupThemeColor, setEditGroupThemeColor] = useState<string>(theme.colors.primary);
   const [savingGroup, setSavingGroup] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [input, setInput] = useState('');
@@ -191,26 +206,75 @@ export default function StaffChatScreen() {
   const androidKbPadding = Platform.OS === 'android' && keyboardHeight > 0 ? keyboardHeight + inputRowExtra + insets.bottom : 0;
 
   useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    const memory = staffChatMemoryCache[conversationId];
+    if (memory?.messages?.length) {
+      setMessages(memory.messages);
+      if (memory.headerName) setConversationName(memory.headerName);
+      setHeaderAvatar(memory.headerAvatar ?? null);
+      setLoading(false);
+    }
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(`${STAFF_CHAT_CACHE_PREFIX}${conversationId}`);
+        if (!raw || cancelled) return;
+        const parsed = JSON.parse(raw) as StaffChatCacheEntry;
+        if (Array.isArray(parsed?.messages) && parsed.messages.length > 0) {
+          setMessages(parsed.messages);
+          if (parsed.headerName) setConversationName(parsed.headerName);
+          setHeaderAvatar(parsed.headerAvatar ?? null);
+          setLoading(false);
+        }
+      } catch {
+        // cache parse hatası sessiz geçilir
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    if (messages.length === 0 && !headerAvatar && !conversationName) return;
+    const entry: StaffChatCacheEntry = {
+      messages,
+      headerName: conversationName,
+      headerAvatar: headerAvatar ?? null,
+      updatedAt: Date.now(),
+    };
+    staffChatMemoryCache[conversationId] = entry;
+    void AsyncStorage.setItem(`${STAFF_CHAT_CACHE_PREFIX}${conversationId}`, JSON.stringify(entry)).catch(() => {});
+  }, [conversationId, messages, conversationName, headerAvatar]);
+
+  useEffect(() => {
     loadBubbleStore();
   }, []);
   useEffect(() => {
     if (!conversationId) return;
     supabase
       .from('conversations')
-      .select('type, name')
+      .select('type, name, group_theme_color')
       .eq('id', conversationId)
       .single()
       .then(async ({ data }) => {
-        const row = data as { type: string; name: string | null } | null;
+        const row = data as { type: string; name: string | null; group_theme_color?: string | null } | null;
         setConversationType(row?.type ?? 'direct');
         const isAllStaff = row?.type === 'group' && row?.name === ALL_STAFF_GROUP_NAME;
         setIsAllStaffGroup(isAllStaff);
+        const resolvedTheme = (row?.group_theme_color ?? '').trim();
+        if (/^#[A-Fa-f0-9]{6}$/.test(resolvedTheme)) {
+          setGroupThemeColor(resolvedTheme);
+        } else {
+          setGroupThemeColor(theme.colors.primary);
+        }
         if (staff?.id) {
           const header = await staffGetConversationHeader(conversationId, staff.id);
           setConversationName(header.name);
           setHeaderAvatar(header.avatar);
         } else {
-          setConversationName(row?.name ?? 'Sohbet');
+          setConversationName(row?.name ?? t('screenChat'));
           setHeaderAvatar(null);
         }
         if (isAllStaff && staff?.id) {
@@ -224,24 +288,25 @@ export default function StaffChatScreen() {
           setAllStaffMuted(!!(part as { is_muted?: boolean } | null)?.is_muted);
         }
       });
-  }, [conversationId, staff?.id]);
+  }, [conversationId, staff?.id, t]);
 
   const isAdmin = staff?.role === 'admin';
   const isGroup = conversationType === 'group';
-  const canEditGroup = isAdmin && isAllStaffGroup && isGroup;
+  const canEditGroup = isAdmin && isGroup;
 
   const openGroupSettingsModal = () => {
     setEditGroupName(conversationName);
     setEditGroupAvatar(headerAvatar);
+    setEditGroupThemeColor(groupThemeColor);
     setShowGroupSettings(true);
   };
 
   useEffect(() => {
     if (!canEditGroup) return;
     if (openGroupSettings !== '1') return;
-    const t = setTimeout(() => openGroupSettingsModal(), 150);
-    return () => clearTimeout(t);
-  }, [canEditGroup, openGroupSettings, conversationName, headerAvatar]);
+    const openSettingsTimer = setTimeout(() => openGroupSettingsModal(), 150);
+    return () => clearTimeout(openSettingsTimer);
+  }, [canEditGroup, openGroupSettings, conversationName, headerAvatar, groupThemeColor]);
 
   useEffect(() => {
     const isAllStaff = isAllStaffGroup;
@@ -264,9 +329,14 @@ export default function StaffChatScreen() {
         borderBottomColor: theme.colors.borderLight,
       },
       headerTintColor: theme.colors.text,
-      headerBackTitle: 'Geri',
+      headerBackTitle: t('back'),
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 }}>
+          {canEditGroup ? (
+            <TouchableOpacity onPress={openGroupSettingsModal} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+              <Ionicons name="settings-outline" size={22} color={groupThemeColor} />
+            </TouchableOpacity>
+          ) : null}
           <TouchableOpacity onPress={() => setShowBubbleColorModal(true)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
             <Ionicons name="color-palette-outline" size={24} color={theme.colors.primary} />
           </TouchableOpacity>
@@ -276,7 +346,7 @@ export default function StaffChatScreen() {
                 if (!staff?.id || !conversationId) return;
                 const next = !allStaffMuted;
                 const { error } = await staffSetConversationMuted(conversationId, staff.id, next);
-                if (error) Alert.alert('Hata', error);
+                if (error) Alert.alert(t('error'), error);
                 else setAllStaffMuted(next);
               }}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -291,13 +361,13 @@ export default function StaffChatScreen() {
           {isAllStaff ? (
             <View style={styles.headerGroupBadge}>
               <Ionicons name="people" size={18} color={theme.colors.primary} />
-              <Text style={styles.headerGroupBadgeText}>Grup</Text>
+              <Text style={styles.headerGroupBadgeText}>{t('group')}</Text>
             </View>
           ) : null}
         </View>
       ),
     });
-  }, [conversationName, headerAvatar, isAllStaffGroup, allStaffMuted, navigation, conversationId, staff?.id]);
+  }, [conversationName, headerAvatar, isAllStaffGroup, allStaffMuted, navigation, conversationId, staff?.id, t, canEditGroup, groupThemeColor]);
 
   const scrollTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => {
@@ -349,14 +419,14 @@ export default function StaffChatScreen() {
     if (!conversationId || !staff) return;
     typingPresenceRef.current = subscribeToTypingPresence(
       conversationId,
-      { displayName: staff.full_name || staff.email || 'Personel', userId: staff.id },
+      { displayName: staff.full_name || staff.email || t('visitorTypeStaff'), userId: staff.id },
       setTypingNames
     );
     return () => {
       typingPresenceRef.current?.unsubscribe?.();
       typingPresenceRef.current = null;
     };
-  }, [conversationId, staff?.id, staff?.full_name, staff?.email]);
+  }, [conversationId, staff?.id, staff?.full_name, staff?.email, t]);
 
   // Android: klavye açılınca mesaj kutusu klavyenin üstünde kalsın
   useEffect(() => {
@@ -415,7 +485,7 @@ export default function StaffChatScreen() {
     if (error) {
       setInput(text);
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
-      Alert.alert('Mesaj gönderilemedi', error);
+      Alert.alert(t('messageSendFailedTitle'), typeof error === 'string' ? error : String(error));
       return;
     }
     if (sent) {
@@ -424,7 +494,7 @@ export default function StaffChatScreen() {
       notifyConversationRecipients({
         conversationId: convId,
         excludeStaffId: staff.id,
-        title: conversationName || 'Yeni mesaj',
+        title: conversationName || t('notifNewMessage'),
         body: text.slice(0, 80) + (text.length > 80 ? '…' : ''),
         data: { conversationId: convId, url: `/staff/chat/${convId}` },
       }).catch(() => {});
@@ -440,16 +510,16 @@ export default function StaffChatScreen() {
     if (!staff || !conversationId || sending) return;
     if (source === 'camera') {
       const granted = await ensureCameraPermission({
-        title: 'Kamera izni',
-        message: 'Sohbette fotoğraf çekmek için kamera erişimi gerekiyor.',
-        settingsMessage: 'Kamera izni kapalı. Sohbete fotoğraf eklemek için ayarlardan izin verin.',
+        title: t('chatCameraPermissionTitle'),
+        message: t('chatCameraPermissionMessage'),
+        settingsMessage: t('chatCameraPermissionSettings'),
       });
       if (!granted) return;
     } else {
       const granted = await ensureMediaLibraryPermission({
-        title: 'Galeri izni',
-        message: 'Sohbette fotograf secmek icin galeri erisimi istiyoruz.',
-        settingsMessage: 'Galeri izni kapali. Sohbete fotograf eklemek icin ayarlardan izin verin.',
+        title: t('chatGalleryPermissionTitle'),
+        message: t('chatGalleryPermissionMessage'),
+        settingsMessage: t('chatGalleryPermissionSettings'),
       });
       if (!granted) {
         return;
@@ -470,7 +540,7 @@ export default function StaffChatScreen() {
       const mediaUrl = await uploadImageMessageForStaff(arrayBuffer, mime);
       if (!mediaUrl) {
         console.warn('[StaffChat] uploadImageMessageForStaff null döndü');
-        Alert.alert('Hata', 'Resim yüklenemedi.');
+        Alert.alert(t('error'), t('imageUploadFailedShort'));
         return;
       }
       console.log('[StaffChat] mediaUrl alındı:', mediaUrl?.slice?.(0, 60));
@@ -479,12 +549,12 @@ export default function StaffChatScreen() {
         staff.id,
         staff.full_name || staff.email,
         staff.profile_image ?? null,
-        'Fotoğraf',
+        t('photo'),
         'image',
         mediaUrl
       );
       if (error) {
-        Alert.alert('Mesaj gönderilemedi', error);
+        Alert.alert(t('messageSendFailedTitle'), typeof error === 'string' ? error : String(error));
         return;
       }
       if (sent) {
@@ -493,8 +563,8 @@ export default function StaffChatScreen() {
         notifyConversationRecipients({
           conversationId: convId,
           excludeStaffId: staff.id,
-          title: conversationName || 'Yeni mesaj',
-          body: 'Fotoğraf gönderildi.',
+          title: conversationName || t('notifNewMessage'),
+          body: t('staffChatPhotoSentBody'),
           data: { conversationId: convId, url: `/staff/chat/${convId}` },
         }).catch(() => {});
         if (nextConversationId !== conversationId) {
@@ -508,32 +578,27 @@ export default function StaffChatScreen() {
     } catch (e) {
       const err = e as Error;
       console.error('[StaffChat] Resim yükleme hatası:', err?.message, err?.stack);
-      Alert.alert('Hata', err?.message ?? 'Resim gönderilemedi.');
+      Alert.alert(t('error'), err?.message ?? t('imageSendFailed'));
     } finally {
       setSending(false);
     }
   };
 
   const uploadGroupAvatar = async (uri: string): Promise<string> => {
-    if (!conversationId) throw new Error('Konuşma bulunamadı.');
-    const arrayBuffer = await uriToArrayBuffer(uri);
-    const ext = uri.toLowerCase().includes('.png') ? 'png' : 'jpg';
-    const contentType = ext === 'png' ? 'image/png' : 'image/jpeg';
-    const fileName = `conversations/${conversationId}.${ext}`;
-    const { error } = await supabase.storage.from('profiles').upload(fileName, arrayBuffer, {
-      contentType,
-      upsert: true,
+    if (!conversationId) throw new Error(t('conversationNotFound'));
+    const { publicUrl } = await uploadUriToPublicBucket({
+      bucketId: 'profiles',
+      uri,
+      subfolder: `conversations/${conversationId}`,
     });
-    if (error) throw error;
-    const { data: { publicUrl } } = supabase.storage.from('profiles').getPublicUrl(fileName);
     return publicUrl;
   };
 
   const pickAvatarForGroup = async () => {
     const granted = await ensureMediaLibraryPermission({
-      title: 'Galeri izni',
-      message: 'Grup avatari secmek icin galeri erisimi istiyoruz.',
-      settingsMessage: 'Galeri izni kapali. Grup avatari secmek icin ayarlardan izin verin.',
+      title: t('groupAvatarGalleryPermissionTitle'),
+      message: t('groupAvatarGalleryPermissionMessage'),
+      settingsMessage: t('groupAvatarGalleryPermissionSettings'),
     });
     if (!granted) return;
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -548,7 +613,7 @@ export default function StaffChatScreen() {
       const url = await uploadGroupAvatar(result.assets[0].uri);
       setEditGroupAvatar(url);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Fotoğraf yüklenemedi.');
+      Alert.alert(t('error'), (e as Error)?.message ?? t('imageUploadFailedShort'));
     } finally {
       setUploadingAvatar(false);
     }
@@ -561,14 +626,20 @@ export default function StaffChatScreen() {
     try {
       const { error } = await supabase
         .from('conversations')
-        .update({ name, avatar: editGroupAvatar ?? null, updated_at: new Date().toISOString() })
+        .update({
+          name,
+          avatar: editGroupAvatar ?? null,
+          group_theme_color: editGroupThemeColor,
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', conversationId);
       if (error) {
-        Alert.alert('Hata', error.message);
+        Alert.alert(t('error'), error.message);
         return;
       }
       setConversationName(name);
       setHeaderAvatar(editGroupAvatar);
+      setGroupThemeColor(editGroupThemeColor);
       setShowGroupSettings(false);
     } finally {
       setSavingGroup(false);
@@ -577,27 +648,27 @@ export default function StaffChatScreen() {
 
   const showImageOptions = () => {
     Alert.alert(
-      'Fotoğraf gönder',
+      t('sendPhotoTitle'),
       undefined,
       [
-        { text: 'Resim çek', onPress: () => sendImageFromSource('camera') },
-        { text: 'Galeriden seç', onPress: () => sendImageFromSource('library') },
-        { text: 'İptal', style: 'cancel' },
+        { text: t('takePhoto'), onPress: () => sendImageFromSource('camera') },
+        { text: t('chooseFromGallery'), onPress: () => sendImageFromSource('library') },
+        { text: t('cancel'), style: 'cancel' },
       ]
     );
   };
 
   const handleDeleteMessage = (msg: Message) => {
     if (!conversationId) return;
-    Alert.alert('Mesajı sil', 'Bu mesajı silmek istediğinize emin misiniz?', [
-      { text: 'İptal', style: 'cancel' },
+    Alert.alert(t('deleteMessageTitle'), t('deleteMessageConfirm'), [
+      { text: t('cancel'), style: 'cancel' },
       {
-        text: 'Sil',
+        text: t('delete'),
         style: 'destructive',
         onPress: async () => {
           const { error } = await staffDeleteMessage(conversationId, msg.id);
           if (error) {
-            Alert.alert('Hata', error);
+            Alert.alert(t('error'), typeof error === 'string' ? error : String(error));
             return;
           }
           setMessages((prev) => prev.filter((m) => m.id !== msg.id));
@@ -619,7 +690,7 @@ export default function StaffChatScreen() {
           }}
         />
         <ActivityIndicator size="large" color={theme.colors.primary} />
-        <Text style={styles.loadingLabel}>Mesajlar yükleniyor...</Text>
+        <Text style={styles.loadingLabel}>{t('loadingMessages')}</Text>
       </View>
     );
   }
@@ -651,19 +722,6 @@ export default function StaffChatScreen() {
           showsVerticalScrollIndicator={false}
           onContentSizeChange={() => { if (messages.length > 0) listRef.current?.scrollToEnd({ animated: false }); }}
           onLayout={Platform.OS === 'android' ? () => { if (messages.length > 0) requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false })); } : undefined}
-          ListHeaderComponent={
-            canEditGroup ? (
-              <TouchableOpacity
-                style={styles.groupSettingsBar}
-                onPress={openGroupSettingsModal}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="settings-outline" size={20} color={theme.colors.primary} />
-                <Text style={styles.groupSettingsBarText}>Grup adı ve avatarı düzenle</Text>
-                <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
-              </TouchableOpacity>
-            ) : null
-          }
           renderItem={({ item }) => {
             const isOwn = item.sender_id === staff?.id;
             const bubbleColor = isOwn ? (myBubbleColor ?? BUBBLE_OTHER_DIRECT) : (isGroup ? getBubbleColorForSender(item.sender_id) : BUBBLE_OTHER_DIRECT);
@@ -685,7 +743,7 @@ export default function StaffChatScreen() {
               </View>
               <Text style={styles.emptyTitle}>Henüz mesaj yok</Text>
               <Text style={styles.emptyText}>
-                {isGroup ? 'Grup sohbetinde ilk mesajı siz yazın.' : 'Bu sohbette ilk mesajı siz yazın.'}
+                {isGroup ? t('staffChatEmptyGroupFirst') : t('staffChatEmptyDirectFirst')}
               </Text>
             </View>
           }
@@ -709,7 +767,7 @@ export default function StaffChatScreen() {
         <View style={styles.inputRow}>
           <TextInput
             style={styles.input}
-            placeholder="Mesaj yaz..."
+            placeholder={t('messageInputPlaceholder')}
             placeholderTextColor={theme.colors.textMuted}
             value={input}
             onChangeText={(t) => {
@@ -780,9 +838,23 @@ export default function StaffChatScreen() {
               style={styles.modalInput}
               value={editGroupName}
               onChangeText={setEditGroupName}
-              placeholder="Örn: Tüm Çalışanlar"
+              placeholder={t('groupNameExamplePlaceholder')}
               placeholderTextColor={theme.colors.textMuted}
             />
+            <Text style={styles.modalLabel}>Tema rengi</Text>
+            <View style={styles.themePickerRow}>
+              {BUBBLE_COLOR_OPTIONS.map((c) => (
+                <TouchableOpacity
+                  key={`group-theme-${c}`}
+                  style={[
+                    styles.themeColorChip,
+                    { backgroundColor: c },
+                    editGroupThemeColor === c && styles.themeColorChipSelected,
+                  ]}
+                  onPress={() => setEditGroupThemeColor(c)}
+                />
+              ))}
+            </View>
             <View style={styles.modalActions}>
               <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setShowGroupSettings(false)}>
                 <Text style={styles.modalCancelText}>İptal</Text>
@@ -901,24 +973,6 @@ const styles = StyleSheet.create({
   listContent: {
     padding: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
-  },
-  groupSettingsBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 12,
-    backgroundColor: theme.colors.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-  },
-  groupSettingsBarText: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    color: theme.colors.primary,
   },
   bubbleWrap: {
     marginBottom: 14,
@@ -1067,6 +1121,22 @@ const styles = StyleSheet.create({
   },
   modalAvatarHint: { fontSize: 12, color: theme.colors.textMuted, marginTop: 8 },
   modalLabel: { fontSize: 14, fontWeight: '600', color: theme.colors.text, marginBottom: 8 },
+  themePickerRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 18,
+  },
+  themeColorChip: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  themeColorChipSelected: {
+    borderColor: '#111827',
+  },
   modalInput: {
     borderWidth: 1,
     borderColor: theme.colors.borderLight,

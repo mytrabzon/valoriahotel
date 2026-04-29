@@ -22,7 +22,7 @@ export const adminTheme = {
     // Metin
     text: '#0f172a',
     textSecondary: '#475569',  // slate-600
-    textMuted: '#94a3b8',      // slate-400
+    textMuted: '#64748b',      // slate-500 (placeholder/readability improved)
     // Durum
     success: '#047857',   // emerald-700
     successLight: '#d1fae5',

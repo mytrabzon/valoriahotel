@@ -20,8 +20,41 @@ function dataUriToArrayBuffer(uri: string): ArrayBuffer {
   return decode(base64);
 }
 
+export type UriToArrayBufferOptions = {
+  /** Video için base64 okuma yolu kullanılmaz (çok yavaş / bellek); `content://` kopyası .mp4 olur */
+  mediaKind?: 'image' | 'video';
+};
+
+const LARGE_FOR_BASE64 = 4 * 1024 * 1024;
+
+/** Yerel dosyayı fetch ile oku; `response.ok` bazı RN sürümlerinde file:// için yanlış olabildiğinden sadece boyuta bakılır. */
+async function tryFetchLocalToArrayBuffer(uri: string): Promise<ArrayBuffer | null> {
+  const candidates: string[] = [];
+  const u = uri.trim();
+  if (u.startsWith('file://')) {
+    candidates.push(u);
+  } else if (u.startsWith('/')) {
+    candidates.push(`file://${u}`, u);
+  } else {
+    candidates.push(u);
+  }
+  for (const cand of candidates) {
+    try {
+      const response = await fetch(cand);
+      const buf = await response.arrayBuffer();
+      if (buf.byteLength > 0) return buf;
+    } catch {
+      /* deneme */
+    }
+  }
+  return null;
+}
+
 /** Yerel (file://, content://), data URI veya uzak URI'yi ArrayBuffer'a çevirir. */
-export async function uriToArrayBuffer(uri: string): Promise<ArrayBuffer> {
+export async function uriToArrayBuffer(uri: string, options?: UriToArrayBufferOptions): Promise<ArrayBuffer> {
+  const mediaKind = options?.mediaKind ?? 'image';
+  const forbidBase64 = mediaKind === 'video';
+
   const normalized = (uri || '').trim();
   if (!normalized) throw new Error('URI boş');
 
@@ -30,12 +63,12 @@ export async function uriToArrayBuffer(uri: string): Promise<ArrayBuffer> {
   }
 
   if (normalized.startsWith('file://') || normalized.startsWith('content://')) {
-    const encoding = (FileSystem.EncodingType && (FileSystem.EncodingType as Record<string, string>).Base64) ?? 'base64';
     let uriToRead = normalized;
 
     if (Platform.OS === 'android' && normalized.startsWith('content://')) {
       try {
-        const ext = normalized.includes('.mp4') || normalized.includes('video') ? '.mp4' : '.jpg';
+        /** content://…/video/… çoğu zaman .mp4 içermez; video için her zaman .mp4 kopyala */
+        const ext = mediaKind === 'video' ? '.mp4' : '.jpg';
         const tempPath = `${FileSystem.cacheDirectory}upload_temp_${Date.now()}${ext}`;
         await FileSystem.copyAsync({ from: normalized, to: tempPath });
         uriToRead = tempPath;
@@ -44,21 +77,65 @@ export async function uriToArrayBuffer(uri: string): Promise<ArrayBuffer> {
       }
     }
 
+    const cleanupTemp = async () => {
+      if (uriToRead !== normalized) {
+        try {
+          await FileSystem.deleteAsync(uriToRead, { idempotent: true });
+        } catch (_) {}
+      }
+    };
+
+    const fromFetch = await tryFetchLocalToArrayBuffer(uriToRead);
+    if (fromFetch) {
+      await cleanupTemp();
+      return fromFetch;
+    }
+
+    /** file:// öneki olmayan cache yolu */
+    if (!uriToRead.startsWith('file://') && !uriToRead.startsWith('content://')) {
+      const again = await tryFetchLocalToArrayBuffer(uriToRead);
+      if (again) {
+        await cleanupTemp();
+        return again;
+      }
+    }
+
+    let fileSize = 0;
+    try {
+      const info = await FileSystem.getInfoAsync(uriToRead);
+      if (info.exists && 'size' in info && typeof info.size === 'number') fileSize = info.size;
+    } catch {
+      /* yok say */
+    }
+
+    const tooLargeForBase64 = fileSize > LARGE_FOR_BASE64;
+
+    if (forbidBase64 || tooLargeForBase64) {
+      const last = await tryFetchLocalToArrayBuffer(normalized);
+      if (last) {
+        await cleanupTemp();
+        return last;
+      }
+      await cleanupTemp();
+      throw new Error(
+        forbidBase64
+          ? 'Video dosyası okunamadı. Galeriden yeniden seçin veya daha kısa bir video deneyin.'
+          : 'Dosya çok büyük ve okunamadı. Daha küçük bir dosya seçin.'
+      );
+    }
+
+    const encoding = (FileSystem.EncodingType && (FileSystem.EncodingType as Record<string, string>).Base64) ?? 'base64';
     try {
       const base64 = await FileSystem.readAsStringAsync(uriToRead, {
         encoding: encoding as 'base64',
       });
-      if (uriToRead !== normalized) {
-        await FileSystem.deleteAsync(uriToRead, { idempotent: true });
-      }
+      await cleanupTemp();
       if (typeof base64 !== 'string' || !base64) {
         throw new Error('Dosya okunamadı');
       }
       return decode(base64);
     } catch (e1) {
-      if (uriToRead !== normalized) {
-        try { await FileSystem.deleteAsync(uriToRead, { idempotent: true }); } catch (_) {}
-      }
+      await cleanupTemp();
       console.warn('[uploadMedia] FileSystem.readAsStringAsync hatası:', (e1 as Error)?.message);
       try {
         const response = await fetch(normalized);
@@ -112,7 +189,8 @@ export function getMimeAndExt(
       if (mime.startsWith('video/')) return { mime: 'video/mp4', ext: 'mp4' };
     }
   }
-  if (kind === 'video' || lower.includes('.mp4') || lower.includes('video')) {
+  if (kind === 'video' || lower.includes('.mp4') || lower.includes('.mov') || lower.includes('video')) {
+    if (lower.includes('.mov')) return { mime: 'video/quicktime', ext: 'mov' };
     return { mime: 'video/mp4', ext: 'mp4' };
   }
   if (kind === 'audio' || lower.includes('.m4a') || lower.includes('audio')) {

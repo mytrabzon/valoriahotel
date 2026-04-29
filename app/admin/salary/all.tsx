@@ -21,6 +21,7 @@ import { supabase } from '@/lib/supabase';
 import { adminTheme } from '@/constants/adminTheme';
 import { AdminCard } from '@/components/admin';
 import { formatDateShort } from '@/lib/date';
+import { sendPdfToPrinterEmail } from '@/lib/printerEmail';
 
 const MONTH_NAMES = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 
@@ -75,6 +76,7 @@ export default function AdminSalaryAllScreen() {
   const [dateEnd, setDateEnd] = useState(getDefaultDates().end);
   const [detailPayment, setDetailPayment] = useState<PaymentRow | null>(null);
   const [pdfExportingStaffId, setPdfExportingStaffId] = useState<string | null>(null);
+  const [mailSendingKey, setMailSendingKey] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -139,20 +141,13 @@ export default function AdminSalaryAllScreen() {
 
   const periodLabel = (p: PaymentRow) => `${MONTH_NAMES[p.period_month - 1]} ${p.period_year}`;
 
-  const exportStaffSalaryPdf = useCallback(
-    async (p: PaymentRow) => {
+  const exportSingleSalaryPdf = useCallback(
+    async (p: PaymentRow, mode: 'share' | 'mail' = 'share') => {
       if (!p.staff_id) return;
-      setPdfExportingStaffId(p.staff_id);
+      if (mode === 'mail') setMailSendingKey(`staff:${p.staff_id}`);
+      else setPdfExportingStaffId(p.staff_id);
       try {
-        const { data: staffPayments, error } = await supabase
-          .from('salary_payments')
-          .select('id, staff_id, period_month, period_year, amount, payment_date, payment_time, status, staff:staff_id(full_name, department)')
-          .eq('staff_id', p.staff_id)
-          .order('payment_date', { ascending: true })
-          .order('created_at', { ascending: true });
-        if (error) throw new Error(error.message);
-        const list = (staffPayments ?? []) as PaymentRow[];
-        if (list.length === 0) return;
+        const list = [p];
 
         let logoHtml = '';
         try {
@@ -205,18 +200,28 @@ ${list
 </div>
 </body></html>`;
         const { uri } = await Print.printToFileAsync({ html });
+        if (mode === 'mail') {
+          await sendPdfToPrinterEmail({
+            pdfUri: uri,
+            subject: `Maaş Belgesi - ${personName}`,
+            fileName: `maas-${p.id}.pdf`,
+          });
+          return Alert.alert('Gönderildi', 'Belge yazıcı e-posta adresine gönderildi.');
+        }
         const canShare = await Sharing.isAvailableAsync();
         if (canShare) await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Aldığınız Maaşlar - ${personName}` });
       } catch (e) {
         console.warn('Staff salary PDF failed', e);
+        if (mode === 'mail') Alert.alert('Hata', (e as Error)?.message ?? 'Belge gönderilemedi.');
       } finally {
-        setPdfExportingStaffId(null);
+        if (mode === 'mail') setMailSendingKey(null);
+        else setPdfExportingStaffId(null);
       }
     },
     []
   );
 
-  const exportPdf = useCallback(async () => {
+  const exportPdf = useCallback(async (mode: 'share' | 'mail' = 'share') => {
     const sorted = [...payments].sort(
       (a, b) =>
         new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime() ||
@@ -277,10 +282,19 @@ ${sorted
 </body></html>`;
     try {
       const { uri } = await Print.printToFileAsync({ html });
+      if (mode === 'mail') {
+        await sendPdfToPrinterEmail({
+          pdfUri: uri,
+          subject: `Tüm Maaş Ödemeleri ${dateStart} - ${dateEnd}`,
+          fileName: `tum-maas-odemeleri-${dateStart}-${dateEnd}.pdf`,
+        });
+        return Alert.alert('Gönderildi', 'PDF yazıcı e-posta adresine gönderildi.');
+      }
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Tüm maaş ödemeleri (PDF)' });
     } catch (e) {
       console.warn('PDF export failed', e);
+      if (mode === 'mail') Alert.alert('Hata', (e as Error)?.message ?? 'Belge gönderilemedi.');
     }
   }, [payments, dateStart, dateEnd, totalAmount, approvedTotal]);
 
@@ -387,6 +401,23 @@ ${sorted
             <Ionicons name="document-text-outline" size={20} color={adminTheme.colors.accent} />
             <Text style={styles.exportBtnText}>PDF</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.exportBtn}
+            onPress={async () => {
+              setMailSendingKey('all');
+              await exportPdf('mail');
+              setMailSendingKey(null);
+            }}
+            activeOpacity={0.8}
+            disabled={mailSendingKey === 'all'}
+          >
+            {mailSendingKey === 'all' ? (
+              <ActivityIndicator size="small" color={adminTheme.colors.accent} />
+            ) : (
+              <Ionicons name="mail-outline" size={20} color={adminTheme.colors.accent} />
+            )}
+            <Text style={styles.exportBtnText}>Yazıcı Mail</Text>
+          </TouchableOpacity>
         </View>
 
         <Text style={styles.listTitle}>Tüm Ödemeler ({payments.length})</Text>
@@ -428,8 +459,8 @@ ${sorted
                 </View>
                 <TouchableOpacity
                   style={[styles.tableCell, styles.thPdf]}
-                  onPress={(ev) => { ev.stopPropagation(); exportStaffSalaryPdf(p); }}
-                  disabled={pdfExportingStaffId === p.staff_id}
+                  onPress={(ev) => { ev.stopPropagation(); exportSingleSalaryPdf(p); }}
+                  disabled={pdfExportingStaffId === p.staff_id || mailSendingKey === `staff:${p.staff_id}`}
                 >
                   {pdfExportingStaffId === p.staff_id ? (
                     <ActivityIndicator size="small" color={adminTheme.colors.accent} />
@@ -497,8 +528,8 @@ ${sorted
                     ) : null}
                     <TouchableOpacity
                       style={styles.detailPdfBtn}
-                      onPress={() => exportStaffSalaryPdf(detailPayment)}
-                      disabled={pdfExportingStaffId === detailPayment.staff_id}
+                      onPress={() => exportSingleSalaryPdf(detailPayment)}
+                      disabled={pdfExportingStaffId === detailPayment.staff_id || mailSendingKey === `staff:${detailPayment.staff_id}`}
                     >
                       {pdfExportingStaffId === detailPayment.staff_id ? (
                         <ActivityIndicator size="small" color="#fff" />
@@ -506,6 +537,20 @@ ${sorted
                         <>
                           <Ionicons name="document-text-outline" size={20} color="#fff" />
                           <Text style={styles.detailPdfBtnText}>Aldığınız Maaşlar PDF</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.detailPdfBtn, { marginTop: 10, backgroundColor: adminTheme.colors.surfaceTertiary }]}
+                      onPress={() => exportSingleSalaryPdf(detailPayment, 'mail')}
+                      disabled={mailSendingKey === `staff:${detailPayment.staff_id}`}
+                    >
+                      {mailSendingKey === `staff:${detailPayment.staff_id}` ? (
+                        <ActivityIndicator size="small" color={adminTheme.colors.accent} />
+                      ) : (
+                        <>
+                          <Ionicons name="mail-outline" size={20} color={adminTheme.colors.accent} />
+                          <Text style={[styles.detailPdfBtnText, { color: adminTheme.colors.accent }]}>Tek Belgeyi Mail Gönder</Text>
                         </>
                       )}
                     </TouchableOpacity>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, RefreshControl, TouchableOpacity } from 'react-native';
+import { useRouter } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import type { NotificationTemplateRow } from '@/lib/notifications';
 
@@ -14,8 +15,20 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 function TemplateCard({ item }: { item: NotificationTemplateRow }) {
+  const router = useRouter();
   return (
-    <View style={styles.card}>
+    <TouchableOpacity
+      style={styles.card}
+      activeOpacity={0.85}
+      onPress={() => {
+        const q = new URLSearchParams();
+        q.set('audience', item.target_audience);
+        q.set('category', item.category);
+        q.set('title', item.title_template ?? '');
+        q.set('body', item.body_template ?? '');
+        router.push(`/admin/notifications/bulk?${q.toString()}`);
+      }}
+    >
       <View style={styles.cardHead}>
         <Text style={styles.cardTitle}>{item.title_template}</Text>
         <View style={styles.badge}>
@@ -24,7 +37,8 @@ function TemplateCard({ item }: { item: NotificationTemplateRow }) {
       </View>
       <Text style={styles.cardBody}>{item.body_template}</Text>
       {item.is_system ? <Text style={styles.systemNote}>Sistem şablonu</Text> : null}
-    </View>
+      <Text style={styles.useHint}>Kullan</Text>
+    </TouchableOpacity>
   );
 }
 
@@ -91,4 +105,5 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: 12, color: '#4a5568' },
   cardBody: { fontSize: 14, color: '#4a5568' },
   systemNote: { fontSize: 11, color: '#a0aec0', marginTop: 8 },
+  useHint: { marginTop: 10, fontSize: 13, fontWeight: '700', color: '#1a365d' },
 });

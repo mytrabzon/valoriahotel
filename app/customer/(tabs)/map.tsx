@@ -3,7 +3,7 @@
  * Yol tarifi ve detay uygulama içi (Google Maps'e yönlendirme yok).
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -21,7 +21,7 @@ import {
   Linking,
   AppState,
 } from 'react-native';
-import { usePathname, useRouter, useFocusEffect } from 'expo-router';
+import { usePathname, useRouter, useFocusEffect, type Href } from 'expo-router';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import CustomerMapPicker from '@/components/CustomerMapPicker';
@@ -36,30 +36,34 @@ import {
 import { searchPoisByText } from '@/lib/map/poiSearch';
 import { getRoute, formatDuration, formatDistance, estimateWalkingDuration } from '@/lib/map/osrm';
 import type { OSRMRoute } from '@/lib/map/osrm';
+import { pathLengthMeters, trimRoutePolyline, type LatLng } from '@/lib/map/routePolylineTrim';
 import { fetchNearbyMapUsers, upsertMyLocation } from '@/lib/map/userLocations';
-import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
+import { getOrCreateGuestForCurrentSession } from '@/lib/getOrCreateGuestForCaller';
 import { guestDisplayName } from '@/lib/guestDisplayName';
 import { theme } from '@/constants/theme';
 import { useAuthStore } from '@/stores/authStore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { MapUserMarker } from '@/lib/map/types';
+import type { MapUserMarker, MapDiningMarker, MapTransferTourMarker } from '@/lib/map/types';
 import MapShareSheet from '@/components/MapShareSheet';
 import MapPostDetailSheet from '@/components/MapPostDetailSheet';
 import { supabase } from '@/lib/supabase';
 import { CachedImage } from '@/components/CachedImage';
+import { useTranslation } from 'react-i18next';
+import { pickLocalizedString, type I18nJson } from '@/lib/transferTour';
+import { venueAvatarUrl } from '@/lib/diningVenues';
 
 const HOTEL_LAT = typeof process.env.EXPO_PUBLIC_HOTEL_LAT !== 'undefined' ? Number(process.env.EXPO_PUBLIC_HOTEL_LAT) : 40.6144;
 const HOTEL_LON = typeof process.env.EXPO_PUBLIC_HOTEL_LON !== 'undefined' ? Number(process.env.EXPO_PUBLIC_HOTEL_LON) : 40.31188;
 
 const POI_TYPES: PoiType[] = ['restaurant', 'cafe', 'hotel', 'pharmacy', 'hospital', 'police'];
 
-const TAB_BAR_ESTIMATE = 90;
-
 export default function CustomerMapScreen() {
+  const { t, i18n } = useTranslation();
+  const appLang = (i18n.language || 'tr').split('-')[0];
   const router = useRouter();
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
-  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const { height: winHeight } = useWindowDimensions();
   const { user, staff } = useAuthStore();
   const [pois, setPois] = useState<Poi[]>([]);
   const [nearbyMapUsers, setNearbyMapUsers] = useState<MapUserMarker[]>([]);
@@ -68,17 +72,40 @@ export default function CustomerMapScreen() {
   const [loading, setLoading] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationPermStatus, setLocationPermStatus] = useState<'granted' | 'denied' | 'undetermined' | 'unavailable' | null>(null);
-  const [layoutHeight, setLayoutHeight] = useState(Math.max(300, winHeight - TAB_BAR_ESTIMATE));
   const [poiCenter, setPoiCenter] = useState({ lat: HOTEL_LAT, lng: HOTEL_LON });
   const [routeData, setRouteData] = useState<{ route: OSRMRoute; toName: string } | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
+  const [navigationActive, setNavigationActive] = useState(false);
+  const navWatchRef = useRef<Location.LocationSubscription | null>(null);
   const [locationCardVisible, setLocationCardVisible] = useState(false);
   const [locationRequesting, setLocationRequesting] = useState(false);
   const [shareSheetVisible, setShareSheetVisible] = useState(false);
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
   const [mapPosts, setMapPosts] = useState<{ id: string; lat: number; lng: number; authorName: string; authorAvatarUrl: string | null; postPreviewUrl: string | null; staffId: string | null; guestId: string | null }[]>([]);
+  const [diningMapMarkers, setDiningMapMarkers] = useState<MapDiningMarker[]>([]);
+  const [transferTourMapMarkers, setTransferTourMapMarkers] = useState<MapTransferTourMarker[]>([]);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopLiveNavigation = useCallback(() => {
+    setNavigationActive(false);
+    navWatchRef.current?.remove();
+    navWatchRef.current = null;
+  }, []);
+
+  const clearRoutePanel = useCallback(() => {
+    setRouteData(null);
+    setNavigationActive(false);
+    navWatchRef.current?.remove();
+    navWatchRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      navWatchRef.current?.remove();
+      navWatchRef.current = null;
+    };
+  }, []);
 
   const loadFeedPostsWithLocation = useCallback(async () => {
     const { data } = await supabase
@@ -102,6 +129,101 @@ export default function CustomerMapScreen() {
     });
     setMapPosts(posts);
   }, []);
+
+  const loadDiningMapMarkers = useCallback(async () => {
+    if (!user && !staff) {
+      setDiningMapMarkers([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('dining_venues')
+      .select('id, name, lat, lng, logo_url, cover_image, images')
+      .eq('is_active', true)
+      .not('lat', 'is', null)
+      .not('lng', 'is', null);
+    if (error || !data) {
+      setDiningMapMarkers([]);
+      return;
+    }
+    const list: MapDiningMarker[] = (
+      data as {
+        id: string;
+        name: string;
+        lat: unknown;
+        lng: unknown;
+        logo_url: string | null;
+        cover_image: string | null;
+        images: string[] | null;
+      }[]
+    ).map((r) => {
+      const images = Array.isArray(r.images) ? r.images : [];
+      return {
+        id: r.id,
+        lat: Number(r.lat),
+        lng: Number(r.lng),
+        displayName: r.name,
+        avatarUrl: venueAvatarUrl({
+          logo_url: r.logo_url,
+          cover_image: r.cover_image,
+          images,
+        }),
+      };
+    });
+    setDiningMapMarkers(list.filter((m) => Number.isFinite(m.lat) && Number.isFinite(m.lng)));
+  }, [user, staff]);
+
+  const onDiningVenueMapPress = useCallback(
+    (venueId: string) => {
+      if (pathname?.startsWith('/staff')) {
+        router.push(`/staff/dining-venues/guest/${venueId}` as Href);
+      } else {
+        router.push(`/customer/dining-venues/${venueId}` as Href);
+      }
+    },
+    [pathname, router]
+  );
+
+  const loadTransferTourMapMarkers = useCallback(async () => {
+    if (!user && !staff) {
+      setTransferTourMapMarkers([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('transfer_services')
+      .select('id, tour_operator_name, tour_operator_logo, map_lat, map_lng, title, cover_image, images')
+      .eq('is_active', true)
+      .not('map_lat', 'is', null)
+      .not('map_lng', 'is', null);
+    if (error || !data) {
+      setTransferTourMapMarkers([]);
+      return;
+    }
+    const list: MapTransferTourMarker[] = (data as { id: string; tour_operator_name: string | null; tour_operator_logo: string | null; map_lat: unknown; map_lng: unknown; title: unknown; cover_image: string | null; images: string[] | null }[]).map((r) => {
+      const im = Array.isArray(r.images) ? r.images : [];
+      const titleI18n = (r.title && typeof r.title === 'object' ? r.title : {}) as I18nJson;
+      const name =
+        (r.tour_operator_name && r.tour_operator_name.trim()) || pickLocalizedString(titleI18n, appLang, t('transferTourNavTitle'));
+      return {
+        id: r.id,
+        lat: Number(r.map_lat),
+        lng: Number(r.map_lng),
+        displayName: name,
+        avatarUrl: r.tour_operator_logo || r.cover_image || im[0] || null,
+      };
+    });
+    setTransferTourMapMarkers(list.filter((m) => Number.isFinite(m.lat) && Number.isFinite(m.lng)));
+  }, [user, staff, appLang, t]);
+
+  const onTransferTourMapPress = useCallback(
+    (serviceId: string) => {
+      if (pathname?.startsWith('/staff')) {
+        router.push(`/staff/transfer-tour/guest/${serviceId}` as Href);
+      } else {
+        router.push(`/customer/transfer-tour/${serviceId}` as Href);
+      }
+    },
+    [pathname, router]
+  );
 
   const clearMapPostPin = useCallback((id: string) => {
     setMapPosts((prev) => prev.filter((p) => p.id !== id));
@@ -130,7 +252,7 @@ export default function CustomerMapScreen() {
   const loadNearbyMapUsers = useCallback(async () => {
     const center = userLocation ?? poiCenter;
     const users = await fetchNearbyMapUsers(center.lat, center.lng);
-    const myGuestId = staff ? undefined : user ? (await getOrCreateGuestForCaller(user))?.guest_id : undefined;
+    const myGuestId = staff ? undefined : (await getOrCreateGuestForCurrentSession())?.guest_id;
     const myStaffId = staff?.id;
     const markers: MapUserMarker[] = users
       .filter((u) => (u.userType === 'guest' && u.userId !== myGuestId) || (u.userType === 'staff' && u.userId !== myStaffId))
@@ -143,7 +265,7 @@ export default function CustomerMapScreen() {
         isMe: false,
       }));
     setNearbyMapUsers(markers);
-  }, [poiCenter.lat, poiCenter.lng, userLocation, user, staff]);
+  }, [poiCenter.lat, poiCenter.lng, userLocation, staff]);
 
   const upsertMyMapLocation = useCallback(async () => {
     if (!userLocation) return;
@@ -156,8 +278,8 @@ export default function CustomerMapScreen() {
         displayName: staff.full_name ?? null,
         avatarUrl: staff.profile_image ?? null,
       });
-    } else if (user) {
-      const guest = await getOrCreateGuestForCaller(user);
+    } else {
+      const guest = await getOrCreateGuestForCurrentSession();
       if (guest) {
         await upsertMyLocation({
           lat: userLocation.lat,
@@ -169,19 +291,44 @@ export default function CustomerMapScreen() {
         });
       }
     }
-  }, [userLocation, user, staff, displayName, avatarUrl]);
+  }, [userLocation, staff, displayName, avatarUrl]);
 
   useEffect(() => {
-    if (!user && !staff) return;
     const t = setTimeout(loadNearbyMapUsers, 400);
     return () => clearTimeout(t);
-  }, [loadNearbyMapUsers, user, staff, poiCenter.lat, poiCenter.lng]);
+  }, [loadNearbyMapUsers, poiCenter.lat, poiCenter.lng]);
 
   useFocusEffect(
     useCallback(() => {
       void loadFeedPostsWithLocation();
-    }, [loadFeedPostsWithLocation])
+      void loadDiningMapMarkers();
+      void loadTransferTourMapMarkers();
+    }, [loadFeedPostsWithLocation, loadDiningMapMarkers, loadTransferTourMapMarkers])
   );
+
+  useEffect(() => {
+    const ch = supabase
+      .channel('map_dining_venues')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dining_venues' }, () => {
+        void loadDiningMapMarkers();
+      })
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(ch);
+    };
+  }, [loadDiningMapMarkers]);
+
+  useEffect(() => {
+    const ch = supabase
+      .channel('map_transfer_services')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transfer_services' }, () => {
+        void loadTransferTourMapMarkers();
+      })
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(ch);
+    };
+  }, [loadTransferTourMapMarkers]);
 
   useEffect(() => {
     const channel = supabase
@@ -310,14 +457,14 @@ export default function CustomerMapScreen() {
         setUserLocation(null);
         if (st === 'denied') {
           Alert.alert(
-            'Konum izni kapalı',
-            'Konum iznini açmak için ayarlara gidebilirsiniz.',
+            t('mapLocationOffTitle'),
+            t('mapLocationOffBody'),
             [
-              { text: 'Ayarları aç', onPress: () => Linking.openSettings() },
+              { text: t('openAppSettings'), onPress: () => Linking.openSettings() },
             ]
           );
         } else {
-          Alert.alert('Konum izni verilmedi', 'Yol tarifi için varsayılan olarak otel konumu kullanılır.');
+          Alert.alert(t('mapLocationDeniedTitle'), t('mapLocationDeniedBody'));
         }
         return;
       }
@@ -327,7 +474,7 @@ export default function CustomerMapScreen() {
     } finally {
       setLocationRequesting(false);
     }
-  }, []);
+  }, [t]);
 
   const q = searchQuery.trim();
   const filteredPois =
@@ -358,11 +505,43 @@ export default function CustomerMapScreen() {
   const showSuggestions = searchQuery.trim().length > 0 || filterTypes.length > 0;
   const fromForDirections = userLocation ?? { lat: HOTEL_LAT, lng: HOTEL_LON };
 
-  const routeCoordinates =
-    routeData?.route.geometry.coordinates.map(([lng, lat]) => ({ lat, lng })) ?? [];
+  const displayRoutePath = useMemo(() => {
+    if (!routeData?.route.geometry?.coordinates?.length) return [];
+    const full: LatLng[] = routeData.route.geometry.coordinates.map(([lng, lat]) => ({ lat, lng }));
+    if (full.length < 2) return full;
+    if (!navigationActive || !userLocation) return full;
+    return trimRoutePolyline(full, userLocation);
+  }, [routeData, navigationActive, userLocation]);
+
+  const remainingPathMeters = useMemo(
+    () => (displayRoutePath.length >= 2 ? pathLengthMeters(displayRoutePath) : 0),
+    [displayRoutePath]
+  );
+
+  const startRouteNavigation = useCallback(async () => {
+    if (!routeData) return;
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert(t('mapLocationDeniedTitle'), t('mapLocationDeniedBody'));
+      return;
+    }
+    setLocationPermStatus('granted');
+    const cur = await Location.getCurrentPositionAsync({}).catch(() => null);
+    if (cur) setUserLocation({ lat: cur.coords.latitude, lng: cur.coords.longitude });
+    navWatchRef.current?.remove();
+    const sub = await Location.watchPositionAsync(
+      { accuracy: Location.Accuracy.Balanced, timeInterval: 2000, distanceInterval: 10 },
+      (loc) => {
+        setUserLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+      }
+    );
+    navWatchRef.current = sub;
+    setNavigationActive(true);
+  }, [routeData, t]);
 
   const showRouteToPoi = (poi: Poi) => {
     Keyboard.dismiss();
+    stopLiveNavigation();
     setRouteLoading(true);
     setRouteData(null);
     getRoute(fromForDirections, { lat: poi.lat, lng: poi.lng }).then((r) => {
@@ -373,6 +552,7 @@ export default function CustomerMapScreen() {
 
   const showRouteToHotel = () => {
     Keyboard.dismiss();
+    stopLiveNavigation();
     setRouteLoading(true);
     setRouteData(null);
     getRoute(fromForDirections, { lat: HOTEL_LAT, lng: HOTEL_LON }).then((r) => {
@@ -387,32 +567,32 @@ export default function CustomerMapScreen() {
     setFilterTypes([]);
   };
 
+  const routeSheetBlockH = navigationActive ? Math.min(320, winHeight * 0.32) : Math.min(420, winHeight * 0.42);
+  const shareFabBottom = insets.bottom + 24 + (routeData ? routeSheetBlockH : 0);
+
   return (
-    <View
-      style={styles.container}
-      onLayout={(e) => {
-        const { height } = e.nativeEvent.layout;
-        if (height > 100) setLayoutHeight(Math.round(height));
-      }}
-      pointerEvents="box-none"
-    >
+    <View style={styles.container} pointerEvents="box-none">
       {/* Boşluğa (haritaya) tıklanınca klavye kapansın ve öneriler kaybolsun */}
       <TouchableWithoutFeedback onPress={dismissSearchAndSuggestions} accessible={false}>
-        <View style={[styles.mapContainer, { width: winWidth, height: layoutHeight }]} pointerEvents="box-none">
+        <View style={styles.mapLayer} pointerEvents="box-none">
           <CustomerMapPicker
             initialLat={HOTEL_LAT}
             initialLng={HOTEL_LON}
             initialZoom={15}
             pois={filteredPois}
-            routeCoordinates={routeCoordinates}
-            hotelMarker={{ lat: HOTEL_LAT, lng: HOTEL_LON, title: 'Valoria Hotel' }}
+            routeCoordinates={displayRoutePath}
+            hotelMarker={{ lat: HOTEL_LAT, lng: HOTEL_LON, title: t('screenHotel') }}
             userMarkers={userMarkers}
             postMarkers={mapPosts.map((p) => ({ id: p.id, lat: p.lat, lng: p.lng, displayName: p.authorName, avatarUrl: p.postPreviewUrl ?? p.authorAvatarUrl }))}
+            diningMarkers={diningMapMarkers}
+            transferTourMarkers={transferTourMapMarkers}
             onPoiPress={showRouteToPoi}
             onHotelPress={showRouteToHotel}
             onPostPress={(postId) => setSelectedPostId(postId)}
+            onDiningPress={onDiningVenueMapPress}
+            onTransferTourPress={onTransferTourMapPress}
             onRegionChangeComplete={handleRegionChange}
-            style={{ width: winWidth, height: Math.max(300, layoutHeight) }}
+            style={styles.mapPicker}
           />
         </View>
       </TouchableWithoutFeedback>
@@ -426,50 +606,122 @@ export default function CustomerMapScreen() {
       {routeLoading && (
         <View style={[styles.loadingOverlay, { bottom: 200 }]} pointerEvents="none">
           <ActivityIndicator size="small" color={theme.colors.primary} />
-          <Text style={styles.routeLoadingText}>Rota hesaplanıyor...</Text>
+          <Text style={styles.routeLoadingText}>{t('mapScreenRouteLoading')}</Text>
         </View>
       )}
 
       {routeData && (
-        <View style={[styles.routeSheet, { paddingBottom: insets.bottom + 12 }]}>
-          <Text style={styles.routeSheetTitle}>📍 {routeData.toName}</Text>
-          <View style={styles.routeMetaRow}>
-            <Text style={styles.routeMeta}>⏱️ {formatDuration(routeData.route.duration)}</Text>
-            <Text style={styles.routeMeta}>🚶 ~{formatDuration(estimateWalkingDuration(routeData.route.distance))}</Text>
-            <Text style={styles.routeMeta}>📏 {formatDistance(routeData.route.distance)}</Text>
+        <View
+          style={[
+            styles.routeSheet,
+            {
+              paddingBottom: insets.bottom + 14,
+              maxHeight: navigationActive ? '34%' : '44%',
+            },
+          ]}
+        >
+          <View style={styles.routeSheetGrab} />
+          <View style={styles.routeSheetHeader}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.routeSheetTitle} numberOfLines={1}>
+                📍 {routeData.toName}
+              </Text>
+              {navigationActive ? (
+                <Text style={styles.routeLiveBadge}>{t('mapNavLive')}</Text>
+              ) : null}
+            </View>
+            <TouchableOpacity
+              style={styles.routeCloseIcon}
+              onPress={clearRoutePanel}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityLabel={t('mapScreenClose')}
+            >
+              <Ionicons name="close" size={26} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
           </View>
-          <Text style={styles.routeStepsTitle}>Adım adım</Text>
-          <ScrollView style={styles.routeStepsScroll} showsVerticalScrollIndicator={false}>
-            {routeData.route.steps.map((step, i) => (
-              <View key={i} style={styles.routeStepRow}>
-                <Text style={styles.routeStepNum}>{i + 1}.</Text>
-                <Text style={styles.routeStepText}>
-                  {step.maneuver?.instruction ?? step.name ?? 'Devam et'} — {formatDistance(step.distance)}
-                </Text>
-              </View>
-            ))}
-          </ScrollView>
-          <TouchableOpacity style={styles.routeCloseBtn} onPress={() => setRouteData(null)} activeOpacity={0.8}>
-            <Text style={styles.routeCloseBtnText}>Kapat</Text>
-          </TouchableOpacity>
+          <View style={styles.routeMetaRow}>
+            {navigationActive && userLocation ? (
+              <Text style={styles.routeMetaEmph}>
+                📏 {t('mapNavRemaining')}: {formatDistance(remainingPathMeters)}
+              </Text>
+            ) : (
+              <>
+                <Text style={styles.routeMeta}>⏱️ {formatDuration(routeData.route.duration)}</Text>
+                <Text style={styles.routeMeta}>🚶 ~{formatDuration(estimateWalkingDuration(routeData.route.distance))}</Text>
+                <Text style={styles.routeMeta}>📏 {formatDistance(routeData.route.distance)}</Text>
+              </>
+            )}
+          </View>
+          {!navigationActive ? (
+            <>
+              <Text style={styles.routeStepsTitle}>{t('mapScreenRouteSteps')}</Text>
+              <ScrollView style={styles.routeStepsScroll} showsVerticalScrollIndicator={false}>
+                {routeData.route.steps.map((step, i) => (
+                  <View key={i} style={styles.routeStepRow}>
+                    <Text style={styles.routeStepNum}>{i + 1}.</Text>
+                    <Text style={styles.routeStepText}>
+                      {step.maneuver?.instruction ?? step.name ?? t('mapRouteStepFallback')} — {formatDistance(step.distance)}
+                    </Text>
+                  </View>
+                ))}
+              </ScrollView>
+            </>
+          ) : (
+            <Text style={styles.routeNavHint}>{t('mapNavFollowHint')}</Text>
+          )}
+          <View style={styles.routeActions}>
+            {navigationActive ? (
+              <>
+                <TouchableOpacity style={styles.routeSecondaryBtn} onPress={stopLiveNavigation} activeOpacity={0.85}>
+                  <Ionicons name="stop-circle-outline" size={20} color={theme.colors.primary} />
+                  <Text style={styles.routeSecondaryBtnText}>{t('mapNavStopLive')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.routePrimaryBtn} onPress={clearRoutePanel} activeOpacity={0.88}>
+                  <Ionicons name="flag" size={20} color="#fff" />
+                  <Text style={styles.routePrimaryBtnText}>{t('mapNavEndRoute')}</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={styles.routePrimaryBtn}
+                  onPress={() => void startRouteNavigation()}
+                  activeOpacity={0.88}
+                >
+                  <Ionicons name="navigate" size={20} color="#fff" />
+                  <Text style={styles.routePrimaryBtnText}>{t('mapNavStart')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.routeSecondaryBtn} onPress={clearRoutePanel} activeOpacity={0.85}>
+                  <Text style={styles.routeSecondaryBtnText}>{t('mapScreenClose')}</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
         </View>
       )}
 
       {locationPermStatus && locationPermStatus !== 'granted' && locationPermStatus !== 'unavailable' && (
         <TouchableOpacity
-          style={[styles.locationUseBtn, { bottom: insets.bottom + 24 }]}
+          style={[styles.locationUseBtn, { bottom: shareFabBottom }]}
           onPress={() => setLocationCardVisible(true)}
           activeOpacity={0.85}
         >
           <Ionicons name="location-outline" size={20} color="#fff" />
-          <Text style={styles.locationUseBtnText}>Konumumu kullan</Text>
+          <Text style={styles.locationUseBtnText}>{t('mapScreenUseMyLocation')}</Text>
         </TouchableOpacity>
       )}
 
       {/* Haritadan paylaşım — artı butonu: haritada kart açılır, sayfa değişmez */}
       {(user || staff) && (
         <TouchableOpacity
-          style={[styles.shareFab, { bottom: insets.bottom + (locationPermStatus && locationPermStatus !== 'granted' && locationPermStatus !== 'unavailable' ? 90 : 24) }]}
+          style={[
+            styles.shareFab,
+            {
+              bottom:
+                shareFabBottom +
+                (locationPermStatus && locationPermStatus !== 'granted' && locationPermStatus !== 'unavailable' ? 72 : 0),
+            },
+          ]}
           onPress={() => setShareSheetVisible(true)}
           activeOpacity={0.85}
         >
@@ -535,16 +787,16 @@ export default function CustomerMapScreen() {
                   ]}
                 >
                   {locationPermStatus === 'granted'
-                    ? 'Verildi'
+                    ? t('mapLocationStatusGranted')
                     : locationPermStatus === 'denied'
-                      ? 'Kapalı'
-                      : 'İstenmedi'}
+                      ? t('mapLocationStatusDenied')
+                      : t('mapLocationStatusNotRequested')}
                 </Text>
               </View>
             </View>
             <View style={styles.permCardNotes}>
-              <Text style={styles.permCardNote}>• "Devam" derseniz sistem izin penceresi açılır.</Text>
-              <Text style={styles.permCardNote}>• Daha önce reddedildiyse ayarlardan konum iznini açmanız gerekir.</Text>
+              <Text style={styles.permCardNote}>{t('mapLocationModalNote1')}</Text>
+              <Text style={styles.permCardNote}>{t('mapLocationModalNote2')}</Text>
             </View>
             <TouchableOpacity
               style={[styles.permCardPrimaryBtn, locationRequesting && { opacity: 0.75 }]}
@@ -569,7 +821,7 @@ export default function CustomerMapScreen() {
                     color={theme.colors.white}
                   />
                   <Text style={styles.permCardPrimaryText}>
-                    {locationPermStatus === 'denied' ? 'Ayarları aç' : 'Devam'}
+                    {locationPermStatus === 'denied' ? t('openAppSettings') : t('mapContinue')}
                   </Text>
                 </>
               )}
@@ -586,7 +838,7 @@ export default function CustomerMapScreen() {
             </TouchableOpacity>
             <TextInput
               style={styles.searchInput}
-              placeholder="🔍 İşletme veya tür ara..."
+              placeholder={t('mapSearchPlaceholder')}
               placeholderTextColor="rgba(255,255,255,0.6)"
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -666,8 +918,8 @@ export default function CustomerMapScreen() {
                 <Text style={styles.suggestionPlaceholder}>Aranıyor...</Text>
               ) : filteredPois.length === 0 ? (
                 <View style={styles.emptySuggestions}>
-                  <Text style={styles.suggestionPlaceholder}>Bu bölgede mekan bulunamadı.</Text>
-                  <Text style={styles.suggestionHint}>Haritayı kaydırıp başka bölgeye tıklayın veya konum iznini açın.</Text>
+                  <Text style={styles.suggestionPlaceholder}>{t('mapNoVenuesInArea')}</Text>
+                  <Text style={styles.suggestionHint}>{t('mapNoVenuesHint')}</Text>
                 </View>
               ) : (
                 filteredPois.map((poi) => (
@@ -690,7 +942,7 @@ export default function CustomerMapScreen() {
                       activeOpacity={0.8}
                     >
                       <Ionicons name="navigate" size={18} color={theme.colors.primary} />
-                      <Text style={styles.directionsBtnText}>Yol tarifi al</Text>
+                      <Text style={styles.directionsBtnText}>{t('mapGetDirections')}</Text>
                     </TouchableOpacity>
                   </View>
                 ))
@@ -706,16 +958,18 @@ export default function CustomerMapScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    width: '100%',
+    minHeight: 0,
     backgroundColor: '#1a1d21',
   },
-  mapContainer: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-  },
-  mapFill: {
+  mapLayer: {
+    flex: 1,
     width: '100%',
-    height: '100%',
+    minHeight: 0,
+  },
+  mapPicker: {
+    flex: 1,
+    width: '100%',
   },
   topRow: {
     flexDirection: 'row',
@@ -899,30 +1153,69 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    maxHeight: '48%',
-    backgroundColor: 'rgba(255,255,255,0.96)',
-    borderTopLeftRadius: theme.radius.lg,
-    borderTopRightRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
+    backgroundColor: 'rgba(255,255,255,0.98)',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: 8,
     zIndex: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.06)',
     ...theme.shadows.lg,
   },
-  routeSheetTitle: { fontSize: 17, fontWeight: '700', color: theme.colors.text, marginBottom: 8 },
-  routeMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 8 },
+  routeSheetGrab: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(0,0,0,0.12)',
+    marginBottom: 10,
+  },
+  routeSheetHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 6 },
+  routeCloseIcon: { padding: 2 },
+  routeSheetTitle: { fontSize: 18, fontWeight: '800', color: theme.colors.text, marginBottom: 2 },
+  routeLiveBadge: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: theme.colors.success,
+    letterSpacing: 0.2,
+  },
+  routeMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 8, alignItems: 'center' },
   routeMeta: { fontSize: 13, color: theme.colors.textSecondary },
-  routeStepsTitle: { fontSize: 14, fontWeight: '700', color: theme.colors.text, marginTop: 4, marginBottom: 6 },
-  routeStepsScroll: { maxHeight: 160 },
+  routeMetaEmph: { fontSize: 14, fontWeight: '800', color: theme.colors.primary, width: '100%' },
+  routeStepsTitle: { fontSize: 14, fontWeight: '700', color: theme.colors.text, marginTop: 2, marginBottom: 6 },
+  routeStepsScroll: { maxHeight: 150 },
+  routeNavHint: { fontSize: 13, color: theme.colors.textSecondary, lineHeight: 19, marginTop: 4, marginBottom: 8 },
   routeStepRow: { flexDirection: 'row', marginBottom: 6 },
   routeStepNum: { fontWeight: '700', width: 22, color: theme.colors.primary, fontSize: 13 },
   routeStepText: { flex: 1, fontSize: 13, color: theme.colors.text },
-  routeCloseBtn: {
-    marginTop: 12,
-    paddingVertical: 12,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+  routeActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 },
+  routePrimaryBtn: {
+    flex: 1,
+    minWidth: 140,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 16,
+    backgroundColor: theme.colors.primary,
   },
-  routeCloseBtnText: { fontSize: 15, fontWeight: '600', color: theme.colors.white },
+  routePrimaryBtnText: { fontSize: 16, fontWeight: '800', color: theme.colors.white },
+  routeSecondaryBtn: {
+    flex: 1,
+    minWidth: 120,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.backgroundSecondary,
+  },
+  routeSecondaryBtnText: { fontSize: 15, fontWeight: '800', color: theme.colors.text },
 
   shareFab: {
     position: 'absolute',

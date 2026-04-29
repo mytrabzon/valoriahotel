@@ -83,7 +83,8 @@ export default function StaffMyMovementsScreen() {
   };
 
   const handleDeleteMovement = (m: MovementRow) => {
-    if (m.status === 'approved') {
+    const isAdmin = staff?.role === 'admin';
+    if (m.status === 'approved' && !isAdmin) {
       Alert.alert('Silinemez', 'Onaylanmış hareket silinemez. Stoğa işlenmiş kayıtları admin panelinden yönetin.');
       return;
     }
@@ -308,7 +309,7 @@ export default function StaffMyMovementsScreen() {
                       <Text style={styles.detailBtnText}>Ürün detayı</Text>
                     </TouchableOpacity>
                   )}
-                  {m.status !== 'approved' && (
+                  {(m.status !== 'approved' || staff?.role === 'admin') && (
                     <TouchableOpacity
                       style={styles.deleteBtn}
                       onPress={() => handleDeleteMovement(m)}

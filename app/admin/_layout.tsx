@@ -8,6 +8,7 @@ import { canAccessAdminShell, isGorevAtaOnlyUser } from '@/lib/staffPermissions'
 import { useStaffNotificationStore } from '@/stores/staffNotificationStore';
 import { adminTheme } from '@/constants/adminTheme';
 import { Ionicons } from '@expo/vector-icons';
+import { complaintsText } from '@/lib/complaintsI18n';
 
 export default function AdminLayout() {
   const { t } = useTranslation();
@@ -24,6 +25,24 @@ export default function AdminLayout() {
       router.replace('/staff');
     }
   };
+
+  /** Belge detayı: replace ile açıldığında stack boş kalmasın; yoksa tüm belgelere dön. */
+  const renderDocumentDetailBack = () => (
+    <TouchableOpacity
+      onPress={() => {
+        if (navigation.canGoBack()) {
+          router.back();
+        } else {
+          router.replace('/admin/documents/all' as never);
+        }
+      }}
+      style={{ marginLeft: 8, padding: 8 }}
+      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+      accessibilityLabel="Geri"
+    >
+      <Ionicons name="arrow-back" size={24} color={adminTheme.colors.text} />
+    </TouchableOpacity>
+  );
   const { staff, loading, loadSession } = useAuthStore();
 
   const refreshNotifications = useStaffNotificationStore((s) => s.refresh);
@@ -106,39 +125,65 @@ export default function AdminLayout() {
             headerRight: renderHeaderRight,
           }}
         />
+        <Stack.Screen name="approvals/index" options={{ title: t('adminApprovals'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="rooms/index" options={{ title: t('adminRooms'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="rooms/cleaning-plan" options={{ title: 'Yarın temizlenecek odalar', headerRight: renderHeaderRight }} />
       <Stack.Screen name="rooms/[id]" options={{ title: t('adminRoomDetail'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="rooms/new" options={{ title: t('adminRoomNew'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="guests/index" options={{ title: t('adminGuests'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="guests/[id]" options={{ title: t('adminGuestDetail'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="checkin" options={{ title: t('adminCheckin'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="housekeeping" options={{ title: t('adminHousekeeping'), headerRight: renderHeaderRight }} />
-      <Stack.Screen name="tasks/index" options={{ title: 'Personel görevleri', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="tasks/assign" options={{ title: 'Görev ata', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="tasks/index" options={{ title: t('adminStaffTasks'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="tasks/assign" options={{ title: t('adminAssignTask'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="attendance/index" options={{ title: 'Mesai Takibi', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="attendance/[staffId]" options={{ title: 'Personel Mesai Detayı', headerRight: renderHeaderRight }} />
       <Stack.Screen name="report" options={{ title: t('adminReport'), headerRight: renderHeaderRight }} />
-      <Stack.Screen name="stays/index" options={{ title: 'Konaklama geçmişi', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="sales/index" options={{ title: 'Satış & Komisyon', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="sales/new" options={{ title: 'Yeni satış kaydı', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="sales/[id]" options={{ title: 'Satış detayı', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="stays/index" options={{ title: t('adminStayHistory'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="sales/index" options={{ title: t('adminSalesAndCommission'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="sales/new" options={{ title: t('adminNewSale'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="sales/[id]" options={{ title: t('adminSaleDetail'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="hmb-reports/index" options={{ title: t('adminHmbReports'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/index" options={{ title: t('screenDocumentManagement'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="incident-reports/index" options={{ title: 'Tutanaklar', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="incident-reports/new" options={{ title: 'Yeni Tutanak Oluştur', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="incident-reports/[id]" options={{ title: 'Tutanak Detayı', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="missing-items/index" options={{ title: 'Eksik Var', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/all" options={{ title: t('adminDocumentsAll'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/new" options={{ title: t('adminDocumentsUpload'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/categories" options={{ title: t('adminDocumentsCategories'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/pending" options={{ title: t('adminDocumentsPending'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/expiring" options={{ title: t('adminDocumentsExpiring'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/expired" options={{ title: t('adminDocumentsExpired'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/archive" options={{ title: t('adminDocumentsArchive'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/logs" options={{ title: t('adminDocumentsLogs'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="documents/settings" options={{ title: t('adminDocumentsSettings'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="maliye/index" options={{ title: 'Maliye Evrak Merkezi', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="maliye/documents" options={{ title: 'Maliye Evrakları', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="maliye/forms" options={{ title: 'Müşteri Formları', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="maliye/access" options={{ title: 'Maliye Erişim', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="maliye/logs" options={{ title: 'Maliye Logları', headerRight: renderHeaderRight }} />
+      <Stack.Screen
+        name="documents/[id]"
+        options={{ title: t('adminDocumentsDetail'), headerRight: renderHeaderRight, headerLeft: renderDocumentDetailBack }}
+      />
       <Stack.Screen name="contracts" options={{ title: t('adminContracts'), headerShown: false }} />
       <Stack.Screen name="stock/index" options={{ headerShown: false }} />
-      <Stack.Screen name="stock/all" options={{ title: 'Tüm stoklar', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="stock/all" options={{ title: t('adminAllStocks'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="stock/product/[id]" options={{ title: t('adminProductDetail'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="stock/movement" options={{ title: t('adminStockMovement'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="stock/approvals" options={{ title: t('adminStockApprovals'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="stock/scan" options={{ title: t('adminScanBarcode'), headerShown: false }} />
-      <Stack.Screen name="expenses/index" options={{ title: 'Harcama yönetimi', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="expenses/all" options={{ title: 'Tüm harcamalar', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="expenses/by-category" options={{ title: 'Kategori bazlı harcama', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="expenses/by-staff" options={{ title: 'Personel bazlı harcama', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="carbon/index" options={{ title: 'Karbon ayak izi', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="carbon/report" options={{ title: 'Karbon raporu', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="salary/index" options={{ title: 'Maaş yönetimi', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="salary/all" options={{ title: 'Tüm ödemeler', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="salary/new" options={{ title: 'Yeni maaş ödemesi', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="salary/history/[id]" options={{ title: 'Maaş geçmişi', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="salary/edit/[paymentId]" options={{ title: 'Maaş düzenle', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="expenses/index" options={{ title: t('adminExpenseManagement'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="expenses/all" options={{ title: t('adminExpensesAll'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="expenses/by-category" options={{ title: t('adminExpensesByCategory'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="expenses/by-staff" options={{ title: t('adminExpensesByStaff'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="carbon" options={{ headerShown: false }} />
+      <Stack.Screen name="salary/index" options={{ title: t('adminSalaryManagement'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="salary/all" options={{ title: t('adminSalaryAllPayments'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="salary/new" options={{ title: t('adminSalaryNewPayment'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="salary/history/[id]" options={{ title: t('adminSalaryHistory'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="salary/edit/[paymentId]" options={{ title: t('adminSalaryEdit'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="access/index" options={{ title: t('adminAccess'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="access/doors" options={{ title: t('adminDoors'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="access/doors/new" options={{ title: t('adminDoorNew'), headerRight: renderHeaderRight }} />
@@ -149,12 +194,15 @@ export default function AdminLayout() {
       <Stack.Screen name="access/staff-permissions" options={{ title: t('adminStaffPermissions'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="access/logs" options={{ title: t('adminAccessLogs'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="permissions" options={{ title: t('adminPermissions'), headerRight: renderHeaderRight }} />
-      <Stack.Screen name="kbs-settings" options={{ title: 'KBS Ayarları', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="kbs-settings" options={{ title: t('adminKbsSettings'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="notifications/index" options={{ title: t('adminNotifications'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="notifications/bulk" options={{ title: t('adminBulkNotification'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="reports/index" options={{ title: t('adminReports'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="complaints/index" options={{ title: complaintsText('adminTitle'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="staff-complaints/index" options={{ title: 'Personel Şikayetleri', headerRight: renderHeaderRight }} />
       <Stack.Screen name="notifications/templates" options={{ title: t('adminNotificationTemplates'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="notifications/emergency" options={{ title: t('adminEmergency'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="emergency-locations" options={{ title: 'Acil Lokasyonlari', headerRight: renderHeaderRight }} />
       <Stack.Screen name="messages/index" options={{ title: t('adminMessages'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="messages/chat/[id]" options={{ title: t('adminChat'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="messages/new" options={{ title: t('adminNewChat'), headerRight: renderHeaderRight }} />
@@ -166,15 +214,25 @@ export default function AdminLayout() {
       <Stack.Screen name="staff/pending" options={{ title: t('adminStaffPending'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="staff/approve/[id]" options={{ title: t('adminStaffApprove'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="qr-designs/index" options={{ title: t('adminQrDesigns'), headerRight: renderHeaderRight }} />
-      <Stack.Screen name="feed/index" options={{ title: 'Gönderiler', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="cameras/index" options={{ title: 'Kamera yönetimi', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="cameras/new" options={{ title: 'Yeni kamera', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="cameras/[id]" options={{ title: 'Kamera düzenle', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="cameras/logs" options={{ title: 'Kamera logları', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="profile" options={{ title: 'Profilim', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="app-links" options={{ title: 'Uygulamalar & Web Siteleri', headerRight: renderHeaderRight }} />
-      <Stack.Screen name="settings/printer" options={{ title: 'Yazici ayarlari', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="feed/index" options={{ title: t('adminFeedPosts'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="cameras/index" options={{ title: t('adminCameraManagement'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="cameras/new" options={{ title: t('adminCameraNew'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="cameras/[id]" options={{ title: t('adminCameraEdit'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="cameras/logs" options={{ title: t('adminCameraLogs'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="profile" options={{ title: t('myProfile'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="app-links" options={{ title: t('adminAppsAndWebsites'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="settings/printer" options={{ title: t('adminPrinterSettings'), headerRight: renderHeaderRight }} />
       <Stack.Screen name="map" options={{ headerShown: false }} />
+      <Stack.Screen name="breakfast-confirm/index" options={{ title: 'Kahvaltı Teyit Kayıtları', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="breakfast-confirm/settings" options={{ title: 'Kahvaltı Teyit Ayarları', headerRight: renderHeaderRight }} />
+      <Stack.Screen name="transfer-tour/index" options={{ title: t('transferTourAdminMenu'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="transfer-tour/pick-location" options={{ title: t('transferTourPickLocation'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="transfer-tour/service/[id]" options={{ title: t('transferTourEditService'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="dining-venues/index" options={{ title: t('diningVenuesAdminTitle'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="dining-venues/venue/[id]" options={{ title: t('diningVenuesFormTitle'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="dining-venues/pick-location" options={{ title: t('diningVenuesPickOnMap'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="local-area-guide/index" options={{ title: t('localAreaGuideAdminTitle'), headerRight: renderHeaderRight }} />
+      <Stack.Screen name="local-area-guide/[id]" options={{ title: t('localAreaGuideAdminEdit'), headerRight: renderHeaderRight }} />
       </Stack>
 
       {/* Tab menü: Admin, Personel, Misafir — hepsi tab’ta, ayrı yerde olmayacak */}

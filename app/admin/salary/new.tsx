@@ -89,10 +89,6 @@ export default function AdminSalaryNewScreen() {
 
     setSaving(false);
     if (error) {
-      if (error.code === '23505') {
-        Alert.alert('Kayıt var', 'Bu personel için bu dönemde zaten maaş kaydı var.');
-        return;
-      }
       Alert.alert('Hata', error.message);
       return;
     }

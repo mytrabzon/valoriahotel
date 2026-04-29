@@ -16,8 +16,9 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
-import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
+import { syncGuestMessagingAppToken } from '@/lib/getOrCreateGuestForCaller';
 import {
   guestGetMessages,
   guestSendMessage,
@@ -42,9 +43,31 @@ import { Ionicons } from '@expo/vector-icons';
 import { CachedImage } from '@/components/CachedImage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMessagingBubbleStore, getContrastTextColor, BUBBLE_OTHER_DIRECT, BUBBLE_COLOR_OPTIONS } from '@/stores/messagingBubbleStore';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
+
+const CUSTOMER_CHAT_CACHE_PREFIX = 'customer_chat_cache_v1:';
+type CustomerChatCacheEntry = {
+  messages: Message[];
+  headerName: string;
+  headerAvatar: string | null;
+  updatedAt: number;
+};
+const customerChatMemoryCache: Record<string, CustomerChatCacheEntry> = {};
 
 function formatMessageTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+  const raw = (i18n.language || 'tr').split('-')[0];
+  const localeMap: Record<string, string> = {
+    tr: 'tr-TR',
+    en: 'en-GB',
+    ar: 'ar-SA',
+    de: 'de-DE',
+    fr: 'fr-FR',
+    ru: 'ru-RU',
+    es: 'es-ES',
+  };
+  const loc = localeMap[raw] ?? 'tr-TR';
+  return new Date(iso).toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' });
 }
 
 function MessageBubble({
@@ -60,6 +83,8 @@ function MessageBubble({
   onDelete?: (msg: Message) => void;
   bubbleColor: string;
 }) {
+  const { t } = useTranslation();
+  const guestLabel = t('chatMessageSenderGuest');
   const voiceUri = msg.message_type === 'voice' ? (msg.media_url || msg.content) : null;
   const isImage = msg.message_type === 'image' && (msg.media_url || msg.media_thumbnail);
   const imageUri = msg.media_url || msg.media_thumbnail || '';
@@ -70,8 +95,8 @@ function MessageBubble({
       onLongPress={isOwn && onDelete ? () => onDelete(msg) : undefined}
       delayLongPress={400}
     >
-      {!isOwn && (msg.sender_name?.trim() || 'Misafir') ? (
-        <Text style={styles.senderName}>{msg.sender_name?.trim() || 'Misafir'}</Text>
+      {!isOwn && (msg.sender_name?.trim() || guestLabel) ? (
+        <Text style={styles.senderName}>{msg.sender_name?.trim() || guestLabel}</Text>
       ) : null}
       <View style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther, { backgroundColor: bubbleColor }]}>
         {msg.message_type === 'text' ? (
@@ -98,11 +123,19 @@ function MessageBubble({
   );
 }
 
+function routeParamFirst(v: string | string[] | undefined): string | undefined {
+  const s = Array.isArray(v) ? v[0] : v;
+  return typeof s === 'string' && s.trim().length > 0 ? s.trim() : undefined;
+}
+
 export default function CustomerChatScreen() {
-  const { id: conversationId, name: conversationName } = useLocalSearchParams<{ id: string; name?: string }>();
+  const params = useLocalSearchParams<{ id?: string | string[]; name?: string | string[] }>();
+  const conversationId = routeParamFirst(params.id);
+  const conversationName = routeParamFirst(params.name);
   const navigation = useNavigation();
   const router = useRouter();
-  const { appToken, setAppToken, setUnreadCount } = useGuestMessagingStore();
+  const { t, i18n } = useTranslation();
+  const { appToken, setUnreadCount } = useGuestMessagingStore();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
@@ -112,7 +145,7 @@ export default function CustomerChatScreen() {
   const [showBubbleColorModal, setShowBubbleColorModal] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const insets = useSafeAreaInsets();
-  const [headerName, setHeaderName] = useState<string>(conversationName || 'Sohbet');
+  const [headerName, setHeaderName] = useState<string>(conversationName || t('chatConversationFallback'));
   const [headerAvatar, setHeaderAvatar] = useState<string | null>(null);
   const listRef = useRef<FlatList>(null);
   const subscriptionRef = useRef<ReturnType<typeof subscribeToMessages> | null>(null);
@@ -125,24 +158,56 @@ export default function CustomerChatScreen() {
   const { myBubbleColor, setMyBubbleColor, loadStored: loadBubbleStore } = useMessagingBubbleStore();
 
   useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    const memory = customerChatMemoryCache[conversationId];
+    if (memory?.messages?.length) {
+      setMessages(memory.messages);
+      if (memory.headerName) setHeaderName(memory.headerName);
+      setHeaderAvatar(memory.headerAvatar ?? null);
+      setLoading(false);
+    }
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(`${CUSTOMER_CHAT_CACHE_PREFIX}${conversationId}`);
+        if (!raw || cancelled) return;
+        const parsed = JSON.parse(raw) as CustomerChatCacheEntry;
+        if (Array.isArray(parsed?.messages) && parsed.messages.length > 0) {
+          setMessages(parsed.messages);
+          if (parsed.headerName) setHeaderName(parsed.headerName);
+          setHeaderAvatar(parsed.headerAvatar ?? null);
+          setLoading(false);
+        }
+      } catch {
+        // cache parse hatası sessiz geçilir
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    if (messages.length === 0 && !headerAvatar && !headerName) return;
+    const entry: CustomerChatCacheEntry = {
+      messages,
+      headerName,
+      headerAvatar: headerAvatar ?? null,
+      updatedAt: Date.now(),
+    };
+    customerChatMemoryCache[conversationId] = entry;
+    void AsyncStorage.setItem(`${CUSTOMER_CHAT_CACHE_PREFIX}${conversationId}`, JSON.stringify(entry)).catch(() => {});
+  }, [conversationId, messages, headerName, headerAvatar]);
+
+  useEffect(() => {
     loadBubbleStore();
   }, []);
 
   useEffect(() => {
-    if (appToken || tokenTried) return;
-    (async () => {
-      await supabase.auth.refreshSession();
-      const { data: { session } } = await supabase.auth.getSession();
-      const row = await getOrCreateGuestForCaller(session?.user);
-      if (row?.app_token) await setAppToken(row.app_token);
-      setTokenTried(true);
-    })();
-  }, [appToken, tokenTried, setAppToken]);
-
-  useEffect(() => {
-    setHeaderName(conversationName || 'Sohbet');
+    setHeaderName(conversationName || t('chatConversationFallback'));
     setHeaderAvatar(null);
-  }, [conversationId, conversationName]);
+  }, [conversationId, conversationName, t]);
 
   useEffect(() => {
     navigation.setOptions({
@@ -163,32 +228,45 @@ export default function CustomerChatScreen() {
           <TouchableOpacity onPress={() => setShowBubbleColorModal(true)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
             <Ionicons name="color-palette-outline" size={24} color={MESSAGING_COLORS.primary} />
           </TouchableOpacity>
-          <Text style={styles.headerOnline}>🟢 Çevrimiçi</Text>
+          <Text style={styles.headerOnline}>{t('chatHeaderOnline')}</Text>
         </View>
       ),
     });
-  }, [navigation, headerName, headerAvatar]);
+  }, [navigation, headerName, headerAvatar, t, i18n.language]);
 
   useEffect(() => {
-    if (!appToken || !conversationId) {
+    if (!conversationId) {
       setLoading(false);
       return;
     }
+    let cancelled = false;
     (async () => {
-      await guestMarkConversationRead(appToken, conversationId);
+      const token = await syncGuestMessagingAppToken();
+      if (cancelled) return;
+      setTokenTried(true);
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+      await guestMarkConversationRead(token, conversationId);
       const [list, header] = await Promise.all([
-        guestGetMessages(appToken, conversationId),
-        guestGetConversationHeader(appToken, conversationId),
+        guestGetMessages(token, conversationId),
+        guestGetConversationHeader(token, conversationId),
       ]);
       setMessages(list);
       setHeaderName(header.name);
       setHeaderAvatar(header.avatar);
-      const convos = await guestListConversations(appToken);
-      const total = convos.reduce((s, c) => s + (c.unread_count ?? 0), 0);
-      setUnreadCount(total);
       setLoading(false);
+      void (async () => {
+        const convos = await guestListConversations(token);
+        const total = convos.reduce((s, c) => s + (c.unread_count ?? 0), 0);
+        setUnreadCount(total);
+      })();
     })();
-  }, [appToken, conversationId, setUnreadCount]);
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, setUnreadCount]);
 
   // Realtime: yeni mesaj geldiğinde anında listeyi güncelle; optimistik temp mesajları gerçekle değiştir
   useEffect(() => {
@@ -230,14 +308,14 @@ export default function CustomerChatScreen() {
     if (!appToken || !conversationId) return;
     typingPresenceRef.current = subscribeToTypingPresence(
       conversationId,
-      { displayName: 'Misafir', userId: appToken },
+      { displayName: t('guestDefaultName'), userId: appToken },
       setTypingNames
     );
     return () => {
       typingPresenceRef.current?.unsubscribe?.();
       typingPresenceRef.current = null;
     };
-  }, [appToken, conversationId]);
+  }, [appToken, conversationId, t]);
 
   // Sohbet odasındayken gelen mesajlar: kısa aralıklı polling (realtime bazen misafir tarafında atlayabiliyor)
   useEffect(() => {
@@ -286,7 +364,9 @@ export default function CustomerChatScreen() {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || !appToken || !conversationId || sending) return;
+    if (!text || !conversationId || sending) return;
+    const token = (await syncGuestMessagingAppToken()) ?? useGuestMessagingStore.getState().appToken;
+    if (!token) return;
     setSending(true);
     setInput('');
     typingPresenceRef.current?.updateTyping(false);
@@ -319,20 +399,21 @@ export default function CustomerChatScreen() {
     };
     setMessages((prev) => [...prev, optimistic]);
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
-    const { messageId, conversationId: nextConversationId } = await guestSendMessage(appToken, conversationId, text);
+    const { messageId, conversationId: nextConversationId } = await guestSendMessage(token, conversationId, text);
     setSending(false);
     if (messageId) {
       const convId = nextConversationId ?? conversationId;
       const { notifyAdmins, notifyConversationRecipients } = await import('@/lib/notificationService');
       notifyAdmins({
-        title: '💬 Yeni misafir mesajı',
+        title: t('chatNotifyAdminNewGuest'),
         body: text.slice(0, 60) + (text.length > 60 ? '…' : ''),
         data: { url: '/admin/messages' },
+        conversationId: convId,
       }).catch(() => {});
       notifyConversationRecipients({
         conversationId: convId,
-        excludeAppToken: appToken,
-        title: '💬 Yeni mesaj',
+        excludeAppToken: token,
+        title: `💬 ${t('notifNewMessage')}`,
         body: text.slice(0, 80) + (text.length > 80 ? '…' : ''),
         data: { conversationId: convId, url: `/customer/chat/${convId}` },
       }).catch(() => {});
@@ -340,28 +421,31 @@ export default function CustomerChatScreen() {
         router.replace({ pathname: '/customer/chat/[id]', params: { id: nextConversationId, name: headerName } });
         return;
       }
-      const list = await guestGetMessages(appToken, nextConversationId ?? conversationId, 50);
+      const list = await guestGetMessages(token, nextConversationId ?? conversationId, 50);
       setMessages(list);
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
     } else {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      Alert.alert(t('chatMessageBlockedTitle'), t('chatMessageBlockedBody'));
     }
   };
 
   const sendImageFromSource = async (source: 'camera' | 'library') => {
-    if (!appToken || !conversationId || sending) return;
+    if (!conversationId || sending) return;
+    const token = (await syncGuestMessagingAppToken()) ?? useGuestMessagingStore.getState().appToken;
+    if (!token) return;
     if (source === 'camera') {
       const granted = await ensureCameraPermission({
-        title: 'Kamera izni',
-        message: 'Sohbete fotoğraf çekmek için kamera erişimi gerekiyor.',
-        settingsMessage: 'Kamera izni kapalı. Sohbete fotoğraf eklemek için ayarlardan izin verin.',
+        title: t('chatCameraPermissionTitle'),
+        message: t('chatCameraPermissionMessage'),
+        settingsMessage: t('chatCameraPermissionSettings'),
       });
       if (!granted) return;
     } else {
       const granted = await ensureMediaLibraryPermission({
-        title: 'Galeri izni',
-        message: 'Sohbette fotograf secmek icin galeri erisimi istiyoruz.',
-        settingsMessage: 'Galeri izni kapali. Sohbete fotograf eklemek icin ayarlardan izin verin.',
+        title: t('chatGalleryPermissionTitle'),
+        message: t('chatGalleryPermissionMessage'),
+        settingsMessage: t('chatGalleryPermissionSettings'),
       });
       if (!granted) {
         return;
@@ -413,36 +497,43 @@ export default function CustomerChatScreen() {
       console.log('[Chat] uriToArrayBuffer OK, byteLength:', arrayBuffer?.byteLength);
       const { mime } = getMimeAndExt(uri, 'image');
       console.log('[Chat] mime:', mime);
-      const mediaUrl = await uploadImageMessageForGuest(appToken, conversationId, arrayBuffer, mime);
+      const mediaUrl = await uploadImageMessageForGuest(token, conversationId, arrayBuffer, mime);
       console.log('[Chat] mediaUrl alındı:', mediaUrl?.slice?.(0, 60));
-      const { messageId, conversationId: nextConversationId } = await guestSendMessage(appToken, conversationId, 'Fotoğraf', 'image', mediaUrl);
+      const { messageId, conversationId: nextConversationId } = await guestSendMessage(
+        token,
+        conversationId,
+        t('photo'),
+        'image',
+        mediaUrl
+      );
       if (messageId) {
         const convId = nextConversationId ?? conversationId;
         const { notifyAdmins, notifyConversationRecipients } = await import('@/lib/notificationService');
         notifyAdmins({
-          title: '💬 Yeni misafir mesajı',
-          body: 'Fotoğraf gönderildi.',
+          title: t('chatNotifyAdminNewGuest'),
+          body: t('staffChatPhotoSentBody'),
           data: { url: '/admin/messages' },
+          conversationId: convId,
         }).catch(() => {});
         notifyConversationRecipients({
           conversationId: convId,
-          excludeAppToken: appToken,
-          title: '💬 Yeni mesaj',
-          body: 'Fotoğraf gönderildi.',
+          excludeAppToken: token,
+          title: `💬 ${t('notifNewMessage')}`,
+          body: t('staffChatPhotoSentBody'),
           data: { conversationId: convId, url: `/customer/chat/${convId}` },
         }).catch(() => {});
         if (nextConversationId && nextConversationId !== conversationId) {
           router.replace({ pathname: '/customer/chat/[id]', params: { id: nextConversationId, name: headerName } });
           return;
         }
-        const list = await guestGetMessages(appToken, nextConversationId ?? conversationId, 50);
+        const list = await guestGetMessages(token, nextConversationId ?? conversationId, 50);
         setMessages(list);
         setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
       }
     } catch (e) {
       const err = e as Error;
       console.error('[Chat] Resim yükleme hatası:', err?.message, err?.stack);
-      Alert.alert('Hata', err?.message ?? 'Resim gönderilemedi.');
+      Alert.alert(t('error'), err?.message ?? t('imageSendFailed'));
     } finally {
       setSending(false);
     }
@@ -450,27 +541,28 @@ export default function CustomerChatScreen() {
 
   const showImageOptions = () => {
     Alert.alert(
-      'Fotoğraf gönder',
+      t('sendPhotoTitle'),
       undefined,
       [
-        { text: 'Resim çek', onPress: () => sendImageFromSource('camera') },
-        { text: 'Galeriden seç', onPress: () => sendImageFromSource('library') },
-        { text: 'İptal', style: 'cancel' },
+        { text: t('takePhoto'), onPress: () => sendImageFromSource('camera') },
+        { text: t('chooseFromGallery'), onPress: () => sendImageFromSource('library') },
+        { text: t('cancel'), style: 'cancel' },
       ]
     );
   };
 
   const handleDeleteMessage = (msg: Message) => {
-    if (!appToken) return;
-    Alert.alert('Mesajı sil', 'Bu mesajı silmek istediğinize emin misiniz?', [
-      { text: 'İptal', style: 'cancel' },
+    Alert.alert(t('deleteMessageTitle'), t('deleteMessageConfirm'), [
+      { text: t('cancel'), style: 'cancel' },
       {
-        text: 'Sil',
+        text: t('delete'),
         style: 'destructive',
         onPress: async () => {
-          const ok = await guestDeleteMessage(appToken, msg.id);
+          const token = (await syncGuestMessagingAppToken()) ?? useGuestMessagingStore.getState().appToken;
+          if (!token) return;
+          const ok = await guestDeleteMessage(token, msg.id);
           if (!ok) {
-            Alert.alert('Hata', 'Mesaj silinemedi.');
+            Alert.alert(t('error'), t('messageDeleteFailed'));
             return;
           }
           setMessages((prev) => prev.filter((m) => m.id !== msg.id));
@@ -483,7 +575,7 @@ export default function CustomerChatScreen() {
     return (
       <View style={styles.centered}>
         <Text style={styles.placeholder}>
-          {tokenTried ? 'Mesajlaşma için giriş yapın.' : 'Yükleniyor…'}
+          {tokenTried ? t('loginRequiredChatMessage') : t('loading')}
         </Text>
       </View>
     );
@@ -525,7 +617,7 @@ export default function CustomerChatScreen() {
             />
           );
         }}
-        ListEmptyComponent={<Text style={styles.empty}>Henüz mesaj yok. İlk mesajı siz gönderin.</Text>}
+        ListEmptyComponent={<Text style={styles.empty}>{t('chatEmptyGuestInvite')}</Text>}
         onContentSizeChange={() => {
           if (sortedMessages.length === 0) return;
           listRef.current?.scrollToEnd({ animated: false });
@@ -539,7 +631,9 @@ export default function CustomerChatScreen() {
       {typingNames.length > 0 ? (
         <View style={styles.typingRow}>
           {typingNames.length === 1 ? (
-            <Text style={styles.typingText} numberOfLines={1}>{typingNames[0]} yazıyor...</Text>
+            <Text style={styles.typingText} numberOfLines={1}>
+              {t('chatTypingSingle', { name: typingNames[0] })}
+            </Text>
           ) : (
             <View style={styles.typingMultiRow}>
               {typingNames.slice(0, 4).map((name) => (
@@ -547,7 +641,7 @@ export default function CustomerChatScreen() {
                   <Text style={styles.typingChipLetter}>{name.charAt(0).toUpperCase()}</Text>
                 </View>
               ))}
-              <Text style={styles.typingTextSmall}> yazıyor...</Text>
+              <Text style={styles.typingTextSmall}> {t('chatTypingMany')}</Text>
             </View>
           )}
         </View>
@@ -555,7 +649,7 @@ export default function CustomerChatScreen() {
       <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
-          placeholder="Mesaj yaz..."
+          placeholder={t('chatInputPlaceholder')}
           placeholderTextColor={MESSAGING_COLORS.textSecondary}
           value={input}
           onChangeText={(t) => {
@@ -575,7 +669,7 @@ export default function CustomerChatScreen() {
           style={styles.mediaBtn}
           onPress={showImageOptions}
           disabled={sending}
-          accessibilityLabel="Fotoğraf"
+          accessibilityLabel={t('a11yChatAttachPhoto')}
           activeOpacity={0.7}
         >
           <Ionicons name="camera-outline" size={20} color={MESSAGING_COLORS.textSecondary} />
@@ -584,7 +678,7 @@ export default function CustomerChatScreen() {
           style={styles.mediaBtn}
           onPress={() => sendImageFromSource('library')}
           disabled={sending}
-          accessibilityLabel="Galeriden seç"
+          accessibilityLabel={t('a11yChatPickFromGallery')}
           activeOpacity={0.7}
         >
           <Ionicons name="images-outline" size={20} color={MESSAGING_COLORS.textSecondary} />
@@ -619,7 +713,7 @@ export default function CustomerChatScreen() {
       <Modal visible={showBubbleColorModal} transparent animationType="fade">
         <TouchableOpacity activeOpacity={1} style={styles.bubbleColorModalOverlay} onPress={() => setShowBubbleColorModal(false)}>
           <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.bubbleColorModalBox}>
-            <Text style={styles.bubbleColorModalTitle}>Mesaj balon renginiz</Text>
+            <Text style={styles.bubbleColorModalTitle}>{t('chatYourBubbleColorTitle')}</Text>
             <View style={styles.bubbleColorRow}>
               {BUBBLE_COLOR_OPTIONS.map((c) => (
                 <TouchableOpacity
@@ -630,7 +724,7 @@ export default function CustomerChatScreen() {
               ))}
             </View>
             <TouchableOpacity style={styles.bubbleColorModalClose} onPress={() => setShowBubbleColorModal(false)}>
-              <Text style={styles.bubbleColorModalCloseText}>Kapat</Text>
+              <Text style={styles.bubbleColorModalCloseText}>{t('close')}</Text>
             </TouchableOpacity>
           </TouchableOpacity>
         </TouchableOpacity>

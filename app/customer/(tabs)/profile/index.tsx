@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,9 @@ import {
   Modal,
   Pressable,
   Dimensions,
+  useWindowDimensions,
+  ActivityIndicator,
+  type ViewStyle,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useTranslation } from 'react-i18next';
@@ -18,19 +21,30 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
-import { uriToArrayBuffer } from '@/lib/uploadMedia';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
 import { theme } from '@/constants/theme';
 import { LANGUAGES, LANG_STORAGE_KEY, type LangCode } from '@/i18n';
 import { applyRTLAndReloadIfNeeded } from '@/lib/reloadForRTL';
 import { CachedImage } from '@/components/CachedImage';
-import { getOrCreateGuestForCurrentSession } from '@/lib/getOrCreateGuestForCaller';
-import { listBlockedUsersForGuest, unblockUserForGuest, type BlockedUserItem } from '@/lib/userBlocks';
 import { SharedAppLinks } from '@/components/SharedAppLinks';
+import { uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
+import { getOrCreateGuestForCurrentSession } from '@/lib/getOrCreateGuestForCaller';
+import { isAnonymousAuthUser } from '@/lib/isAnonymousAuthUser';
+import { LinearGradient } from 'expo-linear-gradient';
+import { profileScreenTheme as P } from '@/constants/profileScreenTheme';
+import { ProfileStatsCard } from '@/components/ProfileStatsCard';
 
-const AVATAR_SIZE = 88;
-const COVER_BLOCK_HEIGHT = 260;
+const AVATAR_SIZE = P.avatar.size;
+const COVER_BLOCK_HEIGHT = P.hero.height;
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+const coverImageBleed: ViewStyle = {
+  ...StyleSheet.absoluteFillObject,
+  width: '100%',
+  height: '100%',
+  minWidth: '100%',
+  minHeight: '100%',
+};
 
 const LANGUAGE_FLAGS: Record<string, string> = {
   tr: '🇹🇷',
@@ -41,7 +55,6 @@ const LANGUAGE_FLAGS: Record<string, string> = {
   ru: '🇷🇺',
   es: '🇪🇸',
 };
-
 function getDisplayName(t: (key: string) => string): string {
   const { user } = useAuthStore.getState();
   if (!user) return t('guestDefaultName');
@@ -61,9 +74,10 @@ function getDisplayEmail(user: { email?: string | null; user_metadata?: Record<s
 
 export default function CustomerProfile() {
   const router = useRouter();
+  const { width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { t, i18n } = useTranslation();
-  const { user, signOut, loadSession } = useAuthStore();
+  const { user, signOut, loadSession, loading: authLoading } = useAuthStore();
   const isLoggedIn = !!user;
 
   const coverUrl = (user?.user_metadata?.cover_url as string) || null;
@@ -76,15 +90,69 @@ export default function CustomerProfile() {
   const [coverModalVisible, setCoverModalVisible] = useState(false);
   const [avatarModalVisible, setAvatarModalVisible] = useState(false);
   const [languageModalVisible, setLanguageModalVisible] = useState(false);
-  const [blockedUsers, setBlockedUsers] = useState<BlockedUserItem[]>([]);
-  const [unblockingId, setUnblockingId] = useState<string | null>(null);
-  const [guestToken, setGuestToken] = useState<{ guest_id: string; app_token: string } | null>(null);
-  const [tokenBusy, setTokenBusy] = useState(false);
+  const [showConvertToFullAccount, setShowConvertToFullAccount] = useState(false);
+  const [postCount, setPostCount] = useState(0);
 
   useEffect(() => {
     setCoverUri(coverUrl);
     setAvatarUri(avatarUrl);
   }, [coverUrl, avatarUrl]);
+
+  useEffect(() => {
+    if (!user) {
+      setShowConvertToFullAccount(false);
+      return;
+    }
+    if (isAnonymousAuthUser(user)) {
+      setShowConvertToFullAccount(true);
+      return;
+    }
+    const loginEmail = (user.email ?? '').trim().toLowerCase();
+    if (loginEmail && !loginEmail.endsWith('@valoria.guest')) {
+      setShowConvertToFullAccount(false);
+      return;
+    }
+    (async () => {
+      const g = await getOrCreateGuestForCurrentSession();
+      if (!g?.guest_id) {
+        setShowConvertToFullAccount(false);
+        return;
+      }
+      const { data } = await supabase.from('guests').select('email, is_guest_app_account').eq('id', g.guest_id).maybeSingle();
+      const row = data as { email: string | null; is_guest_app_account: boolean | null } | null;
+      setShowConvertToFullAccount(
+        !!row?.is_guest_app_account || !!row?.email?.toLowerCase().endsWith('@valoria.guest')
+      );
+    })();
+  }, [user?.id, user?.email]);
+
+  const loadPostCount = useCallback(async () => {
+    if (!isLoggedIn) {
+      setPostCount(0);
+      return;
+    }
+    try {
+      const guest = await getOrCreateGuestForCurrentSession();
+      if (!guest?.guest_id) return;
+      const { count, error } = await supabase
+        .from('feed_posts')
+        .select('id', { count: 'exact', head: true })
+        .eq('guest_id', guest.guest_id);
+      if (!error) setPostCount(count ?? 0);
+    } catch {
+      setPostCount(0);
+    }
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    void loadPostCount();
+  }, [loadPostCount, user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadPostCount();
+    }, [loadPostCount])
+  );
 
   const saveUserMetadata = async (updates: Record<string, unknown>) => {
     if (!user) return;
@@ -112,14 +180,12 @@ export default function CustomerProfile() {
       });
       if (result.canceled || !result.assets[0]?.uri) return;
       setUploadingCover(true);
-      const arrayBuffer = await uriToArrayBuffer(result.assets[0].uri);
-      const path = `customer/${user.id}/cover_${Date.now()}.jpg`;
-      const { error } = await supabase.storage.from('profiles').upload(path, arrayBuffer, {
-        contentType: 'image/jpeg',
-        upsert: true,
+      const { publicUrl } = await uploadUriToPublicBucket({
+        bucketId: 'profiles',
+        uri: result.assets[0].uri,
+        kind: 'image',
+        subfolder: 'customer/cover',
       });
-      if (error) throw error;
-      const { data: { publicUrl } } = supabase.storage.from('profiles').getPublicUrl(path);
       await saveUserMetadata({ cover_url: publicUrl });
       setCoverUri(publicUrl);
     } catch (e) {
@@ -148,19 +214,17 @@ export default function CustomerProfile() {
       });
       if (result.canceled || !result.assets[0]?.uri) return;
       setUploadingAvatar(true);
-      const arrayBuffer = await uriToArrayBuffer(result.assets[0].uri);
-      const path = `customer/${user.id}/avatar_${Date.now()}.jpg`;
-      const { error } = await supabase.storage.from('profiles').upload(path, arrayBuffer, {
-        contentType: 'image/jpeg',
-        upsert: true,
+      const { publicUrl } = await uploadUriToPublicBucket({
+        bucketId: 'profiles',
+        uri: result.assets[0].uri,
+        kind: 'image',
+        subfolder: 'customer/avatar',
       });
-      if (error) throw error;
-      const { data: { publicUrl } } = supabase.storage.from('profiles').getPublicUrl(path);
       await saveUserMetadata({ avatar_url: publicUrl });
       setAvatarUri(publicUrl);
       const guest = await getOrCreateGuestForCurrentSession();
       if (guest?.guest_id) {
-        await supabase.from('guests').update({ photo_url: publicUrl }).eq('id', guest.guest_id);
+        await supabase.rpc('update_my_guest_photo_url', { p_photo_url: publicUrl });
       }
     } catch (e) {
       Alert.alert(t('error'), (e as Error)?.message ?? t('avatarUploadError'));
@@ -194,395 +258,308 @@ export default function CustomerProfile() {
     await applyRTLAndReloadIfNeeded(code);
   };
 
-  const loadBlockedUsers = useCallback(async () => {
-    if (!isLoggedIn) {
-      setBlockedUsers([]);
-      return;
-    }
-    const guest = await getOrCreateGuestForCurrentSession();
-    if (!guest?.guest_id) {
-      setBlockedUsers([]);
-      return;
-    }
-    const list = await listBlockedUsersForGuest(guest.guest_id);
-    setBlockedUsers(list);
-  }, [isLoggedIn]);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadBlockedUsers();
-      return () => {};
-    }, [loadBlockedUsers])
-  );
-
-  const refreshTokens = useCallback(async () => {
-    if (!isLoggedIn) {
-      setGuestToken(null);
-      return;
-    }
-    setTokenBusy(true);
-    try {
-      const g = await getOrCreateGuestForCurrentSession();
-      setGuestToken(g);
-    } finally {
-      setTokenBusy(false);
-    }
-  }, [isLoggedIn]);
-
-  useFocusEffect(
-    useCallback(() => {
-      refreshTokens();
-      return () => {};
-    }, [refreshTokens])
-  );
-
-  const maskToken = (val: string, visibleStart = 8, visibleEnd = 6) => {
-    const v = String(val || '');
-    if (v.length <= visibleStart + visibleEnd + 3) return v;
-    return `${v.slice(0, visibleStart)}…${v.slice(-visibleEnd)}`;
-  };
-
-  const copyToClipboard = async (label: string, value: string | null) => {
-    if (!value) return;
-    try {
-      const Clipboard = await import('expo-clipboard');
-      await Clipboard.setStringAsync(value);
-      Alert.alert('Kopyalandı', `${label} panoya kopyalandı.`);
-    } catch {
-      Alert.alert(label, value);
-    }
-  };
-
-  const handleUnblock = (item: BlockedUserItem) => {
-    Alert.alert('Engeli kaldır', `${item.name} için engeli kaldırmak istiyor musunuz?`, [
-      { text: 'Vazgeç', style: 'cancel' },
-      {
-        text: 'Kaldır',
-        style: 'destructive',
-        onPress: async () => {
-          const guest = await getOrCreateGuestForCurrentSession();
-          if (!guest?.guest_id) return;
-          setUnblockingId(item.blockId);
-          const { error } = await unblockUserForGuest({
-            blockerGuestId: guest.guest_id,
-            blockedType: item.blockedType,
-            blockedId: item.blockedId,
-          });
-          setUnblockingId(null);
-          if (error) {
-            Alert.alert('Hata', error.message || 'Engel kaldırılamadı.');
-            return;
-          }
-          setBlockedUsers((prev) => prev.filter((x) => x.blockId !== item.blockId));
-        },
-      },
-    ]);
-  };
-
   const displayName = getDisplayName(t);
   const displayEmail = getDisplayEmail(user);
   const showCover = coverUri || isLoggedIn;
   const showAvatarEdit = isLoggedIn;
 
+  const headerTitle = useMemo(() => {
+    if (!isLoggedIn) return displayName;
+    return displayName;
+  }, [displayName, isLoggedIn]);
+
+  const headerSubtitle = useMemo(() => {
+    const metaAbout = (user?.user_metadata?.about as string) || '';
+    const metaJob = (user?.user_metadata?.job_title as string) || '';
+    const metaEmail = (user?.user_metadata?.contact_email as string) || '';
+    const bestLine = (metaJob || metaEmail || displayEmail).trim();
+    if (bestLine) return bestLine;
+    if (metaAbout.trim()) return metaAbout.trim();
+    return t('customerProfileGuestSubtitle');
+  }, [displayEmail, user?.user_metadata, t]);
+
+  const guestStats = useMemo(
+    () => [
+      { value: isLoggedIn ? postCount : '—', label: t('post') },
+      { value: isLoggedIn ? 0 : '—', label: t('localAreaGuideSectionTitle') },
+      { value: isLoggedIn ? 0 : '—', label: t('notificationsSection') },
+      { value: isLoggedIn ? 0 : '—', label: t('rating') },
+    ],
+    [isLoggedIn, postCount, t]
+  );
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }]} showsVerticalScrollIndicator={false}>
-      {/* Kapak sabit yükseklikte; profil resmi kapak alt kenarına sabit, hep aynı yerde. */}
-      {showCover ? (
-        <View style={styles.coverBlock}>
-          <View style={styles.coverImageClip}>
-            <TouchableOpacity
-              style={StyleSheet.absoluteFill}
-              onPress={() => {
-                if (uploadingCover) return;
-                if (coverUri) setCoverModalVisible(true);
-                else pickCover();
-              }}
-              activeOpacity={1}
-            >
-              {coverUri ? (
-                <CachedImage uri={coverUri} style={styles.coverBackground} contentFit="cover" />
-              ) : (
-                <View style={styles.coverPlaceholder}>
-                  <Ionicons name="image-outline" size={36} color={theme.colors.textMuted} />
-                  <Text style={styles.coverPlaceholderText}>Kapak fotoğrafı ekle</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-            {uploadingCover && (
-              <View style={styles.coverUploadOverlay}>
-                <Text style={styles.uploadText}>Yükleniyor</Text>
-              </View>
-            )}
-          </View>
-          {showAvatarEdit && !uploadingCover && (
-            <TouchableOpacity
-              style={styles.coverCameraBtn}
-              onPress={pickCover}
-              activeOpacity={0.9}
-            >
-              <Ionicons name="camera" size={20} color={theme.colors.white} />
-            </TouchableOpacity>
-          )}
-        </View>
-      ) : (
-        <View style={[styles.profileHeaderRow, styles.profileHeaderRowNoCover]}>
-          <View style={styles.avatarWrapSmall}>
-            <View style={[styles.avatarPlaceholder, styles.avatarPlaceholderSmall]}>
-              <Text style={styles.avatarTextSmall}>{displayName.charAt(0).toUpperCase()}</Text>
-            </View>
-          </View>
-          <View style={styles.header}>
-            <Text style={styles.name}>{displayName}</Text>
-            {displayEmail ? (
-              <Text style={styles.email}>{displayEmail}</Text>
-            ) : (
-              <Text style={styles.subtitle}>Giriş yaparak rezervasyon ve mesajlarınıza erişin.</Text>
-            )}
-          </View>
-        </View>
-      )}
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={[
+        styles.content,
+        {
+          paddingBottom: insets.bottom + 28,
+          width: windowWidth,
+          minWidth: windowWidth,
+          alignItems: 'stretch' as const,
+        },
+      ]}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={{ height: insets.top + 8 }} />
 
-      {/* Avatar + İsim — yan yana, ortalanmış */}
-      {showCover && (
-        <View style={styles.profileHeaderRow}>
-          <TouchableOpacity
-            style={styles.avatarWrapSmall}
-            onPress={() => {
-              if (uploadingAvatar) return;
-              if (avatarUri) setAvatarModalVisible(true);
-              else if (isLoggedIn) pickAvatar();
-            }}
-            activeOpacity={0.95}
-            disabled={!isLoggedIn && !avatarUri}
-          >
+      <View style={[styles.heroOverlap, { marginTop: 8 }]}>
+        <TouchableOpacity
+          style={styles.heroAvatarWrap}
+          onPress={() => {
+            if (uploadingAvatar) return;
+            if (avatarUri) setAvatarModalVisible(true);
+            else if (isLoggedIn) pickAvatar();
+          }}
+          activeOpacity={0.92}
+          disabled={!isLoggedIn && !avatarUri}
+        >
+          <View style={styles.heroAvatarShadow}>
             {avatarUri ? (
-              <CachedImage uri={avatarUri} style={styles.avatarImageSmall} contentFit="cover" />
+              <CachedImage uri={avatarUri} style={styles.heroAvatarImg} contentFit="cover" />
             ) : (
-              <View style={[styles.avatarPlaceholder, styles.avatarPlaceholderSmall]}>
-                <Text style={styles.avatarTextSmall}>{displayName.charAt(0).toUpperCase()}</Text>
+              <View style={styles.heroAvatarPlaceholder}>
+                <Text style={styles.heroAvatarInitial}>{displayName.charAt(0).toUpperCase()}</Text>
               </View>
-            )}
-            {uploadingAvatar && (
-              <View style={[styles.avatarUploadOverlay, styles.avatarUploadOverlaySmall]}>
-                <Text style={styles.uploadText}>Yükleniyor</Text>
-              </View>
-            )}
-            {showAvatarEdit && !uploadingAvatar && (
-              <TouchableOpacity
-                style={[styles.avatarCameraBtn, styles.avatarCameraBtnSmall]}
-                onPress={(e) => { e?.stopPropagation?.(); pickAvatar(); }}
-                activeOpacity={0.9}
-              >
-                <Ionicons name="camera" size={14} color={theme.colors.white} />
-              </TouchableOpacity>
-            )}
-          </TouchableOpacity>
-          <View style={styles.header}>
-            <Text style={styles.name}>{displayName}</Text>
-            {displayEmail ? (
-              <Text style={styles.email}>{displayEmail}</Text>
-            ) : (
-              <Text style={styles.subtitle}>Giriş yaparak rezervasyon ve mesajlarınıza erişin.</Text>
             )}
           </View>
-        </View>
-      )}
+          {showAvatarEdit ? (
+            <TouchableOpacity style={styles.heroAvatarCam} onPress={(e) => { e.stopPropagation(); pickAvatar(); }} activeOpacity={0.9}>
+              <Ionicons name="camera" size={16} color={theme.colors.white} />
+            </TouchableOpacity>
+          ) : null}
+        </TouchableOpacity>
 
-      {isLoggedIn && (
-        <View style={[styles.section, styles.sectionTight]}>
-          <View style={styles.sectionTitleRow}>
-            <View style={styles.tokenSectionHeader}>
-              <View style={styles.tokenLiveBadge}>
-                <View style={styles.tokenLiveDot} />
-                <Text style={styles.tokenLiveText}>Canlı token</Text>
-              </View>
-              <Text style={styles.sectionTitleNew}>Kimlik Token</Text>
-            </View>
-            <TouchableOpacity onPress={refreshTokens} activeOpacity={0.8} style={styles.sectionActionBtn} disabled={tokenBusy}>
-              <Ionicons name="refresh-outline" size={18} color={theme.colors.primary} />
-              <Text style={styles.sectionActionText}>{tokenBusy ? '...' : 'Yenile'}</Text>
+        <Text style={styles.heroName} numberOfLines={1}>
+          {headerTitle}
+        </Text>
+        <Text style={styles.heroOrgLine} numberOfLines={1}>
+          Valoria Hotel
+        </Text>
+        <Text style={styles.heroSubtitle} numberOfLines={2}>
+          {headerSubtitle}
+        </Text>
+        <View style={styles.heroOnlineRow}>
+          <View style={[styles.heroOnlineDot, isLoggedIn && styles.heroOnlineDotOn]} />
+          <Text style={styles.heroOnlineText}>{isLoggedIn ? t('online') : t('offlineStatus')}</Text>
+        </View>
+        <View style={styles.statsWrap}>
+          <ProfileStatsCard items={guestStats} />
+        </View>
+
+        {authLoading ? (
+          <View style={[styles.heroEditCtaOuter, styles.heroEditCtaLoading]}>
+            <ActivityIndicator color={P.gradient.start} />
+          </View>
+        ) : isLoggedIn ? (
+          <View style={styles.heroActionsRow}>
+            <TouchableOpacity
+              onPress={() => router.push('/customer/profile/edit')}
+              activeOpacity={0.88}
+              style={styles.heroActionHalfOuter}
+            >
+              <LinearGradient
+                colors={[P.gradient.start, P.gradient.end]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.heroEditCtaGradCompact}
+              >
+                <Ionicons name="create-outline" size={18} color="#fff" />
+                <Text style={styles.heroEditCtaTextCompact}>{t('editProfileInfo')}</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => router.push('/customer/profile/my-posts')}
+              activeOpacity={0.88}
+              style={styles.heroActionHalfOuter}
+            >
+              <LinearGradient
+                colors={[P.gradient.start, P.gradient.end]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.heroEditCtaGradCompact}
+              >
+                <Ionicons name="grid-outline" size={18} color="#fff" />
+                <Text style={styles.heroEditCtaTextCompact} numberOfLines={2}>
+                  {t('customerProfileMyPostsMenuTitle')}
+                </Text>
+              </LinearGradient>
             </TouchableOpacity>
           </View>
+        ) : (
+          <TouchableOpacity onPress={() => router.push('/auth')} activeOpacity={0.88} style={styles.heroEditCtaOuter}>
+            <LinearGradient
+              colors={[P.gradient.start, P.gradient.end]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.heroEditCtaGrad}
+            >
+              <Ionicons name="log-in-outline" size={20} color="#fff" />
+              <Text style={styles.heroEditCtaText}>{t('signInOrSignUp')}</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        )}
+      </View>
 
-          <View style={styles.tokenCard}>
-            <View style={styles.tokenRow}>
-              <View style={styles.tokenLeft}>
-                <Text style={styles.tokenLabel}>Kimlik Token</Text>
-                <Text style={styles.tokenValue}>{guestToken?.app_token ? maskToken(guestToken.app_token, 10, 8) : '—'}</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.tokenCopyBtn}
-                onPress={() => copyToClipboard('Kimlik Token', guestToken?.app_token ?? null)}
-                activeOpacity={0.85}
-                disabled={!guestToken?.app_token}
-              >
-                <Ionicons name="copy-outline" size={18} color={theme.colors.primary} />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.tokenHint}>
-              Bu bilgi canlıdır. Oturum değişirse veya yeni token alınırsa otomatik güncellenir.
+      {/* 1) Genel — dil, konaklama/çevre, güvenlik */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitleLively}>{t('customerProfileSectionGeneral')}</Text>
+        <TouchableOpacity style={styles.menuRow} onPress={() => setLanguageModalVisible(true)} activeOpacity={0.88}>
+          <View style={styles.menuIconLively}>
+            <Ionicons name="language" size={22} color={P.accent.blue} />
+          </View>
+          <View style={styles.menuTextWrap}>
+            <Text style={styles.menuLabelLively}>{t('language')}</Text>
+            <Text style={styles.menuSublabel}>
+              {LANGUAGES.find((l) => l.code === (i18n.language || '').split('-')[0])?.label ?? t('selectLanguage')}
             </Text>
           </View>
-        </View>
-      )}
-
-      <SharedAppLinks compact />
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Hesap</Text>
-        <TouchableOpacity style={styles.menuCard} onPress={() => setLanguageModalVisible(true)} activeOpacity={0.7}>
-          <View style={styles.menuIconWrap}>
-            <Ionicons name="language-outline" size={20} color={theme.colors.primary} />
-          </View>
-          <View style={styles.menuTextWrap}>
-            <Text style={styles.menuLabel}>{t('language')}</Text>
-            <Text style={styles.menuSublabel}>{LANGUAGES.find((l) => l.code === (i18n.language || '').split('-')[0])?.label ?? t('selectLanguage')}</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
+          <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
         </TouchableOpacity>
-        {isLoggedIn && (
-          <TouchableOpacity style={styles.menuCard} onPress={() => router.push('/customer/profile/edit')} activeOpacity={0.7}>
-            <View style={styles.menuIconWrap}>
-              <Ionicons name="create-outline" size={20} color={theme.colors.primary} />
-            </View>
-            <View style={styles.menuTextWrap}>
-              <Text style={styles.menuLabel}>Profil bilgilerini düzenle</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
-          </TouchableOpacity>
-        )}
-        {!isLoggedIn && (
-          <TouchableOpacity style={styles.primaryMenuCard} onPress={() => router.push('/auth')} activeOpacity={0.85}>
-            <Ionicons name="person-add-outline" size={22} color={theme.colors.white} style={{ marginRight: 10 }} />
-            <Text style={styles.primaryMenuCardText}>Giriş yap / Kayıt ol</Text>
-          </TouchableOpacity>
-        )}
-        <TouchableOpacity style={styles.menuCard} onPress={() => router.push('/customer/key')} activeOpacity={0.7}>
-          <View style={styles.menuIconWrap}>
-            <Ionicons name="key-outline" size={20} color={theme.colors.primary} />
+        <TouchableOpacity style={styles.menuRow} onPress={() => router.push('/customer/carbon')} activeOpacity={0.88}>
+          <View style={[styles.menuIconLively, styles.menuIconLivelyLeaf]}>
+            <Ionicons name="leaf" size={22} color="#0f766e" />
           </View>
           <View style={styles.menuTextWrap}>
-            <Text style={styles.menuLabel}>Dijital Anahtar</Text>
+            <Text style={styles.menuLabelLively}>{t('screenCarbonFootprint')}</Text>
+            <Text style={styles.menuSublabel}>{t('customerProfileCarbonSub')}</Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
+          <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuCard} onPress={() => router.push('/customer/carbon')} activeOpacity={0.7}>
-          <View style={styles.menuIconWrap}>
-            <Ionicons name="leaf-outline" size={20} color={theme.colors.primary} />
+        <TouchableOpacity style={styles.menuRow} onPress={() => router.push('/customer/emergency')} activeOpacity={0.88}>
+          <View style={[styles.menuIconLively, styles.menuIconLivelyDanger]}>
+            <Ionicons name="medkit" size={22} color={theme.colors.error} />
           </View>
           <View style={styles.menuTextWrap}>
-            <Text style={styles.menuLabel}>Karbon ayak izim</Text>
-            <Text style={styles.menuSublabel}>Konaklamanız için otomatik hesaplanır</Text>
+            <Text style={[styles.menuLabelLively, styles.menuLabelDangerEmph]}>{t('customerProfileMenuEmergencyTitle')}</Text>
+            <Text style={styles.menuSublabel}>{t('customerProfileEmergencySub')}</Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuCard} onPress={() => router.push('/customer/emergency')} activeOpacity={0.7}>
-          <View style={[styles.menuIconWrap, styles.menuIconWrapDanger]}>
-            <Ionicons name="alert-circle-outline" size={20} color={theme.colors.error} />
-          </View>
-          <View style={styles.menuTextWrap}>
-            <Text style={[styles.menuLabel, { color: theme.colors.error }]}>Acil durum / Yardım</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
+          <Ionicons name="chevron-forward" size={20} color={theme.colors.error} style={styles.menuChevron} />
         </TouchableOpacity>
       </View>
 
+      {/* 2) Giriş yapmış kullanıcı — bildirim, paylaşımlar, gizlilik */}
       {isLoggedIn && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Engellenenler</Text>
-          {blockedUsers.length === 0 ? (
-            <Text style={styles.menuSublabel}>Engellediğiniz kullanıcı yok.</Text>
-          ) : (
-            blockedUsers.map((item) => (
-              <View key={item.blockId} style={styles.menuCard}>
-                <View style={[styles.menuIconWrap, styles.menuIconWrapDanger]}>
-                  <Ionicons name="ban-outline" size={20} color={theme.colors.error} />
-                </View>
-                <View style={styles.menuTextWrap}>
-                  <Text style={styles.menuLabel}>{item.name}</Text>
-                  <Text style={styles.menuSublabel}>{item.subtitle ?? 'Kullanıcı'}</Text>
-                </View>
-                <TouchableOpacity
-                  onPress={() => handleUnblock(item)}
-                  disabled={unblockingId === item.blockId}
-                  style={styles.unblockBtn}
-                  activeOpacity={0.8}
-                >
-                  {unblockingId === item.blockId ? (
-                    <Text style={styles.unblockBtnText}>...</Text>
-                  ) : (
-                    <Text style={styles.unblockBtnText}>Kaldır</Text>
-                  )}
-                </TouchableOpacity>
+          <Text style={styles.sectionTitleLively}>{t('customerProfileSectionMyAccount')}</Text>
+          {showConvertToFullAccount && (
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => router.push('/customer/convert-to-full-account')}
+              activeOpacity={0.88}
+            >
+              <View style={[styles.menuIconLively, styles.menuIconLivelyTeal]}>
+                <Ionicons name="at" size={22} color={theme.colors.primaryDark} />
               </View>
-            ))
+              <View style={styles.menuTextWrap}>
+                <Text style={styles.menuLabelLively}>{t('screenConvertToFullAccount')}</Text>
+                <Text style={styles.menuSublabel}>{t('convertToFullAccountMenuSub')}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
+            </TouchableOpacity>
           )}
-        </View>
-      )}
-
-      {isLoggedIn && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Hesap yönetimi</Text>
-          <TouchableOpacity style={styles.menuCard} onPress={() => router.push('/customer/profile/delete-account')} activeOpacity={0.7}>
-            <View style={[styles.menuIconWrap, styles.menuIconWrapDanger]}>
-              <Ionicons name="trash-outline" size={20} color={theme.colors.error} />
+          <TouchableOpacity style={styles.menuRow} onPress={() => router.push('/customer/profile/notification-settings')} activeOpacity={0.88}>
+            <View style={styles.menuIconLively}>
+              <Ionicons name="notifications" size={22} color={P.accent.blue} />
             </View>
             <View style={styles.menuTextWrap}>
-              <Text style={[styles.menuLabel, styles.signOutText]}>Hesabımı sil</Text>
+              <Text style={styles.menuLabelLively}>{t('guestNotifSettingsScreenTitle')}</Text>
+              <Text style={styles.menuSublabel}>{t('customerProfileNotifSettingsSub')}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.menuRow} onPress={() => router.push('/customer/profile/blocked-users')} activeOpacity={0.88}>
+            <View style={[styles.menuIconLively, styles.menuIconLivelyDangerSoft]}>
+              <Ionicons name="ban" size={22} color={theme.colors.error} />
+            </View>
+            <View style={styles.menuTextWrap}>
+              <Text style={styles.menuLabelLively}>{t('blockedUsersTitle')}</Text>
+              <Text style={styles.menuSublabel}>{t('customerProfileBlockedMenuSub')}</Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
           </TouchableOpacity>
         </View>
       )}
 
+      {isLoggedIn && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitleLively}>{t('customerProfileSectionManage')}</Text>
+          <TouchableOpacity style={styles.menuRow} onPress={() => router.push('/customer/profile/delete-account')} activeOpacity={0.88}>
+            <View style={[styles.menuIconLively, styles.menuIconLivelyDanger]}>
+              <Ionicons name="trash" size={22} color={theme.colors.error} />
+            </View>
+            <View style={styles.menuTextWrap}>
+              <Text style={[styles.menuLabelLively, styles.signOutText]}>{t('screenDeleteAccount')}</Text>
+              <Text style={styles.menuSublabel}>{t('customerProfileDeleteAccountSub')}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={theme.colors.error} style={styles.menuChevron} />
+          </TouchableOpacity>
+        </View>
+      )}
+
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>{t('legalAndContact')}</Text>
-        <TouchableOpacity style={styles.menuCard} onPress={() => router.push({ pathname: '/legal/[type]', params: { type: 'privacy' } })} activeOpacity={0.7}>
-          <View style={styles.menuIconWrap}>
-            <Ionicons name="document-text-outline" size={20} color={theme.colors.primary} />
+        <Text style={styles.sectionTitleLively}>{t('localAreaGuideSectionTitle')}</Text>
+        <TouchableOpacity style={styles.menuRow} onPress={() => router.push('/customer/local-area-guide')} activeOpacity={0.88}>
+          <View style={[styles.menuIconLively, styles.menuIconLivelyLeaf]}>
+            <Ionicons name="trail-sign-outline" size={22} color="#0f766e" />
           </View>
           <View style={styles.menuTextWrap}>
-            <Text style={styles.menuLabel}>{t('privacyPolicy')}</Text>
+            <Text style={styles.menuLabelLively}>{t('localAreaGuideMenuTitle')}</Text>
+            <Text style={styles.menuSublabel}>{t('localAreaGuideMenuSub')}</Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
+          <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuCard} onPress={() => router.push({ pathname: '/legal/[type]', params: { type: 'terms' } })} activeOpacity={0.7}>
-          <View style={styles.menuIconWrap}>
-            <Ionicons name="list-outline" size={20} color={theme.colors.primary} />
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitleLively}>{t('legalAndContact')}</Text>
+        <TouchableOpacity style={styles.menuRow} onPress={() => router.push({ pathname: '/legal/[type]', params: { type: 'privacy' } })} activeOpacity={0.88}>
+          <View style={styles.menuIconLively}>
+            <Ionicons name="document-text" size={22} color={P.accent.blue} />
           </View>
           <View style={styles.menuTextWrap}>
-            <Text style={styles.menuLabel}>{t('termsOfService')}</Text>
+            <Text style={styles.menuLabelLively}>{t('privacyPolicy')}</Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
+          <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuCard} onPress={() => router.push({ pathname: '/legal/[type]', params: { type: 'cookies' } })} activeOpacity={0.7}>
-          <View style={styles.menuIconWrap}>
-            <Ionicons name="nutrition-outline" size={20} color={theme.colors.primary} />
+        <TouchableOpacity style={styles.menuRow} onPress={() => router.push({ pathname: '/legal/[type]', params: { type: 'terms' } })} activeOpacity={0.88}>
+          <View style={styles.menuIconLively}>
+            <Ionicons name="book-outline" size={22} color={P.accent.blue} />
           </View>
           <View style={styles.menuTextWrap}>
-            <Text style={styles.menuLabel}>{t('cookiePolicy')}</Text>
+            <Text style={styles.menuLabelLively}>{t('termsOfService')}</Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
+          <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuCard} onPress={() => router.push('/permissions')} activeOpacity={0.7}>
-          <View style={styles.menuIconWrap}>
-            <Ionicons name="shield-checkmark-outline" size={20} color={theme.colors.primary} />
+        <TouchableOpacity style={styles.menuRow} onPress={() => router.push({ pathname: '/legal/[type]', params: { type: 'cookies' } })} activeOpacity={0.88}>
+          <View style={styles.menuIconLively}>
+            <Ionicons name="nutrition" size={22} color={P.accent.blue} />
           </View>
           <View style={styles.menuTextWrap}>
-            <Text style={styles.menuLabel}>İzinler</Text>
+            <Text style={styles.menuLabelLively}>{t('cookiePolicy')}</Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} style={styles.menuChevron} />
+          <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.menuRow} onPress={() => router.push('/permissions')} activeOpacity={0.88}>
+          <View style={styles.menuIconLively}>
+            <Ionicons name="shield-checkmark" size={22} color={P.accent.blue} />
+          </View>
+          <View style={styles.menuTextWrap}>
+            <Text style={styles.menuLabelLively}>{t('customerProfilePermissionsMenuTitle')}</Text>
+            <Text style={styles.menuSublabel}>{t('customerProfilePermissionsMenuSub')}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={P.subtext} style={styles.menuChevron} />
         </TouchableOpacity>
         <Text style={styles.contactLabel}>{t('contact')}: support@litxtech.com</Text>
       </View>
 
+      <SharedAppLinks compact />
+
       {isLoggedIn && (
         <View style={styles.signOutSection}>
-          <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut} activeOpacity={0.85}>
-            <View style={styles.signOutIconWrap}>
-              <Ionicons name="log-out-outline" size={22} color={theme.colors.error} />
-            </View>
+          <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut} activeOpacity={0.75}>
+            <Ionicons name="log-out-outline" size={18} color={theme.colors.textSecondary} style={styles.signOutIcon} />
             <Text style={styles.signOutButtonText}>{t('signOut')}</Text>
           </TouchableOpacity>
         </View>
@@ -675,44 +652,35 @@ export default function CustomerProfile() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.colors.backgroundSecondary },
+  container: { flex: 1, backgroundColor: P.bg },
   content: { paddingBottom: theme.spacing.xxl + 24 },
-  coverBlock: {
-    width: SCREEN_WIDTH,
+  coverBlockInner: {
+    alignSelf: 'stretch',
+    width: '100%',
+    minWidth: '100%',
     height: COVER_BLOCK_HEIGHT,
     position: 'relative',
-    overflow: 'visible',
-    alignSelf: 'stretch',
-  },
-  coverImageClip: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: COVER_BLOCK_HEIGHT,
     overflow: 'hidden',
   },
-  coverBackground: {
-    ...StyleSheet.absoluteFillObject,
-    width: SCREEN_WIDTH,
-    height: COVER_BLOCK_HEIGHT,
-  },
-  coverPlaceholder: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: theme.colors.borderLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-  },
-  coverPlaceholderText: { color: theme.colors.textMuted, fontSize: 14 },
-  coverUploadOverlay: {
+  /** Kapak yokken gradient tam genişlik */
+  heroGrad: {
     position: 'absolute',
-    inset: 0,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: '100%',
+    minWidth: '100%',
+    height: '100%',
+    minHeight: '100%',
   },
-  coverCameraBtn: {
+  coverImageClip: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+  },
+  coverPlaceholderLegacy: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.colors.borderLight, justifyContent: 'center', alignItems: 'center', gap: 8 },
+  coverPlaceholderTextLegacy: { color: theme.colors.textMuted, fontSize: 14, fontWeight: '600' },
+  coverEditBtnLegacy: {
     position: 'absolute',
     bottom: 10,
     right: 16,
@@ -724,107 +692,121 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 20,
   },
-  uploadText: { color: theme.colors.white, fontSize: 12 },
-  profileHeaderRow: {
+  heroOverlap: {
+    marginTop: -AVATAR_SIZE / 2,
+    marginBottom: 8,
+    paddingHorizontal: theme.spacing.lg,
+    zIndex: 5,
+    alignItems: 'center',
+  },
+  statsWrap: { width: '100%', marginTop: 14 },
+  heroOrgLine: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: P.subtext,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  heroOnlineRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 16,
-    paddingVertical: 20,
-    paddingHorizontal: theme.spacing.lg,
-    backgroundColor: theme.colors.surface,
-    marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: theme.spacing.md,
-    borderRadius: 20,
-    ...theme.shadows.sm,
+    gap: 6,
+    marginTop: 8,
   },
-  profileHeaderRowNoCover: { marginTop: 16 },
-  header: {
-    alignItems: 'center',
-    paddingTop: 0,
-    paddingHorizontal: 8,
-    paddingBottom: 0,
+  heroOnlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: P.subtext,
   },
-  headerNoCover: {
-    alignItems: 'center',
-    paddingVertical: theme.spacing.xl,
-    paddingHorizontal: theme.spacing.lg,
-    marginBottom: theme.spacing.md,
+  heroOnlineDotOn: { backgroundColor: P.accent.green },
+  heroOnlineText: { fontSize: 13, fontWeight: '600', color: P.subtext },
+  heroAvatarShadow: {
+    borderRadius: AVATAR_SIZE / 2,
+    ...P.avatarShadow,
   },
-  avatarWrap: {
-    position: 'relative',
-    marginBottom: 12,
-    ...theme.shadows.md,
-  },
-  avatarImage: {
+  heroAvatarWrap: { position: 'relative', marginBottom: 8 },
+  heroAvatarImg: {
     width: AVATAR_SIZE,
     height: AVATAR_SIZE,
     borderRadius: AVATAR_SIZE / 2,
-    borderWidth: 4,
-    borderColor: theme.colors.surface,
+    borderWidth: P.avatar.border,
+    borderColor: '#fff',
     backgroundColor: theme.colors.borderLight,
   },
-  avatarPlaceholder: {
+  heroAvatarPlaceholder: {
     width: AVATAR_SIZE,
     height: AVATAR_SIZE,
     borderRadius: AVATAR_SIZE / 2,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: P.accent.purple,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 4,
-    borderColor: theme.colors.surface,
+    borderWidth: P.avatar.border,
+    borderColor: '#fff',
   },
-  avatarText: { fontSize: 36, fontWeight: '700', color: theme.colors.white },
-  avatarUploadOverlay: {
+  heroAvatarInitial: { fontSize: 34, fontWeight: '900', color: theme.colors.white },
+  heroAvatarCam: {
     position: 'absolute',
-    inset: 0,
-    borderRadius: AVATAR_SIZE / 2,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarCameraBtn: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: theme.colors.primary,
+    right: -2,
+    bottom: -2,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: P.accent.purple,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: theme.colors.surface,
-    ...theme.shadows.sm,
+    borderColor: '#fff',
   },
-  avatarWrapSmall: { position: 'relative' },
-  avatarImageSmall: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    borderWidth: 2,
-    borderColor: theme.colors.borderLight,
+  heroName: { ...theme.typography.titleSmall, color: P.text, textAlign: 'center' },
+  heroSubtitle: {
+    fontSize: 14,
+    color: P.subtext,
+    textAlign: 'center',
+    marginTop: 4,
+    lineHeight: 20,
+    paddingHorizontal: 8,
   },
-  avatarPlaceholderSmall: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    borderWidth: 2,
+  heroEditCtaOuter: { marginTop: 16, alignSelf: 'stretch', borderRadius: 12, overflow: 'hidden' },
+  heroActionsRow: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignSelf: 'stretch',
+    gap: 8,
   },
-  avatarTextSmall: { fontSize: 24, fontWeight: '700', color: theme.colors.white },
-  avatarUploadOverlaySmall: { borderRadius: 32 },
-  avatarCameraBtnSmall: { width: 28, height: 28, borderRadius: 14 },
-  name: { ...theme.typography.title, color: theme.colors.text, marginBottom: 4, textAlign: 'center' },
-  email: { ...theme.typography.bodySmall, color: theme.colors.textSecondary },
-  subtitle: { ...theme.typography.bodySmall, color: theme.colors.textSecondary },
+  heroActionHalfOuter: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  heroEditCtaGrad: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+  },
+  heroEditCtaGradCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    minHeight: 48,
+  },
+  heroEditCtaLoading: { minHeight: 48, justifyContent: 'center', alignItems: 'center' },
+  heroEditCtaText: { fontSize: 16, fontWeight: '600', color: '#fff' },
+  heroEditCtaTextCompact: { fontSize: 12, fontWeight: '600', color: '#fff', flexShrink: 1, textAlign: 'center' },
+  uploadText: { color: theme.colors.white, fontSize: 12 },
   section: {
-    backgroundColor: theme.colors.surface,
+    backgroundColor: 'transparent',
     borderRadius: theme.radius.md,
-    paddingHorizontal: theme.spacing.lg,
+    paddingHorizontal: 0,
     marginHorizontal: theme.spacing.lg,
     marginBottom: theme.spacing.lg,
-    ...theme.shadows.sm,
   },
   sectionTight: {
     paddingBottom: 14,
@@ -838,53 +820,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   tokenSectionHeader: { flex: 1 },
-  tokenLiveBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: theme.colors.success + '18',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    marginBottom: 6,
-  },
-  tokenLiveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: theme.colors.success,
-    marginRight: 6,
-  },
-  tokenLiveText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: theme.colors.success,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  sectionTitleNew: {
-    ...theme.typography.bodySmall,
-    fontWeight: '600',
-    color: theme.colors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
-  sectionActionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: theme.colors.backgroundSecondary,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  sectionActionText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: theme.colors.primary,
-  },
   sectionTitle: {
     ...theme.typography.bodySmall,
     fontWeight: '600',
@@ -894,118 +829,72 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.6,
   },
-  tokenCard: {
-    borderRadius: 16,
-    backgroundColor: theme.colors.backgroundSecondary,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    padding: 12,
-  },
-  tokenRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    paddingVertical: 10,
-  },
-  tokenLeft: { flex: 1, minWidth: 0 },
-  tokenLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: theme.colors.textMuted,
-    marginBottom: 4,
-  },
-  tokenValue: {
+  sectionTitleLively: {
     fontSize: 14,
-    fontWeight: '700',
-    color: theme.colors.text,
+    fontWeight: '800',
+    color: P.subtext,
+    marginBottom: 10,
+    paddingTop: 6,
+    letterSpacing: 0.2,
   },
-  tokenCopyBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.primaryLight + '1A',
-    borderWidth: 1,
-    borderColor: theme.colors.primaryLight + '2A',
-  },
-  tokenDivider: {
-    height: 1,
-    backgroundColor: theme.colors.border,
-    opacity: 0.9,
-  },
-  tokenHint: {
-    marginTop: 10,
-    fontSize: 12,
-    color: theme.colors.textMuted,
-    lineHeight: 17,
-  },
-  menuCard: {
+  menuRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: theme.colors.backgroundSecondary,
-    borderRadius: theme.radius.lg,
+    backgroundColor: P.card,
+    borderRadius: 14,
     paddingVertical: 14,
     paddingHorizontal: 14,
     marginBottom: 10,
+    borderWidth: 0,
     ...theme.shadows.sm,
+    shadowOpacity: 0.06,
   },
-  menuIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primaryLight + '22',
+  menuIconLively: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: P.iconBg,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 14,
+    marginRight: 12,
   },
-  menuIconWrapDanger: {
-    backgroundColor: theme.colors.error + '18',
+  menuIconLivelyLeaf: {
+    backgroundColor: 'rgba(15, 118, 110, 0.16)',
+  },
+  menuIconLivelyTeal: {
+    backgroundColor: theme.colors.primaryLight + '40',
+  },
+  menuIconLivelyDanger: {
+    backgroundColor: theme.colors.error + '20',
+  },
+  menuIconLivelyDangerSoft: {
+    backgroundColor: theme.colors.error + '12',
   },
   menuTextWrap: { flex: 1 },
-  menuLabel: { fontSize: 16, fontWeight: '600', color: theme.colors.text },
-  menuSublabel: { fontSize: 13, color: theme.colors.textSecondary, marginTop: 2 },
-  menuChevron: { marginLeft: 8 },
-  unblockBtn: {
-    backgroundColor: theme.colors.error + '18',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  unblockBtnText: { color: theme.colors.error, fontWeight: '700', fontSize: 13 },
+  menuLabelLively: { fontSize: 16, fontWeight: '700', color: P.text },
+  menuLabelDangerEmph: { color: theme.colors.error, fontWeight: '800' },
+  menuSublabel: { fontSize: 13, color: P.subtext, marginTop: 3 },
+  menuChevron: { marginLeft: 4, opacity: 0.85 },
   signOutText: { color: theme.colors.error, fontWeight: '600' },
   signOutSection: {
     marginHorizontal: theme.spacing.lg,
-    marginTop: 8,
-    marginBottom: theme.spacing.xl,
+    marginTop: 4,
+    marginBottom: theme.spacing.lg,
   },
   signOutButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 18,
-    paddingHorizontal: theme.spacing.xl,
-    borderRadius: 16,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 2,
-    borderColor: theme.colors.error,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+    gap: 8,
+    paddingVertical: 13,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: 12,
+    backgroundColor: theme.colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
   },
-  signOutIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: theme.colors.error + '15',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 14,
-  },
-  signOutButtonText: { fontSize: 17, fontWeight: '700', color: theme.colors.error },
+  signOutIcon: { marginTop: 1 },
+  signOutButtonText: { fontSize: 15, fontWeight: '600', color: theme.colors.textSecondary },
   primaryMenuCard: {
     flexDirection: 'row',
     alignItems: 'center',

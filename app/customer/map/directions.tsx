@@ -5,11 +5,13 @@
 import { useState, useEffect } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 import ValoriaMapView from '@/components/ValoriaMapView';
 import { getRoute, formatDuration, formatDistance, estimateWalkingDuration } from '@/lib/map/osrm';
 import { theme } from '@/constants/theme';
 
 export default function DirectionsScreen() {
+  const { t } = useTranslation();
   const params = useLocalSearchParams<{
     fromLat: string;
     fromLng: string;
@@ -23,7 +25,7 @@ export default function DirectionsScreen() {
   const fromLng = parseFloat(params.fromLng ?? '0');
   const toLat = parseFloat(params.toLat ?? '0');
   const toLng = parseFloat(params.toLng ?? '0');
-  const toName = params.toName ?? 'Hedef';
+  const toName = params.toName ?? t('screenBusiness');
 
   const [route, setRoute] = useState<Awaited<ReturnType<typeof getRoute>>>(null);
   const [loading, setLoading] = useState(true);
@@ -50,7 +52,7 @@ export default function DirectionsScreen() {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={theme.colors.primary} />
-        <Text style={styles.loadingText}>Rota hesaplanıyor...</Text>
+        <Text style={styles.loadingText}>{t('directionsLoading')}</Text>
       </View>
     );
   }
@@ -63,35 +65,35 @@ export default function DirectionsScreen() {
           longitude={centerLng}
           zoom={14}
           routeCoordinates={routeCoordinates}
-          hotelMarker={{ lat: fromLat, lng: fromLng, title: 'Valoria Hotel (Siz)' }}
+          hotelMarker={{ lat: fromLat, lng: fromLng, title: t('directionsHotelMarkerSelf') }}
           style={StyleSheet.absoluteFill}
         />
       </View>
 
       <View style={styles.sheet}>
-        <Text style={styles.title}>{toName} → Yol tarifi</Text>
+        <Text style={styles.title}>{`${toName} -> ${t('screenDirections')}`}</Text>
         {route ? (
           <>
             <View style={styles.metaRow}>
-              <Text style={styles.meta}>⏱️ Araç: {formatDuration(route.duration)}</Text>
-              <Text style={styles.meta}>🚶 Yürüme: ~{formatDuration(walkDuration)}</Text>
+              <Text style={styles.meta}>{`⏱️ ${t('directionsCar')}: ${formatDuration(route.duration)}`}</Text>
+              <Text style={styles.meta}>{`🚶 ${t('directionsWalk')}: ~${formatDuration(walkDuration)}`}</Text>
             </View>
             <Text style={styles.meta}>📏 {formatDistance(route.distance)}</Text>
 
-            <Text style={styles.stepsTitle}>📍 Adım adım</Text>
+            <Text style={styles.stepsTitle}>{`📍 ${t('directionsStepByStep')}`}</Text>
             <ScrollView style={styles.stepsScroll} showsVerticalScrollIndicator={false}>
               {route.steps.map((step, i) => (
                 <View key={i} style={styles.stepRow}>
                   <Text style={styles.stepNum}>{i + 1}.</Text>
                   <Text style={styles.stepText}>
-                    {step.maneuver?.instruction ?? step.name ?? 'Devam et'} — {formatDistance(step.distance)}
+                    {step.maneuver?.instruction ?? step.name ?? t('directionsContinue')} — {formatDistance(step.distance)}
                   </Text>
                 </View>
               ))}
             </ScrollView>
           </>
         ) : (
-          <Text style={styles.noRoute}>Rota bulunamadı. Lütfen konumları kontrol edin.</Text>
+          <Text style={styles.noRoute}>{t('directionsNotFound')}</Text>
         )}
 
         {params.toId && (
@@ -99,7 +101,7 @@ export default function DirectionsScreen() {
             style={styles.poiLink}
             onPress={() => router.push({ pathname: '/customer/map/poi/[id]', params: { id: params.toId } })}
           >
-            <Text style={styles.poiLinkText}>📍 Bu işletmenin detayı</Text>
+            <Text style={styles.poiLinkText}>{`📍 ${t('directionsPoiDetail')}`}</Text>
           </TouchableOpacity>
         )}
       </View>

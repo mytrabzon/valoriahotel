@@ -17,6 +17,9 @@ import { useAuthStore } from '@/stores/authStore';
 import { log } from '@/lib/logger';
 import { theme } from '@/constants/theme';
 
+/** Geçici: Android’de Google ile kayıt — `app/index` ile aynı anahtar mantığı; tekrar açmak için true */
+const GOOGLE_SIGN_UP_ANDROID_ENABLED = false;
+
 export default function AuthRegisterScreen() {
   const { t } = useTranslation();
   const router = useRouter();
@@ -133,7 +136,7 @@ export default function AuthRegisterScreen() {
             )}
           </TouchableOpacity>
         )}
-        {Platform.OS === 'android' && (
+        {Platform.OS === 'android' && GOOGLE_SIGN_UP_ANDROID_ENABLED && (
           <TouchableOpacity
             style={[styles.googleBtn, googleLoading && styles.googleBtnDisabled]}
             onPress={signUpWithGoogle}

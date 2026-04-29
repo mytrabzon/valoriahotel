@@ -17,6 +17,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Video } from 'expo-av';
@@ -31,6 +32,9 @@ import { formatDistanceToNow } from 'date-fns';
 import { tr } from 'date-fns/locale';
 import { getHiddenUsersForGuest } from '@/lib/userBlocks';
 import { useRouter } from 'expo-router';
+import { removeFeedMediaObjectsForPostUrls } from '@/lib/feedMediaStorageDelete';
+import { MentionableText } from '@/components/MentionableText';
+import { searchStaffMentionCandidates, type StaffMentionCandidate } from '@/lib/staffMentions';
 
 type PostRow = {
   id: string;
@@ -98,8 +102,33 @@ export default function MapPostDetailSheet({ visible, postId, onClose, onPostDel
   const [togglingLike, setTogglingLike] = useState(false);
   const [postingComment, setPostingComment] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [mentionDirectory, setMentionDirectory] = useState<StaffMentionCandidate[]>([]);
   /** Mevcut oturumdaki misafir id (sil butonu / kendi gönderisi kontrolü) */
   const [myGuestId, setMyGuestId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    searchStaffMentionCandidates('', 700)
+      .then((rows) => setMentionDirectory(rows))
+      .catch(() => setMentionDirectory([]));
+  }, []);
+
+  const resolveMentionHref = useCallback(
+    (token: string) => {
+      const normalized = token.trim().toLocaleLowerCase('tr-TR');
+      if (!normalized) return null;
+      const target = mentionDirectory.find((row) => {
+        const fullName = (row.full_name ?? '').trim();
+        if (!fullName) return false;
+        return fullName
+          .toLocaleLowerCase('tr-TR')
+          .split(/\s+/)
+          .some((part) => part.startsWith(normalized));
+      });
+      return target?.id ? `/customer/staff/${target.id}` : null;
+    },
+    [mentionDirectory]
+  );
 
   const loadPost = useCallback(async () => {
     if (!postId) return;
@@ -164,6 +193,15 @@ export default function MapPostDetailSheet({ visible, postId, onClose, onPostDel
     setLoading(true);
     loadPost().then(() => setLoading(false));
   }, [visible, postId, loadPost]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadPost();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadPost]);
 
   const toggleLike = async () => {
     if (!post) return;
@@ -230,6 +268,7 @@ export default function MapPostDetailSheet({ visible, postId, onClose, onPostDel
             Alert.alert('Hata', error.message || 'Paylaşım silinemedi.');
             return;
           }
+          await removeFeedMediaObjectsForPostUrls([post.media_url, post.thumbnail_url]);
           onClose();
           onPostDeleted?.();
         },
@@ -279,7 +318,19 @@ export default function MapPostDetailSheet({ visible, postId, onClose, onPostDel
               <Text style={styles.errorText}>Paylaşım bulunamadı.</Text>
             </View>
           ) : (
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.content}
+              showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor={theme.colors.primary}
+                  colors={[theme.colors.primary]}
+                />
+              }
+            >
               {hasLocation && (
                 <View style={styles.locationBar}>
                   <Ionicons name="location" size={14} color={theme.colors.primary} />
@@ -382,26 +433,41 @@ export default function MapPostDetailSheet({ visible, postId, onClose, onPostDel
                     const avatarUri = c.staff?.profile_image ?? c.guest?.photo_url ?? null;
                     const profileHref = c.staff_id ? `/customer/staff/${c.staff_id}` : c.guest_id ? `/customer/guest/${c.guest_id}` : null;
                     return (
-                      <TouchableOpacity
+                      <View
                         key={c.id}
                         style={styles.commentRow}
-                        onPress={() => profileHref && router.push(profileHref)}
-                        activeOpacity={profileHref ? 0.7 : 1}
-                        disabled={!profileHref}
                       >
-                        {avatarUri ? (
-                          <CachedImage uri={avatarUri} style={styles.commentAvatar} contentFit="cover" />
-                        ) : (
-                          <View style={isGuestComment ? styles.commentAvatarPlaceholderGuest : styles.commentAvatarPlaceholder}>
-                            <Text style={isGuestComment ? styles.commentAvatarInitialGuest : styles.commentAvatarInitial}>{(cAuthor || '—').charAt(0).toUpperCase()}</Text>
-                          </View>
-                        )}
+                        <TouchableOpacity
+                          onPress={() => profileHref && router.push(profileHref)}
+                          activeOpacity={profileHref ? 0.7 : 1}
+                          disabled={!profileHref}
+                        >
+                          {avatarUri ? (
+                            <CachedImage uri={avatarUri} style={styles.commentAvatar} contentFit="cover" />
+                          ) : (
+                            <View style={isGuestComment ? styles.commentAvatarPlaceholderGuest : styles.commentAvatarPlaceholder}>
+                              <Text style={isGuestComment ? styles.commentAvatarInitialGuest : styles.commentAvatarInitial}>{(cAuthor || '—').charAt(0).toUpperCase()}</Text>
+                            </View>
+                          )}
+                        </TouchableOpacity>
                         <View style={styles.commentRowBody}>
-                          <Text style={styles.commentAuthor}>{cAuthor}</Text>
-                          <Text style={styles.commentText}>{c.content}</Text>
+                          <TouchableOpacity
+                            onPress={() => profileHref && router.push(profileHref)}
+                            activeOpacity={profileHref ? 0.7 : 1}
+                            disabled={!profileHref}
+                          >
+                            <Text style={styles.commentAuthor}>{cAuthor}</Text>
+                          </TouchableOpacity>
+                          <MentionableText
+                            text={c.content}
+                            textStyle={styles.commentText}
+                            mentionStyle={styles.commentMention}
+                            resolveMentionHref={resolveMentionHref}
+                            onMentionPress={(href) => router.push(href)}
+                          />
                           <Text style={styles.commentTime}>{formatDistanceToNow(new Date(c.created_at), { addSuffix: true, locale: tr })}</Text>
                         </View>
-                      </TouchableOpacity>
+                      </View>
                     );
                   })}
                 </View>
@@ -522,6 +588,7 @@ const styles = StyleSheet.create({
   commentRowBody: { flex: 1, minWidth: 0 },
   commentAuthor: { fontSize: 14, fontWeight: '700', color: theme.colors.text },
   commentText: { fontSize: 14, color: theme.colors.text, marginTop: 2 },
+  commentMention: { color: '#0095f6', fontWeight: '700', textDecorationLine: 'underline' },
   commentTime: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
   commentInputWrap: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, padding: 20 },
   commentInput: { flex: 1, borderWidth: 1, borderColor: theme.colors.borderLight, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, color: theme.colors.text, maxHeight: 100 },

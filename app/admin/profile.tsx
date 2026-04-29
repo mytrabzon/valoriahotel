@@ -412,6 +412,74 @@ export default function AdminProfileScreen() {
           )}
         </AdminCard>
 
+        <TouchableOpacity
+          style={styles.docMgmtBtn}
+          activeOpacity={0.85}
+          onPress={() => router.push('/admin/documents')}
+        >
+          <View style={styles.docMgmtIcon}>
+            <Ionicons name="folder-open-outline" size={20} color="#fff" />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.docMgmtTitle}>Doküman Yönetimi</Text>
+            <Text style={styles.docMgmtSub} numberOfLines={2}>
+              Belgeler, onaylar, arşiv ve loglar
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={adminTheme.colors.textMuted} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.docMgmtBtn}
+          activeOpacity={0.85}
+          onPress={() => router.push('/admin/attendance')}
+        >
+          <View style={styles.docMgmtIcon}>
+            <Ionicons name="time-outline" size={20} color="#fff" />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.docMgmtTitle}>Mesai Takibi</Text>
+            <Text style={styles.docMgmtSub} numberOfLines={2}>
+              Günlük mesai görünümü, giriş performansı ve personel detayları
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={adminTheme.colors.textMuted} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.docMgmtBtn}
+          activeOpacity={0.85}
+          onPress={() => router.push('/admin/incident-reports')}
+        >
+          <View style={styles.docMgmtIcon}>
+            <Ionicons name="document-text-outline" size={20} color="#fff" />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.docMgmtTitle}>Tutanaklar</Text>
+            <Text style={styles.docMgmtSub} numberOfLines={2}>
+              Olay kayıtları, onay süreci ve PDF/yazıcı takibi
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={adminTheme.colors.textMuted} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.docMgmtBtn}
+          activeOpacity={0.85}
+          onPress={() => router.push('/admin/incident-reports/new')}
+        >
+          <View style={styles.docMgmtIcon}>
+            <Ionicons name="add-circle-outline" size={20} color="#fff" />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.docMgmtTitle}>Tutanak Oluştur</Text>
+            <Text style={styles.docMgmtSub} numberOfLines={2}>
+              Yeni resmi tutanak kaydı aç ve taslak oluştur
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={adminTheme.colors.textMuted} />
+        </TouchableOpacity>
+
         <SharedAppLinks showManageButton title="Uygulamalar & Web Siteleri" compact />
 
         <Text style={styles.footNote}>
@@ -579,6 +647,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: adminTheme.colors.textMuted,
   },
+  docMgmtBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: adminTheme.colors.surface,
+    borderRadius: adminTheme.radius.lg,
+    padding: 14,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: adminTheme.colors.border,
+  },
+  docMgmtIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: adminTheme.colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  docMgmtTitle: { fontSize: 15, fontWeight: '800', color: adminTheme.colors.text },
+  docMgmtSub: { marginTop: 2, fontSize: 12, fontWeight: '600', color: adminTheme.colors.textMuted, lineHeight: 16 },
   socialRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

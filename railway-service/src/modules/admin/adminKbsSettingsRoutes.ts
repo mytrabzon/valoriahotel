@@ -5,6 +5,13 @@ import { writeAudit } from '../audit/auditService.js';
 import { encrypt } from '../../shared/security/crypto.js';
 import { GatewayClient } from '../../integrations/gateway-client/gatewayClient.js';
 
+/** KBS otel kimlik ayarları: admin + manager (personel `staff` tablosu değil, `ops.app_users.role` geçerlidir). */
+function assertKbsSettingsRole(role: string) {
+  if (role !== 'admin' && role !== 'manager') {
+    throw Errors.forbidden('KBS ayarları: yalnızca ops.app_users rolü admin veya manager olmalı');
+  }
+}
+
 const UpsertSchema = z.object({
   facilityCode: z.string().min(1),
   username: z.string().min(1),
@@ -25,7 +32,7 @@ export const adminKbsSettingsRoutes: FastifyPluginAsync = async (app) => {
   app.get('/admin/kbs-settings', async (req) => {
     const auth = req.auth;
     if (!auth) throw Errors.unauthorized();
-    if (auth.role !== 'admin') throw Errors.forbidden('Admin only');
+    assertKbsSettingsRole(auth.role);
 
     const { data, error } = await app.supabase
       .schema('ops')
@@ -41,7 +48,7 @@ export const adminKbsSettingsRoutes: FastifyPluginAsync = async (app) => {
   app.post('/admin/kbs-settings', async (req) => {
     const auth = req.auth;
     if (!auth) throw Errors.unauthorized();
-    if (auth.role !== 'admin') throw Errors.forbidden('Admin only');
+    assertKbsSettingsRole(auth.role);
 
     const body = UpsertSchema.parse(req.body);
 
@@ -99,7 +106,7 @@ export const adminKbsSettingsRoutes: FastifyPluginAsync = async (app) => {
   app.post('/admin/kbs-settings/test-connection', async (req) => {
     const auth = req.auth;
     if (!auth) throw Errors.unauthorized();
-    if (auth.role !== 'admin') throw Errors.forbidden('Admin only');
+    assertKbsSettingsRole(auth.role);
 
     const gwRes = await gw.post<{ ok: boolean; message: string; details?: unknown }>('/gateway/test-connection', {
       hotelId: auth.hotelId

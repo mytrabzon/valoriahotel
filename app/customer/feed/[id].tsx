@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,12 +11,13 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Video } from 'expo-av';
 import { supabase } from '@/lib/supabase';
 import { theme } from '@/constants/theme';
+import { useTranslation } from 'react-i18next';
 import { StaffNameWithBadge } from '@/components/VerifiedBadge';
 import { CachedImage } from '@/components/CachedImage';
 import { getOrCreateGuestForCurrentSession } from '@/lib/getOrCreateGuestForCaller';
@@ -24,8 +25,14 @@ import { guestDisplayName, isOpaqueGuestDisplayString } from '@/lib/guestDisplay
 import { sendNotification } from '@/lib/notificationService';
 import { useAuthStore } from '@/stores/authStore';
 import { formatDistanceToNow } from 'date-fns';
-import { tr } from 'date-fns/locale';
+import { dateFnsLocaleForApp } from '@/lib/dateFnsLocale';
+import i18n from '@/i18n';
 import { getHiddenUsersForGuest } from '@/lib/userBlocks';
+import { removeFeedMediaObjectsForPostUrls } from '@/lib/feedMediaStorageDelete';
+import { FeedMediaCarousel } from '@/components/FeedMediaCarousel';
+import { resolveMentionedStaffIdsFromText } from '@/lib/staffMentions';
+import { searchStaffMentionCandidates, type StaffMentionCandidate } from '@/lib/staffMentions';
+import { MentionableText } from '@/components/MentionableText';
 
 type PostRow = {
   id: string;
@@ -41,10 +48,12 @@ type PostRow = {
   location_label?: string | null;
   staff: { full_name: string | null; department: string | null; verification_badge?: 'blue' | 'yellow' | null } | null;
   guest: { full_name: string | null } | null;
+  media_items?: { id: string; media_type: 'image' | 'video'; media_url: string; thumbnail_url: string | null; sort_order: number }[];
 };
 
 type CommentRow = {
   id: string;
+  parent_comment_id?: string | null;
   staff_id?: string | null;
   guest_id?: string | null;
   content: string;
@@ -67,7 +76,7 @@ function getDisplayName(): string {
     const cap = part.charAt(0).toUpperCase() + part.slice(1);
     if (!isOpaqueGuestDisplayString(cap)) return cap;
   }
-  return 'Misafir';
+  return i18n.t('guestDefaultName');
 }
 
 export default function CustomerFeedPostDetail() {
@@ -75,6 +84,8 @@ export default function CustomerFeedPostDetail() {
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const idNorm = id && typeof id === 'string' ? id.trim() : '';
   const router = useRouter();
+  const { t } = useTranslation();
+  const dfLocale = dateFnsLocaleForApp();
   const { width: winWidth } = useWindowDimensions();
   const { user } = useAuthStore();
   const [post, setPost] = useState<PostRow | null>(null);
@@ -86,14 +97,21 @@ export default function CustomerFeedPostDetail() {
   const [myLike, setMyLike] = useState(false);
   const [comments, setComments] = useState<CommentRow[]>([]);
   const [commentText, setCommentText] = useState('');
+  const [replyToCommentId, setReplyToCommentId] = useState<string | null>(null);
+  const [replyToName, setReplyToName] = useState<string | null>(null);
+  const [expandedReplies, setExpandedReplies] = useState<Record<string, boolean>>({});
   const [togglingLike, setTogglingLike] = useState(false);
   const [postingComment, setPostingComment] = useState(false);
+  const [mentionSuggestions, setMentionSuggestions] = useState<StaffMentionCandidate[]>([]);
+  const [mentionDirectory, setMentionDirectory] = useState<StaffMentionCandidate[]>([]);
+  const [mentionQuery, setMentionQuery] = useState('');
   const [myGuestId, setMyGuestId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadPost = useCallback(async () => {
     if (!idNorm) return;
-    const guestRow = user ? await getOrCreateGuestForCurrentSession() : null;
+    const guestRow = await getOrCreateGuestForCurrentSession();
     setMyGuestId(guestRow?.guest_id ?? null);
     const hidden = guestRow?.guest_id
       ? await getHiddenUsersForGuest(guestRow.guest_id)
@@ -105,7 +123,7 @@ export default function CustomerFeedPostDetail() {
       .in('visibility', ['customers', 'guests_only'])
       .maybeSingle();
     if (e) {
-      setError('Yüklenemedi.');
+      setError(t('feedLoadFailed'));
       setPost(null);
       return;
     }
@@ -120,15 +138,23 @@ export default function CustomerFeedPostDetail() {
       : false;
     if (hiddenPost) {
       setPost(null);
-      setError('Paylaşım bulunamadı.');
+      setError(t('postNotFound'));
       return;
     }
+    if (postRow?.id) {
+      const { data: mediaRows } = await supabase
+        .from('feed_post_media_items')
+        .select('id, media_type, media_url, thumbnail_url, sort_order')
+        .eq('post_id', postRow.id)
+        .order('sort_order', { ascending: true });
+      postRow.media_items = (mediaRows ?? []) as PostRow['media_items'];
+    }
     setPost(postRow);
-    setError(data ? null : 'Paylaşım bulunamadı.');
+    setError(data ? null : t('postNotFound'));
     if (!data) return;
     const [reactionsRes, commentsRes, myRes] = await Promise.all([
       supabase.from('feed_post_reactions').select('post_id').eq('post_id', idNorm),
-      supabase.from('feed_post_comments').select('id, staff_id, guest_id, content, created_at, staff:staff_id(full_name, profile_image, deleted_at), guest:guest_id(full_name, photo_url, deleted_at)').eq('post_id', idNorm).order('created_at', { ascending: true }),
+      supabase.from('feed_post_comments').select('id, parent_comment_id, staff_id, guest_id, content, created_at, staff:staff_id(full_name, profile_image, deleted_at), guest:guest_id(full_name, photo_url, deleted_at)').eq('post_id', idNorm).order('created_at', { ascending: true }),
       guestRow ? supabase.from('feed_post_reactions').select('post_id').eq('post_id', idNorm).eq('guest_id', guestRow.guest_id) : Promise.resolve({ data: [] as { post_id: string }[] }),
     ]);
     const reactions = (reactionsRes.data ?? []) as { post_id: string }[];
@@ -147,17 +173,26 @@ export default function CustomerFeedPostDetail() {
     if (guestRow) {
       supabase.from('feed_post_views').insert({ post_id: idNorm, guest_id: guestRow.guest_id }).then(() => {}).catch(() => {});
     }
-  }, [idNorm, user]);
+  }, [idNorm, t]);
 
   useEffect(() => {
     if (!idNorm) {
       setLoading(false);
-      setError('Paylaşım bulunamadı.');
+      setError(t('postNotFound'));
       return;
     }
     setVideoLoading(true);
     loadPost().then(() => setLoading(false));
-  }, [idNorm, loadPost]);
+  }, [idNorm, loadPost, t]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadPost();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadPost]);
 
   // Video yüklenme overlay'ı bazen onLoad tetiklenmeyebilir; bir süre sonra kaldır
   useEffect(() => {
@@ -165,6 +200,66 @@ export default function CustomerFeedPostDetail() {
     const t = setTimeout(() => setVideoLoading(false), 4000);
     return () => clearTimeout(t);
   }, [post?.id]);
+
+  useEffect(() => {
+    searchStaffMentionCandidates('', 700)
+      .then((rows) => setMentionDirectory(rows))
+      .catch(() => setMentionDirectory([]));
+  }, []);
+
+  const resolveMentionHref = useCallback(
+    (token: string) => {
+      const normalized = token.trim().toLocaleLowerCase('tr-TR');
+      if (!normalized) return null;
+      const target = mentionDirectory.find((row) => {
+        const fullName = (row.full_name ?? '').trim();
+        if (!fullName) return false;
+        return fullName
+          .toLocaleLowerCase('tr-TR')
+          .split(/\s+/)
+          .some((part) => part.startsWith(normalized));
+      });
+      return target?.id ? `/customer/staff/${target.id}` : null;
+    },
+    [mentionDirectory]
+  );
+
+  useEffect(() => {
+    const m = commentText.match(/@([\p{L}\p{N}_.-]{0,32})$/u);
+    if (!m) {
+      setMentionSuggestions([]);
+      setMentionQuery('');
+      return;
+    }
+    const q = (m[1] ?? '').trim();
+    setMentionQuery(q);
+    searchStaffMentionCandidates(q, 8)
+      .then((rows) => setMentionSuggestions(rows))
+      .catch(() => setMentionSuggestions([]));
+  }, [commentText]);
+
+  const openMentionedStaffProfile = useCallback((staffId: string) => {
+    const selected = mentionSuggestions.find((s) => s.id === staffId);
+    const fullName = (selected?.full_name ?? '').trim();
+    if (!fullName) return;
+    setCommentText((prev) => prev.replace(/@([\p{L}\p{N}_.-]{0,32})$/u, `@${fullName} `));
+    setMentionSuggestions([]);
+    setMentionQuery('');
+  }, [mentionSuggestions]);
+
+  const topLevelComments = useMemo(
+    () => comments.filter((c) => !c.parent_comment_id),
+    [comments]
+  );
+  const repliesByParent = useMemo(() => {
+    const map: Record<string, CommentRow[]> = {};
+    comments.forEach((c) => {
+      if (!c.parent_comment_id) return;
+      if (!map[c.parent_comment_id]) map[c.parent_comment_id] = [];
+      map[c.parent_comment_id].push(c);
+    });
+    return map;
+  }, [comments]);
 
   if (loading) {
     return (
@@ -177,9 +272,9 @@ export default function CustomerFeedPostDetail() {
   if (error || !post) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorText}>{error ?? 'Paylaşım bulunamadı.'}</Text>
+        <Text style={styles.errorText}>{error ?? t('postNotFound')}</Text>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Text style={styles.backBtnText}>Geri dön</Text>
+          <Text style={styles.backBtnText}>{t('goBack')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -190,18 +285,23 @@ export default function CustomerFeedPostDetail() {
   const staffInfo = Array.isArray(rawStaff) ? rawStaff[0] ?? null : rawStaff;
   const guestInfo = Array.isArray(rawGuest) ? rawGuest[0] ?? null : rawGuest;
   const authorName = staffInfo
-    ? (staffInfo.full_name?.trim() || 'Personel')
-    : guestDisplayName(guestInfo?.full_name, 'Misafir');
+    ? (staffInfo.full_name?.trim() || t('visitorTypeStaff'))
+    : guestDisplayName(guestInfo?.full_name, t('guestDefaultName'));
   const dept = staffInfo?.department;
   const badge = staffInfo?.verification_badge ?? null;
-  const imageUri = post.media_type !== 'text' ? (post.thumbnail_url || post.media_url) : null;
-  const mediaUri = post.media_type === 'image' ? post.media_url : (post.thumbnail_url || post.media_url);
-  const isVideo = post.media_type === 'video';
+  const postMediaItems = (post.media_items && post.media_items.length > 0)
+    ? post.media_items
+    : (post.media_type !== 'text' && (post.media_url || post.thumbnail_url)
+      ? [{ id: `${post.id}-legacy`, media_type: post.media_type === 'video' ? 'video' as const : 'image' as const, media_url: post.media_url || post.thumbnail_url || '', thumbnail_url: post.thumbnail_url, sort_order: 0 }]
+      : []);
+  const imageUri = postMediaItems.length > 0 ? (postMediaItems[0].thumbnail_url || postMediaItems[0].media_url) : null;
+  const firstMedia = postMediaItems[0];
+  const isVideo = firstMedia?.media_type === 'video';
 
   const toggleLike = async () => {
     const guestRow = await getOrCreateGuestForCurrentSession();
     if (!guestRow?.guest_id) {
-      Alert.alert('Giriş gerekli', 'Beğenmek için giriş yapın.');
+      Alert.alert(t('loginRequiredTitle'), t('loginRequiredLikeMessage'));
       return;
     }
     setTogglingLike(true);
@@ -214,11 +314,11 @@ export default function CustomerFeedPostDetail() {
         await supabase.from('feed_post_reactions').insert({ post_id: post.id, guest_id: guestRow.guest_id, reaction: 'like' });
         setMyLike(true);
         setLikeCount((c) => c + 1);
-        const displayName = getDisplayName() || 'Bir misafir';
+        const displayName = getDisplayName() || t('aGuest');
         if (post.staff_id) {
-          await sendNotification({ staffId: post.staff_id, title: 'Yeni beğeni', body: `${displayName} paylaşımını beğendi.`, category: 'staff', notificationType: 'feed_like', data: { url: '/staff', postId: post.id } });
+          await sendNotification({ staffId: post.staff_id, title: t('notifNewLikeTitle'), body: t('notifNewLikeBody', { name: displayName }), category: 'staff', notificationType: 'feed_like', data: { url: '/staff', postId: post.id } });
         } else if (post.guest_id) {
-          await sendNotification({ guestId: post.guest_id, title: 'Yeni beğeni', body: `${displayName} paylaşımını beğendi.`, category: 'guest', notificationType: 'feed_like', data: { url: '/customer', postId: post.id } });
+          await sendNotification({ guestId: post.guest_id, title: t('notifNewLikeTitle'), body: t('notifNewLikeBody', { name: displayName }), category: 'guest', notificationType: 'feed_like', data: { url: '/customer', postId: post.id } });
         }
       }
     } catch (e) {}
@@ -228,7 +328,7 @@ export default function CustomerFeedPostDetail() {
   const submitComment = async () => {
     const guestRow = await getOrCreateGuestForCurrentSession();
     if (!guestRow?.guest_id) {
-      Alert.alert('Giriş gerekli', 'Yorum yapmak için giriş yapın.');
+      Alert.alert(t('loginRequiredTitle'), t('loginRequiredCommentMessage'));
       return;
     }
     const text = commentText.trim();
@@ -237,18 +337,50 @@ export default function CustomerFeedPostDetail() {
     try {
       const { data: inserted } = await supabase
         .from('feed_post_comments')
-        .insert({ post_id: post.id, guest_id: guestRow.guest_id, content: text })
-        .select('id, content, created_at')
+        .insert({ post_id: post.id, guest_id: guestRow.guest_id, content: text, parent_comment_id: replyToCommentId })
+        .select('id, parent_comment_id, content, created_at')
         .single();
       setCommentText('');
-      const displayName = getDisplayName() || 'Misafir';
-      setComments((prev) => [...prev, { id: (inserted as { id: string }).id, content: text, created_at: (inserted as { created_at: string }).created_at, staff: null, guest: { full_name: displayName } }]);
+      setReplyToCommentId(null);
+      setReplyToName(null);
+      const displayName = getDisplayName() || t('guestDefaultName');
+      setComments((prev) => [
+        ...prev,
+        {
+          id: (inserted as { id: string }).id,
+          parent_comment_id: (inserted as { parent_comment_id?: string | null }).parent_comment_id ?? null,
+          content: text,
+          created_at: (inserted as { created_at: string }).created_at,
+          staff: null,
+          guest: { full_name: displayName },
+        },
+      ]);
       setCommentCount((c) => c + 1);
       const notifyBody = `${displayName}: ${text.slice(0, 60)}${text.length > 60 ? '…' : ''}`;
-      if (post.staff_id) {
-        await sendNotification({ staffId: post.staff_id, title: 'Yeni yorum', body: notifyBody, category: 'staff', notificationType: 'feed_comment', data: { url: '/staff', postId: post.id } });
+      const parentComment = replyToCommentId ? comments.find((c) => c.id === replyToCommentId) : null;
+      const notifiedStaffIds = new Set<string>();
+      if (parentComment && parentComment.staff_id) {
+        notifiedStaffIds.add(parentComment.staff_id);
+        await sendNotification({ staffId: parentComment.staff_id, title: t('notifNewCommentTitle'), body: notifyBody, category: 'staff', notificationType: 'feed_comment_reply', data: { url: `/customer/feed/${post.id}`, postId: post.id, parentCommentId: parentComment.id } });
+      } else if (parentComment && parentComment.guest_id && parentComment.guest_id !== guestRow.guest_id) {
+        await sendNotification({ guestId: parentComment.guest_id, title: t('notifNewCommentTitle'), body: notifyBody, category: 'guest', notificationType: 'feed_comment_reply', data: { url: `/customer/feed/${post.id}`, postId: post.id, parentCommentId: parentComment.id } });
+      } else if (post.staff_id) {
+        notifiedStaffIds.add(post.staff_id);
+        await sendNotification({ staffId: post.staff_id, title: t('notifNewCommentTitle'), body: notifyBody, category: 'staff', notificationType: 'feed_comment', data: { url: '/staff', postId: post.id } });
       } else if (post.guest_id) {
-        await sendNotification({ guestId: post.guest_id, title: 'Yeni yorum', body: notifyBody, category: 'guest', notificationType: 'feed_comment', data: { url: '/customer', postId: post.id } });
+        await sendNotification({ guestId: post.guest_id, title: t('notifNewCommentTitle'), body: notifyBody, category: 'guest', notificationType: 'feed_comment', data: { url: '/customer', postId: post.id } });
+      }
+      const mentionStaffIds = await resolveMentionedStaffIdsFromText(text);
+      for (const sid of mentionStaffIds) {
+        if (notifiedStaffIds.has(sid)) continue;
+        await sendNotification({
+          staffId: sid,
+          title: t('notifStaffMentionTitle'),
+          body: t('notifStaffMentionBody', { name: displayName }),
+          category: 'staff',
+          notificationType: 'staff_mention',
+          data: { url: `/customer/feed/${post.id}`, postId: post.id, commentId: (inserted as { id: string }).id },
+        });
       }
     } catch (e) {}
     setPostingComment(false);
@@ -257,10 +389,10 @@ export default function CustomerFeedPostDetail() {
   const deleteOwnComment = async (commentId: string) => {
     const guestRow = await getOrCreateGuestForCurrentSession();
     if (!guestRow?.guest_id) return;
-    Alert.alert('Yorumu sil', 'Bu yorum kalıcı olarak silinecek.', [
-      { text: 'İptal', style: 'cancel' },
+    Alert.alert(t('deleteCommentTitle'), t('deleteCommentMessage'), [
+      { text: t('cancel'), style: 'cancel' },
       {
-        text: 'Sil',
+        text: t('delete'),
         style: 'destructive',
         onPress: async () => {
           const { error } = await supabase
@@ -269,7 +401,7 @@ export default function CustomerFeedPostDetail() {
             .eq('id', commentId)
             .eq('guest_id', guestRow.guest_id);
           if (error) {
-            Alert.alert('Hata', error.message || 'Yorum silinemedi.');
+            Alert.alert(t('error'), error.message || t('commentDeleteFailed'));
             return;
           }
           setComments((prev) => prev.filter((c) => c.id !== commentId));
@@ -280,24 +412,24 @@ export default function CustomerFeedPostDetail() {
   };
 
   const isOwnGuestPost = !!(post.guest_id && myGuestId && post.guest_id === myGuestId && !post.staff_id);
-
   const deletePost = async () => {
     if (!isOwnGuestPost || !post) return;
     const guestRow = await getOrCreateGuestForCurrentSession();
     if (!guestRow?.guest_id || post.guest_id !== guestRow.guest_id) return;
-    Alert.alert('Paylaşımı sil', 'Bu paylaşım kalıcı olarak silinecek.', [
-      { text: 'İptal', style: 'cancel' },
+    Alert.alert(t('deletePostTitle'), t('deletePostMessage'), [
+      { text: t('cancel'), style: 'cancel' },
       {
-        text: 'Sil',
+        text: t('delete'),
         style: 'destructive',
         onPress: async () => {
           setDeleting(true);
           const { error } = await supabase.from('feed_posts').delete().eq('id', post.id);
           setDeleting(false);
           if (error) {
-            Alert.alert('Hata', error.message || 'Paylaşım silinemedi.');
+            Alert.alert(t('error'), error.message || t('postDeleteFailed'));
             return;
           }
+          await removeFeedMediaObjectsForPostUrls([post.media_url, post.thumbnail_url]);
           router.replace('/customer');
         },
       },
@@ -307,49 +439,53 @@ export default function CustomerFeedPostDetail() {
   const hasLocation = (post.lat != null && post.lng != null) || (post.location_label && post.location_label.trim());
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          tintColor={theme.colors.primary}
+          colors={[theme.colors.primary]}
+        />
+      }
+    >
       <View style={styles.card}>
         {hasLocation && (
           <View style={styles.locationBar}>
             <Ionicons name="location" size={14} color={theme.colors.primary} />
             <Text style={styles.locationText} numberOfLines={1}>
-              {post.location_label?.trim() || '📍 Haritadan paylaşıldı'}
+              {post.location_label?.trim() || t('sharedFromMap')}
             </Text>
           </View>
         )}
-        {imageUri || mediaUri ? (
-          isVideo ? (
-            <View style={[styles.mediaWrap, { width: winWidth - 32 }]}>
-              <Video
-                source={{ uri: post.media_url ?? undefined }}
-                style={styles.video}
-                useNativeControls
-                resizeMode="contain"
-                isLooping={false}
-                onLoad={() => setVideoLoading(false)}
-                onError={() => setVideoLoading(false)}
-              />
-              {videoLoading && (
-                <View style={styles.videoLoadingOverlay} pointerEvents="none">
-                  <ActivityIndicator size="large" color={theme.colors.primary} />
-                  <Text style={styles.videoLoadingText}>Yükleniyor...</Text>
-                </View>
-              )}
-            </View>
-          ) : (
-            <CachedImage
-              uri={mediaUri ?? undefined}
-              style={[styles.image, { width: winWidth - 32 }]}
-              contentFit="cover"
+        {imageUri ? (
+          <View style={[styles.mediaWrap, { width: winWidth - 32 }]}>
+            <FeedMediaCarousel
+              items={postMediaItems.map((m) => ({
+                id: m.id,
+                media_type: m.media_type,
+                media_url: m.media_url,
+                thumbnail_url: m.thumbnail_url,
+              }))}
+              width={winWidth - 32}
+              height={winWidth - 32}
             />
-          )
+            {isVideo && videoLoading ? (
+              <View style={styles.videoLoadingOverlay} pointerEvents="none">
+                <ActivityIndicator size="large" color={theme.colors.primary} />
+                <Text style={styles.videoLoadingText}>{t('loading')}</Text>
+              </View>
+            ) : null}
+          </View>
         ) : (
           <View style={[styles.textOnlyBlock, { width: winWidth - 32 }]}>
-            <Text style={styles.textOnlyTitle}>{post.title || 'Metin paylaşımı'}</Text>
+            <Text style={styles.textOnlyTitle}>{post.title || t('textPost')}</Text>
           </View>
         )}
         <View style={styles.body}>
-          <Text style={styles.title}>{post.title || (isVideo ? 'Video' : post.media_type === 'text' ? 'Metin' : 'Fotoğraf')}</Text>
+          <Text style={styles.title}>{post.title || (isVideo ? t('video') : post.media_type === 'text' ? t('text') : t('photo'))}</Text>
           <View style={styles.metaRow}>
             {staffInfo ? (
               <>
@@ -360,30 +496,39 @@ export default function CustomerFeedPostDetail() {
               <Text style={styles.metaText}>{authorName}</Text>
             )}
           </View>
-          <Text style={styles.date}>{new Date(post.created_at).toLocaleString('tr-TR')}</Text>
+          <Text style={styles.date}>{new Date(post.created_at).toLocaleString()}</Text>
           <View style={styles.actionsRow}>
             {user ? (
-              <TouchableOpacity style={styles.actionBtn} onPress={toggleLike} disabled={togglingLike} activeOpacity={0.7}>
-                {togglingLike ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : <Ionicons name={myLike ? 'heart' : 'heart-outline'} size={22} color={myLike ? theme.colors.error : theme.colors.text} />}
-                <Text style={styles.actionCount}>{likeCount}</Text>
+              <TouchableOpacity
+                style={[styles.actionPill, myLike && styles.actionPillActive]}
+                onPress={toggleLike}
+                disabled={togglingLike}
+                activeOpacity={0.8}
+              >
+                {togglingLike ? (
+                  <ActivityIndicator size="small" color={theme.colors.textMuted} />
+                ) : (
+                  <Ionicons name={myLike ? 'heart' : 'heart-outline'} size={20} color={myLike ? theme.colors.error : theme.colors.textSecondary} />
+                )}
+                <Text style={[styles.actionPillText, myLike && styles.actionPillTextActive]}>{likeCount}</Text>
               </TouchableOpacity>
             ) : null}
-            <View style={styles.actionBtn}>
-              <Ionicons name="chatbubble-outline" size={20} color={theme.colors.text} />
-              <Text style={styles.actionCount}>{commentCount}</Text>
+            <View style={styles.actionPill}>
+              <Ionicons name="chatbubble-outline" size={18} color={theme.colors.textSecondary} />
+              <Text style={styles.actionPillText}>{commentCount}</Text>
             </View>
             {isOwnGuestPost ? (
-              <TouchableOpacity style={styles.actionBtn} onPress={deletePost} disabled={deleting} activeOpacity={0.7}>
-                {deleting ? <ActivityIndicator size="small" color={theme.colors.error} /> : <Ionicons name="trash-outline" size={22} color={theme.colors.error} />}
-                <Text style={[styles.actionCount, styles.deleteActionLabel]}>Sil</Text>
+              <TouchableOpacity style={[styles.actionPill, styles.actionPillDanger]} onPress={deletePost} disabled={deleting} activeOpacity={0.8}>
+                {deleting ? <ActivityIndicator size="small" color={theme.colors.error} /> : <Ionicons name="trash-outline" size={20} color={theme.colors.error} />}
+                <Text style={[styles.actionPillText, styles.deleteActionLabel]}>{t('delete')}</Text>
               </TouchableOpacity>
             ) : null}
           </View>
         </View>
         {comments.length > 0 ? (
           <View style={styles.commentsBlock}>
-            <Text style={styles.commentsTitle}>Yorumlar</Text>
-            {comments.map((c) => {
+            <Text style={styles.commentsTitle}>{t('feedCommentsTitle')}</Text>
+            {topLevelComments.map((c) => {
               const isGuestComment = !c.staff_id && !!c.guest_id;
               const cAuthor = isGuestComment
                 ? guestDisplayName(c.guest?.full_name, '—')
@@ -392,67 +537,160 @@ export default function CustomerFeedPostDetail() {
               const profileHref = c.staff_id ? `/customer/staff/${c.staff_id}` : c.guest_id ? `/customer/guest/${c.guest_id}` : null;
               const canDelete = !!(myGuestId && c.guest_id && c.guest_id === myGuestId && !c.staff_id);
               return (
-                <TouchableOpacity
+                <View
                   key={c.id}
                   style={styles.commentRow}
-                  onPress={() => profileHref && router.push(profileHref)}
-                  activeOpacity={profileHref ? 0.7 : 1}
-                  disabled={!profileHref}
                 >
-                  {avatarUri ? (
-                    <CachedImage uri={avatarUri} style={styles.commentAvatar} contentFit="cover" />
-                  ) : (
-                    <View style={isGuestComment ? styles.commentAvatarPlaceholderGuest : styles.commentAvatarPlaceholder}>
-                      <Text style={isGuestComment ? styles.commentAvatarInitialGuest : styles.commentAvatarInitial}>{(cAuthor || '—').charAt(0).toUpperCase()}</Text>
-                    </View>
-                  )}
+                  <TouchableOpacity
+                    onPress={() => profileHref && router.push(profileHref)}
+                    activeOpacity={profileHref ? 0.7 : 1}
+                    disabled={!profileHref}
+                  >
+                    {avatarUri ? (
+                      <CachedImage uri={avatarUri} style={styles.commentAvatar} contentFit="cover" />
+                    ) : (
+                      <View style={isGuestComment ? styles.commentAvatarPlaceholderGuest : styles.commentAvatarPlaceholder}>
+                        <Text style={isGuestComment ? styles.commentAvatarInitialGuest : styles.commentAvatarInitial}>{(cAuthor || '—').charAt(0).toUpperCase()}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
                   <View style={styles.commentRowBody}>
-                    <Text style={styles.commentAuthor}>{cAuthor}</Text>
-                    <Text style={styles.commentText}>{c.content}</Text>
+                    <TouchableOpacity
+                      onPress={() => profileHref && router.push(profileHref)}
+                      activeOpacity={profileHref ? 0.7 : 1}
+                      disabled={!profileHref}
+                    >
+                      <Text style={styles.commentAuthor}>{cAuthor}</Text>
+                    </TouchableOpacity>
+                    <MentionableText
+                      text={c.content}
+                      textStyle={styles.commentText}
+                      mentionStyle={styles.commentMention}
+                      resolveMentionHref={resolveMentionHref}
+                      onMentionPress={(href) => router.push(href)}
+                    />
                     <View style={styles.commentMetaRow}>
-                      <Text style={styles.commentTime}>{formatDistanceToNow(new Date(c.created_at), { addSuffix: true, locale: tr })}</Text>
-                      {canDelete ? (
-                        <TouchableOpacity onPress={() => deleteOwnComment(c.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                          <Text style={styles.commentDeleteText}>Sil</Text>
+                      <Text style={styles.commentTime}>
+                        {formatDistanceToNow(new Date(c.created_at), { addSuffix: true, locale: dfLocale })}
+                      </Text>
+                      <View style={styles.commentActionsRight}>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setReplyToCommentId(c.id);
+                            setReplyToName(cAuthor);
+                          }}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Text style={styles.commentReplyText}>{t('feedReply')}</Text>
                         </TouchableOpacity>
-                      ) : null}
+                        {canDelete ? (
+                          <TouchableOpacity onPress={() => deleteOwnComment(c.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                            <Text style={styles.commentDeleteText}>{t('delete')}</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
                     </View>
+                    {(() => {
+                      const replies = repliesByParent[c.id] ?? [];
+                      if (replies.length === 0) return null;
+                      const isExpanded = !!expandedReplies[c.id];
+                      const visibleReplies = isExpanded ? replies : replies.slice(0, 2);
+                      return (
+                        <View style={styles.replyListWrap}>
+                          {visibleReplies.map((r) => {
+                            const rAuthor = r.staff
+                              ? ((r.staff.full_name ?? '—').trim() || '—')
+                              : guestDisplayName(r.guest?.full_name, '—');
+                            return (
+                              <View key={r.id} style={styles.replyRow}>
+                                <Text style={styles.replyAuthor}>{rAuthor}</Text>
+                                <MentionableText
+                                  text={r.content}
+                                  textStyle={styles.replyText}
+                                  mentionStyle={styles.commentMention}
+                                  resolveMentionHref={resolveMentionHref}
+                                  onMentionPress={(href) => router.push(href)}
+                                />
+                                <Text style={styles.replyTime}>
+                                  {formatDistanceToNow(new Date(r.created_at), { addSuffix: true, locale: dfLocale })}
+                                </Text>
+                              </View>
+                            );
+                          })}
+                          {replies.length > 2 ? (
+                            <TouchableOpacity
+                              onPress={() => setExpandedReplies((prev) => ({ ...prev, [c.id]: !isExpanded }))}
+                              activeOpacity={0.8}
+                            >
+                              <Text style={styles.replyMoreText}>
+                                {isExpanded
+                                  ? t('feedReplyHide')
+                                  : t('feedReplyMore', { count: replies.length - 2 })}
+                              </Text>
+                            </TouchableOpacity>
+                          ) : null}
+                        </View>
+                      );
+                    })()}
                   </View>
-                </TouchableOpacity>
+                </View>
               );
             })}
           </View>
         ) : null}
         {user ? (
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={styles.commentInputWrap}
-            keyboardVerticalOffset={0}
-          >
-            <TextInput
-              style={styles.commentInput}
-              placeholder="Yorum yaz..."
-              placeholderTextColor={theme.colors.textMuted}
-              value={commentText}
-              onChangeText={setCommentText}
-              multiline
-              maxLength={500}
-              editable={!postingComment}
-            />
-            <TouchableOpacity
-              style={[styles.commentSendBtn, (!commentText.trim() || postingComment) && styles.commentSendBtnDisabled]}
-              onPress={submitComment}
-              disabled={!commentText.trim() || postingComment}
-              activeOpacity={0.8}
+          <>
+            {mentionSuggestions.length > 0 ? (
+              <View style={styles.mentionPanel}>
+                {mentionSuggestions.map((s) => (
+                  <TouchableOpacity key={s.id} style={styles.mentionRow} onPress={() => openMentionedStaffProfile(s.id)} activeOpacity={0.75}>
+                    <Text style={styles.mentionRowText}>@{(s.full_name ?? '').trim()}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : mentionQuery.length > 0 ? (
+              <View style={styles.mentionPanel}>
+                <Text style={styles.mentionEmptyText}>{t('feedMentionNoResults')}</Text>
+              </View>
+            ) : null}
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              style={styles.commentInputWrap}
+              keyboardVerticalOffset={0}
             >
-              {postingComment ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="send" size={20} color="#fff" />}
-            </TouchableOpacity>
-          </KeyboardAvoidingView>
+              {replyToCommentId ? (
+                <View style={styles.replyTargetChip}>
+                  <Text style={styles.replyTargetText}>@{replyToName || 'kullanici'} yanit yaziyorsun...</Text>
+                  <TouchableOpacity onPress={() => { setReplyToCommentId(null); setReplyToName(null); }} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                    <Ionicons name="close" size={16} color={theme.colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+              <TextInput
+                style={styles.commentInput}
+                placeholder={replyToCommentId ? t('feedPlaceholderReply') : t('feedPlaceholderComment')}
+                placeholderTextColor={theme.colors.textMuted}
+                value={commentText}
+                onChangeText={setCommentText}
+                multiline
+                maxLength={500}
+                editable={!postingComment}
+              />
+              <TouchableOpacity
+                style={[styles.commentSendBtn, (!commentText.trim() || postingComment) && styles.commentSendBtnDisabled]}
+                onPress={submitComment}
+                disabled={!commentText.trim() || postingComment}
+                activeOpacity={0.8}
+              >
+                {postingComment ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="send" size={20} color="#fff" />}
+              </TouchableOpacity>
+            </KeyboardAvoidingView>
+          </>
         ) : null}
       </View>
       <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
         <Ionicons name="arrow-back" size={20} color={theme.colors.primary} />
-        <Text style={styles.backBtnText}>Geri</Text>
+        <Text style={styles.backBtnText}>{t('back')}</Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -502,8 +740,21 @@ const styles = StyleSheet.create({
   metaText: { fontSize: 14, color: theme.colors.textSecondary },
   date: { fontSize: 12, color: theme.colors.textMuted },
   actionsRow: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: theme.colors.borderLight },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  actionCount: { fontSize: 13, color: theme.colors.textSecondary },
+  actionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: theme.colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+  },
+  actionPillActive: { backgroundColor: `${theme.colors.error}10`, borderColor: `${theme.colors.error}33` },
+  actionPillDanger: { backgroundColor: `${theme.colors.error}08`, borderColor: `${theme.colors.error}2a` },
+  actionPillText: { fontSize: 13, fontWeight: '800', color: theme.colors.textSecondary, minWidth: 16 },
+  actionPillTextActive: { color: theme.colors.error },
   deleteActionLabel: { color: theme.colors.error },
   commentsBlock: { paddingHorizontal: theme.spacing.lg, paddingBottom: 12, borderTopWidth: 1, borderTopColor: theme.colors.borderLight, paddingTop: 12 },
   commentsTitle: { fontSize: 16, fontWeight: '700', color: theme.colors.text, marginBottom: 10 },
@@ -523,13 +774,70 @@ const styles = StyleSheet.create({
   commentRowBody: { flex: 1, minWidth: 0 },
   commentAuthor: { fontSize: 14, fontWeight: '700', color: theme.colors.text },
   commentText: { fontSize: 14, color: theme.colors.text, marginTop: 2 },
+  commentMention: { color: '#0095f6', fontWeight: '700', textDecorationLine: 'underline' },
   commentMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 },
+  commentActionsRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   commentTime: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
   commentDeleteText: { fontSize: 12, color: theme.colors.error, fontWeight: '700' },
-  commentInputWrap: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, paddingHorizontal: theme.spacing.lg, paddingBottom: 16 },
+  commentReplyText: { fontSize: 12, color: theme.colors.primary, fontWeight: '700' },
+  replyListWrap: {
+    marginTop: 8,
+    marginLeft: 6,
+    paddingLeft: 10,
+    borderLeftWidth: 1,
+    borderLeftColor: theme.colors.borderLight,
+    gap: 8,
+  },
+  replyRow: {
+    backgroundColor: '#f3f4f6',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  replyAuthor: { fontSize: 12, fontWeight: '700', color: theme.colors.text },
+  replyText: { fontSize: 13, color: theme.colors.text, marginTop: 2 },
+  replyTime: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
+  replyMoreText: { fontSize: 12, fontWeight: '700', color: theme.colors.primary, marginTop: 2 },
+  commentInputWrap: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, paddingHorizontal: theme.spacing.lg, paddingBottom: 16, position: 'relative' },
+  replyTargetChip: {
+    position: 'absolute',
+    left: theme.spacing.lg,
+    right: 64,
+    top: -32,
+    zIndex: 2,
+    backgroundColor: '#f3f4f6',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  replyTargetText: { flex: 1, fontSize: 12, color: theme.colors.textSecondary, fontWeight: '600' },
   commentInput: { flex: 1, borderWidth: 1, borderColor: theme.colors.borderLight, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, color: theme.colors.text, maxHeight: 100 },
   commentSendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: theme.colors.primary, justifyContent: 'center', alignItems: 'center' },
   commentSendBtnDisabled: { opacity: 0.5 },
+  mentionPanel: {
+    marginHorizontal: theme.spacing.lg,
+    marginTop: -8,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    borderRadius: 12,
+    backgroundColor: theme.colors.surface,
+    overflow: 'hidden',
+  },
+  mentionRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.borderLight,
+  },
+  mentionRowText: { fontSize: 14, fontWeight: '600', color: theme.colors.text },
+  mentionEmptyText: { paddingVertical: 10, paddingHorizontal: 12, fontSize: 13, color: theme.colors.textMuted },
   backBtn: {
     flexDirection: 'row',
     alignItems: 'center',

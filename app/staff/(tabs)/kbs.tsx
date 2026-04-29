@@ -2,6 +2,9 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '@/constants/theme';
+import { useAuthStore } from '@/stores/authStore';
+import { canStaffUseMrzScan } from '@/lib/kbsMrzAccess';
+import { useTranslation } from 'react-i18next';
 
 function Tile(props: { title: string; subtitle: string; icon: keyof typeof Ionicons.glyphMap; onPress: () => void }) {
   return (
@@ -19,25 +22,54 @@ function Tile(props: { title: string; subtitle: string; icon: keyof typeof Ionic
 }
 
 export default function StaffKbsTab() {
+  const { t } = useTranslation();
   const router = useRouter();
+  const staff = useAuthStore((s) => s.staff);
+  const showMrz = canStaffUseMrzScan(staff);
   return (
     <View style={styles.container}>
-      <Text style={styles.h1}>KBS Operasyon</Text>
-      <Text style={styles.p}>Seri tarama → oda atama → tekli/toplu bildirim → çıkış. Yetki bazlıdır.</Text>
+      <View style={styles.headerRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.h1}>{t('kbsNavOperation')}</Text>
+          <Text style={styles.p}>{t('kbsTabHeaderDesc')}</Text>
+        </View>
+        {showMrz ? (
+          <TouchableOpacity
+            style={styles.passportAddBtn}
+            onPress={() => router.push('/staff/mrz-scan')}
+            activeOpacity={0.88}
+            accessibilityLabel={t('kbsNavScanSerial')}
+          >
+            <Ionicons name="add" size={20} color="#fff" />
+          </TouchableOpacity>
+        ) : null}
+      </View>
 
-      <Tile title="Seri Tarama" subtitle="Pasaport/ID MRZ oku, draft oluştur" icon="scan-outline" onPress={() => router.push('/staff/kbs/scan')} />
-      <Tile title="Bildirime Hazır" subtitle="Tekli/toplu/oda/grup bazlı submit" icon="paper-plane-outline" onPress={() => router.push('/staff/kbs/ready')} />
-      <Tile title="Bildirilenler" subtitle="Submitted/checkout durumlarını izle" icon="list-outline" onPress={() => router.push('/staff/kbs/submitted')} />
-      <Tile title="Canlı Odalar" subtitle="Oda bazlı hızlı aksiyonlar" icon="bed-outline" onPress={() => router.push('/staff/kbs/rooms')} />
-      <Tile title="Hatalar" subtitle="Failed işlemler + retry" icon="alert-circle-outline" onPress={() => router.push('/staff/kbs/failed')} />
+      {showMrz ? (
+        <Tile title={t('kbsNavScanSerial')} subtitle={t('kbsTabScanSub')} icon="scan-outline" onPress={() => router.push('/staff/mrz-scan')} />
+      ) : null}
+      <Tile title={t('kbsNavReady')} subtitle={t('kbsTabReadySub')} icon="paper-plane-outline" onPress={() => router.push('/staff/kbs/ready')} />
+      <Tile title={t('kbsNavSubmitted')} subtitle={t('kbsTabSubmittedSub')} icon="list-outline" onPress={() => router.push('/staff/kbs/submitted')} />
+      <Tile title={t('kbsNavRooms')} subtitle={t('kbsTabRoomsSub')} icon="bed-outline" onPress={() => router.push('/staff/kbs/rooms')} />
+      <Tile title={t('kbsNavFailed')} subtitle={t('kbsTabFailedSub')} icon="alert-circle-outline" onPress={() => router.push('/staff/kbs/failed')} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.backgroundSecondary, padding: 16, gap: 12 },
+  headerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   h1: { fontSize: 22, fontWeight: '800', color: theme.colors.text },
   p: { fontSize: 14, color: theme.colors.textSecondary, marginBottom: 8 },
+  passportAddBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.primary,
+    marginTop: 2,
+  },
   tile: {
     flexDirection: 'row',
     alignItems: 'center',

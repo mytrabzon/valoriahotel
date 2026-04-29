@@ -7,7 +7,6 @@ import Constants from 'expo-constants';
 type PublicExtra = {
   supabaseUrl?: string;
   supabaseAnonKey?: string;
-  railwayApiUrl?: string;
 };
 
 function getPublicExtra(): PublicExtra {
@@ -26,7 +25,6 @@ function getPublicExtra(): PublicExtra {
   return {
     supabaseUrl: typeof pub.supabaseUrl === 'string' ? pub.supabaseUrl : undefined,
     supabaseAnonKey: typeof pub.supabaseAnonKey === 'string' ? pub.supabaseAnonKey : undefined,
-    railwayApiUrl: typeof pub.railwayApiUrl === 'string' ? pub.railwayApiUrl : undefined,
   };
 }
 

@@ -22,7 +22,8 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import { Video, ResizeMode } from 'expo-av';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
-import { uriToArrayBuffer } from '@/lib/uploadMedia';
+import { uploadGuestFeedMedia, uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
+import { copyAndroidContentUriToCacheForPreview } from '@/lib/uploadMedia';
 import { getOrCreateGuestForCaller, getOrCreateGuestForCurrentSession } from '@/lib/getOrCreateGuestForCaller';
 import { guestDisplayName } from '@/lib/guestDisplayName';
 import { ensureCameraPermission } from '@/lib/cameraPermission';
@@ -34,6 +35,10 @@ import { POST_TAGS, type PostTagValue } from '@/lib/feedPostTags';
 import { notifyGuestsOfNewFeedPost, notifyStaffOfNewFeedPost } from '@/lib/notifyNewFeedPost';
 import { log } from '@/lib/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  feedPostMediaPickerCameraOptions,
+  feedPostMediaPickerGalleryOptions,
+} from '@/lib/feedPostMediaPicker';
 
 const BUCKET = 'feed-media';
 
@@ -85,6 +90,22 @@ export default function MapShareSheet({ visible, onClose, location, onSuccess }:
     setImageUri(null);
     setTitle('');
     setPostTag(null);
+    setMediaType('image');
+  };
+
+  /** Android content:// video: doğru uzantı + file yolu; yükleme ve önizleme güvenilir olur */
+  const resolvePickedUri = async (asset: { uri?: string | null; type?: 'image' | 'video' | 'livePhoto' | 'pairedVideo' }) => {
+    const isVideo = asset.type === 'video';
+    let uri = asset.uri ?? '';
+    if (!uri) return { uri: '', type: isVideo ? ('video' as const) : ('image' as const) };
+    if (Platform.OS === 'android' && uri.startsWith('content://') && isVideo) {
+      try {
+        uri = await copyAndroidContentUriToCacheForPreview(uri, 'video');
+      } catch (e) {
+        log.warn('MapShareSheet', 'android video cache', e);
+      }
+    }
+    return { uri, type: isVideo ? ('video' as const) : ('image' as const) };
   };
 
   const pickImage = async () => {
@@ -94,21 +115,16 @@ export default function MapShareSheet({ visible, onClose, location, onSuccess }:
       settingsMessage: 'Galeri izni kapalı. Paylaşım için ayarlardan galeri iznini açın.',
     });
     if (!granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
-      allowsEditing: false,
-      quality: 0.8,
-      base64: false,
-    });
+    const result = await ImagePicker.launchImageLibraryAsync(feedPostMediaPickerGalleryOptions);
     if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
-    const uri = asset.uri ?? null;
-    if (!uri) {
+    const resolved = await resolvePickedUri(asset);
+    if (!resolved.uri) {
       Alert.alert('Hata', 'Görsel yüklenemedi. Tekrar deneyin.');
       return;
     }
-    setImageUri(uri);
-    setMediaType(asset.type === 'video' ? 'video' : 'image');
+    setImageUri(resolved.uri);
+    setMediaType(resolved.type);
   };
 
   const takePhoto = async () => {
@@ -118,21 +134,16 @@ export default function MapShareSheet({ visible, onClose, location, onSuccess }:
       settingsMessage: 'Kamera izni kapalı. Paylaşım için ayarlardan kamera iznini açın.',
     });
     if (!granted) return;
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
-      allowsEditing: false,
-      quality: 0.8,
-      base64: false,
-    });
+    const result = await ImagePicker.launchCameraAsync(feedPostMediaPickerCameraOptions);
     if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
-    const uri = asset.uri ?? null;
-    if (!uri) {
+    const resolved = await resolvePickedUri(asset);
+    if (!resolved.uri) {
       Alert.alert('Hata', 'Fotoğraf yüklenemedi. Tekrar deneyin.');
       return;
     }
-    setImageUri(uri);
-    setMediaType(asset.type === 'video' ? 'video' : 'image');
+    setImageUri(resolved.uri);
+    setMediaType(resolved.type);
   };
 
   const uploadAndPublish = async () => {
@@ -141,12 +152,28 @@ export default function MapShareSheet({ visible, onClose, location, onSuccess }:
       Alert.alert('Eksik', 'Lütfen metin yazın veya fotoğraf/video ekleyin.');
       return;
     }
-    const uploadPathPrefix = staff ? staff.id : guestId ? `guest_${guestId}` : null;
-    if (!uploadPathPrefix) {
+    if (!staff && !guestId) {
       Alert.alert('Hata', 'Oturum bilginiz yüklenemedi. Lütfen tekrar deneyin.');
       return;
     }
     setUploading(true);
+    const geoPromise = (async (): Promise<string | null> => {
+      try {
+        const { Location } = await import('expo-location');
+        const [rev] = await Location.reverseGeocodeAsync({
+          latitude: location.lat,
+          longitude: location.lng,
+        }).catch(() => []);
+        if (rev) {
+          const parts = [rev.street, rev.city, rev.region].filter(Boolean);
+          if (parts.length) return parts.join(', ');
+        }
+      } catch {
+        /* konum metni isteğe bağlı */
+      }
+      return null;
+    })();
+
     try {
       let finalMediaType: 'image' | 'video' | 'text' = 'text';
       let mediaUrl: string | null = null;
@@ -154,9 +181,6 @@ export default function MapShareSheet({ visible, onClose, location, onSuccess }:
 
       if (imageUri) {
         finalMediaType = mediaType;
-        const ext = mediaType === 'video' ? 'mp4' : 'jpg';
-        const contentType = mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
-        const fileName = `${uploadPathPrefix}/${Date.now()}.${ext}`;
         let uriToUse = imageUri;
         if (mediaType === 'image' && Platform.OS === 'android' && imageUri.startsWith('content://')) {
           try {
@@ -169,43 +193,34 @@ export default function MapShareSheet({ visible, onClose, location, onSuccess }:
             /* orijinal uri ile devam et */
           }
         }
-        let arrayBuffer: ArrayBuffer;
         try {
-          arrayBuffer = await uriToArrayBuffer(uriToUse);
+          if (staff) {
+            const { publicUrl } = await uploadUriToPublicBucket({
+              bucketId: BUCKET,
+              uri: uriToUse,
+              kind: mediaType === 'video' ? 'video' : 'image',
+              subfolder: 'map',
+            });
+            mediaUrl = publicUrl;
+          } else if (guestId) {
+            const { publicUrl } = await uploadGuestFeedMedia({
+              uri: uriToUse,
+              guestId,
+              kind: mediaType === 'video' ? 'video' : 'image',
+            });
+            mediaUrl = publicUrl;
+          }
+          thumbnailUrl = mediaType === 'image' ? mediaUrl : null;
         } catch (e) {
           const msg = (e as Error)?.message ?? '';
+          log.error('MapShareSheet', 'medya yükleme', e);
           setUploading(false);
-          Alert.alert('Medya okunamadı', msg.includes('base64') || msg.includes('okunamadı') ? 'Görsel/video işlenemedi. Lütfen tekrar seçin.' : msg);
+          Alert.alert('Medya yüklenemedi', msg.includes('okunamadı') ? 'Görsel/video işlenemedi. Lütfen tekrar seçin.' : msg);
           return;
         }
-        const { error: uploadErr } = await supabase.storage.from(BUCKET).upload(fileName, arrayBuffer, {
-          contentType,
-          upsert: true,
-        });
-        if (uploadErr) {
-          setUploading(false);
-          Alert.alert('Yükleme hatası', uploadErr.message);
-          return;
-        }
-        const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(fileName);
-        mediaUrl = urlData.publicUrl;
-        thumbnailUrl = mediaType === 'image' ? mediaUrl : null;
       }
 
-      let locationLabel: string | null = null;
-      try {
-        const { Location } = await import('expo-location');
-        const [rev] = await Location.reverseGeocodeAsync({
-          latitude: location.lat,
-          longitude: location.lng,
-        }).catch(() => []);
-        if (rev) {
-          const parts = [rev.street, rev.city, rev.region].filter(Boolean);
-          if (parts.length) locationLabel = parts.join(', ');
-        }
-      } catch {
-        /* reverse geocode optional */
-      }
+      const locationLabel = await geoPromise;
       const { data: postId, error: insertErr } = await supabase.rpc('insert_feed_post_from_map', {
         p_media_type: finalMediaType,
         p_media_url: mediaUrl,
@@ -224,37 +239,46 @@ export default function MapShareSheet({ visible, onClose, location, onSuccess }:
       const titleTrim = (title ?? '').trim();
       const titlePreview =
         titleTrim.slice(0, 120) + (titleTrim.length > 120 ? '…' : '') || null;
-      try {
-        if (staff) {
-          await notifyStaffOfNewFeedPost({
-            postId: String(postId),
-            authorDisplayName: staff.full_name ?? 'Bir çalışan',
-            titlePreview,
-            excludeStaffId: staff.id,
-            createdByStaffId: staff.id,
-          });
-          await notifyGuestsOfNewFeedPost(String(postId));
-        } else if (guestId) {
-          const { data: guestRow } = await supabase
-            .from('guests')
-            .select('full_name')
-            .eq('id', guestId)
-            .maybeSingle();
-          const authorName = guestDisplayName((guestRow as { full_name?: string | null } | null)?.full_name, 'Misafir');
-          await notifyStaffOfNewFeedPost({
-            postId: String(postId),
-            authorDisplayName: authorName,
-            titlePreview,
-          });
-          await notifyGuestsOfNewFeedPost(String(postId));
-        }
-      } catch (e) {
-        log.warn('MapShareSheet', 'notifyStaffOfNewFeedPost', e);
+      if (staff) {
+        void (async () => {
+          try {
+            await notifyStaffOfNewFeedPost({
+              postId: String(postId),
+              authorDisplayName: staff.full_name ?? 'Bir çalışan',
+              titlePreview,
+              excludeStaffId: staff.id,
+              createdByStaffId: staff.id,
+            });
+            await notifyGuestsOfNewFeedPost(String(postId));
+          } catch (e) {
+            log.warn('MapShareSheet', 'bildirim (staff)', e);
+          }
+        })();
+      } else if (guestId) {
+        void (async () => {
+          try {
+            const { data: guestRow } = await supabase
+              .from('guests')
+              .select('full_name')
+              .eq('id', guestId)
+              .maybeSingle();
+            const authorName = guestDisplayName((guestRow as { full_name?: string | null } | null)?.full_name, 'Misafir');
+            await notifyStaffOfNewFeedPost({
+              postId: String(postId),
+              authorDisplayName: authorName,
+              titlePreview,
+            });
+            await notifyGuestsOfNewFeedPost(String(postId));
+          } catch (e) {
+            log.warn('MapShareSheet', 'bildirim (misafir)', e);
+          }
+        })();
       }
       resetForm();
       onSuccess?.();
       onClose();
     } catch (e) {
+      log.error('MapShareSheet', 'uploadAndPublish', e);
       setUploading(false);
       Alert.alert('Hata', (e as Error)?.message ?? 'Paylaşım kaydedilemedi.');
     } finally {

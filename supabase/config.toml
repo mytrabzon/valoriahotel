@@ -1,3 +1,9 @@
+# PostgREST: `ops` şeması (ops.app_users, KBS tabloları) REST ile kullanılıyor.
+# Hosted projede Dashboard → Settings → Data API → Exposed schemas listesine de `ops` ekleyin;
+# aksi halde Accept-Profile: ops istekleri PGRST106 (406) döner.
+[api]
+schemas = ["public", "graphql_public", "ops"]
+
 # Edge Functions: Gateway JWT doğrulamasını kapat
 # React Native / yeni JWT anahtarları nedeniyle platform 401 dönüyordu.
 # Bu fonksiyonlar token'ı header/body ile alıp kendi içinde doğruluyor.
@@ -16,6 +22,10 @@ verify_jwt = false
 
 # Misafir medya yükleme: body'de app_token ile yetki, JWT zorunlu değil
 [functions.upload-message-media]
+verify_jwt = false
+
+# Uygulama storage: RN JWT gateway sorunu; Bearer ile fonksiyon içinde doğrulama
+[functions.upload-app-storage]
 verify_jwt = false
 
 # Sohbet bildirimi: RN'de JWT gateway 401 verebiliyor; fonksiyon conversationId ile alıcıları sınırlar
@@ -38,7 +48,17 @@ verify_jwt = false
 [functions.public-contract]
 verify_jwt = false
 
+[functions.public-maliye]
+verify_jwt = false
+
 [functions.print-contract]
+verify_jwt = false
+
+[functions.print-incident-report]
+verify_jwt = false
+
+# KBS gateway köprüsü (Hetzner): KBS_GATEWAY_URL + KBS_GATEWAY_TOKEN; JWT RN'de sorun çıkarırsa false
+[functions.ops-proxy]
 verify_jwt = false
 
 # Hesap silme: JWT gateway'de RN'de 401 verebiliyor; fonksiyon Bearer + getUser ile doğrular

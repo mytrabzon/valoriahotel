@@ -13,9 +13,12 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { supabase } from '@/lib/supabase';
 import { adminTheme } from '@/constants/adminTheme';
 import { formatDateShort } from '@/lib/date';
+import { sendPdfToPrinterEmail } from '@/lib/printerEmail';
 
 const MONTH_NAMES = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 
@@ -54,6 +57,7 @@ export default function AdminSalaryHistoryScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [actingId, setActingId] = useState<string | null>(null);
+  const [mailSending, setMailSending] = useState(false);
 
   const load = useCallback(async () => {
     if (!staffId) return;
@@ -121,6 +125,34 @@ export default function AdminSalaryHistoryScreen() {
     }
   }, [payments, staffName]);
 
+  const exportPdf = useCallback(async (mode: 'share' | 'mail' = 'share') => {
+    const html = `
+      <!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      body{font-family:sans-serif;padding:20px;color:#333}
+      h1{font-size:18px} table{width:100%;border-collapse:collapse;font-size:11px}
+      th,td{border:1px solid #ddd;padding:6px 8px;text-align:left}
+      th{background:#f5f5f5}
+      </style></head><body>
+      <h1>${staffName} - Maaş Geçmişi</h1>
+      <p>Rapor tarihi: ${formatDateShort(new Date())}</p>
+      <table><tr><th>Dönem</th><th>Tarih</th><th>Saat</th><th>Tutar</th><th>Durum</th></tr>
+      ${payments
+        .map((p) => `<tr><td>${MONTH_NAMES[p.period_month - 1]} ${p.period_year}</td><td>${formatDateShort(p.payment_date)}</td><td>${formatTime(p.payment_time)}</td><td>${fmtMoney(Number(p.amount))}</td><td>${p.status === 'approved' ? 'Onaylandı' : p.status === 'rejected' ? 'Reddedildi' : 'Onay bekliyor'}</td></tr>`)
+        .join('')}
+      </table></body></html>`;
+    const { uri } = await Print.printToFileAsync({ html });
+    if (mode === 'mail') {
+      await sendPdfToPrinterEmail({
+        pdfUri: uri,
+        subject: `Maaş Geçmişi - ${staffName}`,
+        fileName: `maas-gecmisi-${String(staffId ?? 'personel')}.pdf`,
+      });
+      return;
+    }
+    const canShare = await Sharing.isAvailableAsync();
+    if (canShare) await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Maaş geçmişi (PDF)' });
+  }, [payments, staffId, staffName]);
+
   const statusIcon = (s: string) => (s === 'approved' ? 'checkmark-circle' : s === 'rejected' ? 'close-circle' : 'time');
   const statusColor = (s: string) => (s === 'approved' ? adminTheme.colors.success : s === 'rejected' ? adminTheme.colors.error : adminTheme.colors.warning);
 
@@ -148,6 +180,25 @@ export default function AdminSalaryHistoryScreen() {
           <TouchableOpacity style={styles.exportBtn} onPress={exportCsv}>
             <Ionicons name="download-outline" size={18} color={adminTheme.colors.accent} />
             <Text style={styles.exportBtnText}>Excel/CSV indir</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.exportBtn} onPress={() => exportPdf()}>
+            <Ionicons name="document-text-outline" size={18} color={adminTheme.colors.accent} />
+            <Text style={styles.exportBtnText}>PDF</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.exportBtn}
+            onPress={async () => {
+              setMailSending(true);
+              try {
+                await exportPdf('mail');
+              } finally {
+                setMailSending(false);
+              }
+            }}
+            disabled={mailSending}
+          >
+            {mailSending ? <ActivityIndicator size="small" color={adminTheme.colors.accent} /> : <Ionicons name="mail-outline" size={18} color={adminTheme.colors.accent} />}
+            <Text style={styles.exportBtnText}>Yazıcı Mail</Text>
           </TouchableOpacity>
         </View>
 

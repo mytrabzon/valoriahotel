@@ -13,7 +13,9 @@ export const CachedImage = memo(function CachedImage({ uri, source, ...props }: 
       {...props}
       source={finalSource}
       cachePolicy={props.cachePolicy ?? 'disk'}
-      transition={props.transition ?? 180}
+      /** 0: disk önbelleğinden anında gösterim; gezinmede “sonradan geliyor” hissini azaltır */
+      transition={props.transition ?? 0}
+      priority={props.priority ?? 'high'}
     />
   );
 });

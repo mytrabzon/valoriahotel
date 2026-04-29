@@ -192,6 +192,9 @@ export default function StockManagement() {
           style: 'destructive',
           onPress: async () => {
             try {
+              await supabase.from('barcode_scan_history').delete().eq('product_id', p.id);
+              await supabase.from('stock_alerts').delete().eq('product_id', p.id);
+              await supabase.from('stock_counts').delete().eq('product_id', p.id);
               await supabase.from('stock_movements').delete().eq('product_id', p.id);
               const { error } = await supabase.from('stock_products').delete().eq('id', p.id);
               if (error) throw error;
@@ -216,9 +219,10 @@ export default function StockManagement() {
           style: 'destructive',
           onPress: async () => {
             try {
+              await supabase.from('barcode_scan_history').delete().neq('id', '00000000-0000-0000-0000-000000000000');
               await supabase.from('stock_movements').delete().neq('id', '00000000-0000-0000-0000-000000000000');
               await supabase.from('stock_alerts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-              await supabase.from('stock_counts').delete().neq('id', '00000000-0000-0000-0000-0000-000000000000');
+              await supabase.from('stock_counts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
               const { error } = await supabase.from('stock_products').delete().neq('id', '00000000-0000-0000-0000-000000000000');
               if (error) throw error;
               await loadData();

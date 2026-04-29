@@ -2,7 +2,7 @@
  * Valoria Hotel - Bildirim gönderme servisi
  * In-app kayıt + Expo Push (Edge Function) ile cihaza push gönderir.
  */
-import { supabase } from '@/lib/supabase';
+import { supabase, supabaseAnonKey, supabaseUrl } from '@/lib/supabase';
 import type { BulkGuestTarget, BulkStaffTarget, BulkCategory } from '@/lib/notifications';
 import { log } from '@/lib/logger';
 
@@ -18,6 +18,8 @@ type ExpoPushFnResult = {
   pushTicketErrors?: string[];
 };
 
+type StaffRecipientRow = { staff_id: string };
+
 /** Push token’ları olan hedeflere Expo push gönderir (sessiz hata). */
 async function sendExpoPushToRecipients(params: {
   guestIds?: string[];
@@ -30,10 +32,10 @@ async function sendExpoPushToRecipients(params: {
   if (guestIds.length === 0 && staffIds.length === 0) return;
   try {
     const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData.session?.access_token;
+    const jwt = sessionData.session?.access_token ?? supabaseAnonKey;
     const { data: result, error } = await supabase.functions.invoke(EDGE_FN_PUSH, {
       body: { guestIds, staffIds, title, body, data },
-      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      headers: { Authorization: `Bearer ${jwt}` },
     });
     if (error) {
       log.warn('notificationService', 'sendExpoPush', error);
@@ -63,32 +65,102 @@ export interface SendNotificationParams {
   createdByStaffId?: string | null;
 }
 
+async function filterStaffRecipientsByPreference(
+  staffIds: string[],
+  notificationType?: string | null
+): Promise<string[]> {
+  if (staffIds.length === 0) return [];
+  const nt = (notificationType ?? '').trim();
+  if (!nt) return staffIds;
+  try {
+    const { data, error } = await supabase.rpc('filter_staff_notification_recipients', {
+      p_staff_ids: staffIds,
+      p_notification_type: nt,
+    });
+    if (error) {
+      log.warn('notificationService', 'filter_staff_notification_recipients', error);
+      return staffIds;
+    }
+    const rows = (data ?? []) as StaffRecipientRow[];
+    return rows.map((r) => r.staff_id).filter(Boolean);
+  } catch (e) {
+    log.warn('notificationService', 'filter staff recipients exception', e);
+    return staffIds;
+  }
+}
+
+/**
+ * supabase.from().insert() PostgREST'te `Prefer: return=representation` (ve bazen ?select) ile
+ * RETURNING çalıştırır; dönen satır için SELECT RLS devreye girer → alıcıya giden satırı ekleyen 403 alır.
+ * Doğrudan REST + `return=minimal`: yanıt gövdesi yok, SELECT RLS yok, sadece INSERT WITH CHECK.
+ */
+/** Tek satır veya toplu (JSON dizi) — ASLA return=representation kullanmaz; Logflare'de ?select= görünmemeli. */
+export async function postNotificationsReturnMinimal(
+  body: Record<string, unknown> | Record<string, unknown>[]
+): Promise<{ error: { message: string } | null }> {
+  if (!supabaseUrl) return { error: { message: 'Supabase URL yok' } };
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) return { error: { message: 'Oturum yok' } };
+  if (Array.isArray(body) && body.length === 0) return { error: null };
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/notifications`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${accessToken}`,
+        Prefer: 'return=minimal',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let message = res.statusText;
+      try {
+        const j = (await res.json()) as { message?: string; error?: string; details?: string };
+        message = j.message || j.error || j.details || message;
+      } catch {
+        const t = await res.text();
+        if (t) message = t.slice(0, 400);
+      }
+      return { error: { message } };
+    }
+    return { error: null };
+  } catch (e) {
+    return { error: { message: (e as Error).message ?? 'Ağ hatası' } };
+  }
+}
+
 /** Tekil bildirim gönder */
 export async function sendNotification(params: SendNotificationParams): Promise<{ id?: string; error?: string }> {
   const { guestId, staffId, title, body, notificationType, category, data, createdByStaffId } = params;
   if (!guestId && !staffId) return { error: 'guestId veya staffId gerekli' };
 
-  const { data: row, error } = await supabase
-    .from('notifications')
-    .insert({
-      guest_id: guestId ?? null,
-      staff_id: staffId ?? null,
-      title,
-      body: body ?? null,
-      notification_type: notificationType ?? null,
-      category: category ?? 'bulk',
-      data: data ?? {},
-      created_by: createdByStaffId ?? null,
-      sent_via: 'both',
-      sent_at: new Date().toISOString(),
-    })
-    .select('id')
-    .single();
-
-  if (error) return { error: error.message };
-  const staffIds = staffId ? [typeof staffId === 'string' ? staffId : String(staffId)] : [];
+  const originalStaffIds = staffId ? [typeof staffId === 'string' ? staffId : String(staffId)] : [];
+  const staffIds = await filterStaffRecipientsByPreference(originalStaffIds, notificationType);
   const guestIds = guestId ? [typeof guestId === 'string' ? guestId : String(guestId)] : [];
-  if (guestIds.length > 0 || staffIds.length > 0) {
+  const resolvedStaffId = staffIds.length > 0 ? staffIds[0] : null;
+
+  if (!resolvedStaffId && guestIds.length === 0) {
+    return {};
+  }
+
+  const { error } = await postNotificationsReturnMinimal({
+    guest_id: guestId ?? null,
+    staff_id: resolvedStaffId,
+    title,
+    body: body ?? null,
+    notification_type: notificationType ?? null,
+    category: category ?? 'bulk',
+    data: data ?? {},
+    created_by: createdByStaffId ?? null,
+    sent_via: 'both',
+    sent_at: new Date().toISOString(),
+  });
+
+  // Push'u insert sonucundan bağımsız dene: RLS/insert hata verse bile (ör. beğeni/yorum) cihaz bildirimi kaybolmasın
+  if (staffIds.length > 0 || guestIds.length > 0) {
     try {
       await sendExpoPushToRecipients({
         guestIds: guestIds.length ? guestIds : undefined,
@@ -101,7 +173,12 @@ export async function sendNotification(params: SendNotificationParams): Promise<
       log.warn('notificationService', 'push after sendNotification', e);
     }
   }
-  return { id: row?.id };
+
+  if (error) {
+    log.warn('notificationService', 'notifications tablosu insert hatası (push yine de denendi)', error.message);
+    return { error: error.message };
+  }
+  return {};
 }
 
 /** Tüm misafirlere toplu bildirim (hedefe göre filtre) */
@@ -165,8 +242,8 @@ export async function sendBulkToGuests(params: {
     sent_at: new Date().toISOString(),
   }));
 
-  const { error: insertError } = await supabase.from('notifications').insert(rows);
-  if (insertError) return { count: 0, error: insertError.message };
+  const { error: insErr } = await postNotificationsReturnMinimal(rows);
+  if (insErr) return { count: 0, error: insErr.message };
   const guestIds = list.map((g: { id: string }) => g.id);
   sendExpoPushToRecipients({ guestIds, title, body, data: { screen: 'notifications' } }).catch(() => {});
   return { count: rows.length };
@@ -178,9 +255,13 @@ export async function sendBulkToStaff(params: {
   title?: string;
   body: string;
   createdByStaffId: string;
+  notificationType?: string;
+  category?: 'emergency' | 'guest' | 'staff' | 'admin' | 'bulk';
+  data?: Record<string, unknown>;
 }): Promise<{ count: number; error?: string }> {
-  const { target, title: titleParam, body, createdByStaffId } = params;
+  const { target, title: titleParam, body, createdByStaffId, notificationType, category, data } = params;
   const title = (titleParam && titleParam.trim()) || 'Toplu Duyuru';
+  const resolvedNotificationType = (notificationType && notificationType.trim()) || 'bulk_staff';
 
   let query = supabase.from('staff').select('id').eq('is_active', true);
 
@@ -199,27 +280,32 @@ export async function sendBulkToStaff(params: {
   const list = staffList ?? [];
   if (list.length === 0) return { count: 0 };
 
-  const rows = list.map((s: { id: string }) => ({
+  const filteredStaffIds = await filterStaffRecipientsByPreference(
+    list.map((s: { id: string }) => s.id),
+    resolvedNotificationType
+  );
+  if (filteredStaffIds.length === 0) return { count: 0 };
+
+  const rows = filteredStaffIds.map((staffId) => ({
     guest_id: null,
-    staff_id: s.id,
+    staff_id: staffId,
     title,
     body,
-    category: 'bulk',
-    notification_type: 'bulk_staff',
-    data: {},
+    category: category ?? 'bulk',
+    notification_type: resolvedNotificationType,
+    data: data ?? {},
     created_by: createdByStaffId,
     sent_via: 'in_app',
     sent_at: new Date().toISOString(),
   }));
 
-  const { error: insertError } = await supabase.from('notifications').insert(rows);
-  if (insertError) return { count: 0, error: insertError.message };
-  const staffIds = list.map((s: { id: string }) => s.id);
+  const { error: insErr } = await postNotificationsReturnMinimal(rows);
+  if (insErr) return { count: 0, error: insErr.message };
   sendExpoPushToRecipients({
-    staffIds,
+    staffIds: filteredStaffIds,
     title,
     body,
-    data: { screen: 'notifications' },
+    data: { screen: 'notifications', notificationType: resolvedNotificationType, ...(data ?? {}) },
   }).catch(() => {});
   return { count: rows.length };
 }
@@ -267,12 +353,22 @@ export async function notifyAdmins(params: {
   title: string;
   body?: string | null;
   data?: Record<string, unknown>;
+  /** Sohbet katılımcıları notify-conversation-recipients ile gideceği adminlere tekrar admin push yollanmasın. */
+  conversationId?: string | null;
 }): Promise<{ sent?: number; failed?: number; error?: string }> {
-  const { title, body, data } = params;
+  const { title, body, data, conversationId } = params;
   if (!title?.trim()) return { error: 'title gerekli' };
   try {
+    const { data: s } = await supabase.auth.getSession();
+    const jwt = s.session?.access_token ?? supabaseAnonKey;
     const { data: result, error } = await supabase.functions.invoke(EDGE_FN_NOTIFY_ADMINS, {
-      body: { title: title.trim(), body: body ?? null, data: data ?? {} },
+      body: {
+        title: title.trim(),
+        body: body ?? null,
+        data: data ?? {},
+        ...(conversationId ? { conversationId: String(conversationId) } : {}),
+      },
+      headers: { Authorization: `Bearer ${jwt}` },
     });
     if (error) {
       log.warn('notificationService', 'notifyAdmins', error);
@@ -318,14 +414,21 @@ export async function sendEmergencyToAllGuests(params: {
     sent_at: new Date().toISOString(),
   }));
 
-  const { error: insertError } = await supabase.from('notifications').insert(rows);
-  if (insertError) return { count: 0, error: insertError.message };
+  const { error: insErr } = await postNotificationsReturnMinimal(rows);
+  if (insErr) return { count: 0, error: insErr.message };
   const guestIds = list.map((g: { id: string }) => g.id);
   sendExpoPushToRecipients({
     guestIds,
     title: params.title,
     body: params.body,
-    data: { screen: 'notifications', category: 'emergency' },
+    data: {
+      screen: 'notifications',
+      category: 'emergency',
+      emergency: true,
+      notificationType: params.notificationType,
+      androidChannelId: 'valoria_emergency_alert',
+      sound: 'emergency_alert.wav',
+    },
   }).catch(() => {});
   return { count: rows.length };
 }

@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { adminTheme } from '@/constants/adminTheme';
 import { formatDateShort } from '@/lib/date';
+import { sendPdfToPrinterEmail } from '@/lib/printerEmail';
 
 type CategorySum = { category_id: string; category_name: string; total: number; items: { expense_date: string; staff_name: string; description: string | null; amount: number }[] };
 
@@ -35,6 +36,7 @@ export default function ExpensesByCategoryScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState(getMonthYear());
+  const [mailSending, setMailSending] = useState(false);
 
   const load = useCallback(async () => {
     const start = new Date(period.year, period.month, 1).toISOString().slice(0, 10);
@@ -96,7 +98,7 @@ export default function ExpensesByCategoryScreen() {
     }
   }, [data, period]);
 
-  const exportPdf = useCallback(async () => {
+  const exportPdf = useCallback(async (mode: 'share' | 'mail' = 'share') => {
     const monthLabel = `${MONTH_NAMES[period.month]} ${period.year}`;
     let html = `
       <!DOCTYPE html><html><head><meta charset="utf-8"><style>
@@ -123,10 +125,19 @@ export default function ExpensesByCategoryScreen() {
     html += '</body></html>';
     try {
       const { uri } = await Print.printToFileAsync({ html });
+      if (mode === 'mail') {
+        await sendPdfToPrinterEmail({
+          pdfUri: uri,
+          subject: `Kategori Bazlı Harcama Raporu ${monthLabel}`,
+          fileName: `harcama-kategori-${period.year}-${period.month + 1}.pdf`,
+        });
+        return;
+      }
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Harcama raporu (PDF)' });
     } catch (e) {
       console.warn('PDF export failed', e);
+      if (mode === 'mail') throw e;
     }
   }, [data, period]);
 
@@ -187,6 +198,22 @@ export default function ExpensesByCategoryScreen() {
           <TouchableOpacity style={styles.exportBtn} onPress={exportPdf} activeOpacity={0.8}>
             <Ionicons name="document-text-outline" size={20} color={adminTheme.colors.accent} />
             <Text style={styles.exportBtnText}>PDF yazdır</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.exportBtn}
+            onPress={async () => {
+              setMailSending(true);
+              try {
+                await exportPdf('mail');
+              } finally {
+                setMailSending(false);
+              }
+            }}
+            activeOpacity={0.8}
+            disabled={mailSending}
+          >
+            {mailSending ? <ActivityIndicator size="small" color={adminTheme.colors.accent} /> : <Ionicons name="mail-outline" size={20} color={adminTheme.colors.accent} />}
+            <Text style={styles.exportBtnText}>Yazıcı Mail</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

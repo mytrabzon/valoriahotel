@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { Errors } from '../../shared/errors/appError.js';
 import { writeAudit } from '../audit/auditService.js';
+import { requireValidMrzForUpsert } from '../../utils/mrzScanGate.js';
 
 const ParsedDocumentSchema = z.object({
   documentType: z.enum(['passport', 'id_card', 'residence_permit', 'other']),
@@ -25,7 +26,8 @@ const UpsertSchema = z.object({
   arrivalGroupId: z.string().uuid().nullable().optional(),
   parsed: ParsedDocumentSchema,
   scanConfidence: z.number().nullable().optional(),
-  rawMrz: z.string().nullable().optional()
+  rawMrz: z.string().nullable().optional(),
+  ocrEngine: z.string().nullable().optional()
 });
 
 export const documentsRoutes: FastifyPluginAsync = async (app) => {
@@ -34,6 +36,15 @@ export const documentsRoutes: FastifyPluginAsync = async (app) => {
     if (!auth) throw Errors.unauthorized();
 
     const body = UpsertSchema.parse(req.body);
+    const mrzExtra = requireValidMrzForUpsert({
+      parsed: body.parsed,
+      rawMrz: body.rawMrz ?? null,
+      ocrEngine: body.ocrEngine ?? null
+    });
+    const scanMeta =
+      'mrz_checksum_valid' in mrzExtra
+        ? { scanned_by_user_id: auth.authUserId as string }
+        : ({} as Record<string, never>);
     const normalizedDocNo = body.parsed.documentNumber ? body.parsed.documentNumber.trim() : null;
     const fullName =
       body.parsed.fullName ??
@@ -68,7 +79,9 @@ export const documentsRoutes: FastifyPluginAsync = async (app) => {
             raw_mrz: body.parsed.rawMrz ?? body.rawMrz ?? null,
             parsed_payload: body.parsed,
             scan_confidence: body.scanConfidence ?? body.parsed.confidence ?? null,
-            scan_status: scanStatus
+            scan_status: scanStatus,
+            ...mrzExtra,
+            ...scanMeta
           })
           .eq('id', existing.id)
           .select('id, guest_id, scan_status')
@@ -123,7 +136,9 @@ export const documentsRoutes: FastifyPluginAsync = async (app) => {
         raw_mrz: body.parsed.rawMrz ?? body.rawMrz ?? null,
         parsed_payload: body.parsed,
         scan_confidence: body.scanConfidence ?? body.parsed.confidence ?? null,
-        scan_status: scanStatus
+        scan_status: scanStatus,
+        ...mrzExtra,
+        ...scanMeta
       })
       .select('id, scan_status')
       .single();
@@ -157,6 +172,48 @@ export const documentsRoutes: FastifyPluginAsync = async (app) => {
     });
 
     return { ok: true, data: { guestId: guest.id, guestDocumentId: doc.id, scanStatus: doc.scan_status } };
+  });
+
+  app.get('/documents/mrz-recent', async (req) => {
+    const auth = req.auth;
+    if (!auth) throw Errors.unauthorized();
+
+    const { data: docs, error: e0 } = await app.supabase
+      .schema('ops')
+      .from('guest_documents')
+      .select(
+        'id, created_at, document_type, document_number, nationality_code, expiry_date, raw_mrz, scan_status, guest_id, mrz_checksum_valid, ocr_engine'
+      )
+      .eq('hotel_id', auth.hotelId)
+      .not('raw_mrz', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(500);
+    if (e0) throw Errors.internal('Failed to load passport MRZ list');
+
+    const list = (docs ?? []) as Array<{
+      id: string;
+      guest_id: string | null;
+      [k: string]: unknown;
+    }>;
+    const gids = [...new Set(list.map((d) => d.guest_id).filter(Boolean))] as string[];
+
+    const guestMap: Record<string, { full_name: string | null; first_name: string | null; last_name: string | null }> = {};
+    if (gids.length) {
+      const { data: guests, error: e1 } = await app.supabase
+        .schema('ops')
+        .from('guests')
+        .select('id, full_name, first_name, last_name')
+        .in('id', gids);
+      if (e1) throw Errors.internal('Failed to load guest names');
+      for (const g of guests ?? []) {
+        const row = g as { id: string; full_name: string | null; first_name: string | null; last_name: string | null };
+        guestMap[row.id] = { full_name: row.full_name, first_name: row.first_name, last_name: row.last_name };
+      }
+    }
+
+    const items = list.map((d) => ({ ...d, guest: d.guest_id ? guestMap[d.guest_id] ?? null : null }));
+
+    return { ok: true, data: items };
   });
 };
 

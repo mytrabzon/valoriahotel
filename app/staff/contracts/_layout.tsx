@@ -1,9 +1,11 @@
 import { TouchableOpacity } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 
 export default function StaffContractsLayout() {
   const router = useRouter();
+  const { t } = useTranslation();
   const headerLeft = () => (
     <TouchableOpacity onPress={() => router.back()} style={{ marginLeft: 8, padding: 8 }} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
       <Ionicons name="arrow-back" size={24} color="#1a202c" />
@@ -19,7 +21,7 @@ export default function StaffContractsLayout() {
         headerLeft,
       }}
     >
-      <Stack.Screen name="all" options={{ title: 'Tüm Sözleşmeler' }} />
+      <Stack.Screen name="all" options={{ title: t('staffContractsAllTitle') }} />
     </Stack>
   );
 }

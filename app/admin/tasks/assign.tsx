@@ -27,6 +27,7 @@ import {
   STAFF_ROLE_LABELS,
 } from '@/lib/staffAssignments';
 import { uriToArrayBuffer, copyAndroidContentUriToCacheForPreview } from '@/lib/uploadMedia';
+import { uploadBufferToPublicBucket } from '@/lib/storagePublicUpload';
 import { ensureCameraPermission } from '@/lib/cameraPermission';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
 import { MAX_ASSIGNMENT_ATTACHMENTS, STAFF_TASK_MEDIA_BUCKET } from '@/lib/staffAssignmentMedia';
@@ -226,20 +227,20 @@ export default function AdminAssignTaskScreen() {
         const item = pendingAttachments[i];
         const ext = item.type === 'video' ? 'mp4' : 'jpg';
         const contentType = item.type === 'video' ? 'video/mp4' : 'image/jpeg';
-        const fileName = `${assignmentId}/${Date.now()}_${i}.${ext}`;
         let buf: ArrayBuffer;
         try {
           buf = await uriToArrayBuffer(item.uri);
         } catch (e) {
           throw new Error((e as Error)?.message ?? 'Medya okunamadı');
         }
-        const { error: upErr } = await supabase.storage.from(STAFF_TASK_MEDIA_BUCKET).upload(fileName, buf, {
+        const { publicUrl } = await uploadBufferToPublicBucket({
+          bucketId: STAFF_TASK_MEDIA_BUCKET,
+          buffer: buf,
           contentType,
-          upsert: true,
+          extension: ext,
+          subfolder: `tasks/${assignmentId}`,
         });
-        if (upErr) throw upErr;
-        const { data: pub } = supabase.storage.from(STAFF_TASK_MEDIA_BUCKET).getPublicUrl(fileName);
-        uploadedUrls.push(pub.publicUrl);
+        uploadedUrls.push(publicUrl);
       }
       if (uploadedUrls.length > 0) {
         const { error: patchErr } = await supabase

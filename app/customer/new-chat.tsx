@@ -5,18 +5,18 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  Image,
+  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
 import { guestGetOrCreateConversationWithStaff } from '@/lib/messagingApi';
 import { supabase } from '@/lib/supabase';
-import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
+import { syncGuestMessagingAppToken } from '@/lib/getOrCreateGuestForCaller';
 import { MESSAGING_COLORS } from '@/lib/messaging';
 import { StaffNameWithBadge, AvatarWithBadge } from '@/components/VerifiedBadge';
 import { CachedImage } from '@/components/CachedImage';
 import { sortStaffAdminFirst } from '@/lib/sortStaffAdminFirst';
+import { useTranslation } from 'react-i18next';
 
 type StaffRow = {
   id: string;
@@ -30,8 +30,8 @@ type StaffRow = {
 
 export default function NewChatScreen() {
   const router = useRouter();
+  const { t } = useTranslation();
   const params = useLocalSearchParams<{ staffId?: string }>();
-  const { appToken, setAppToken } = useGuestMessagingStore();
   const [staff, setStaff] = useState<StaffRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [startingId, setStartingId] = useState<string | null>(null);
@@ -46,21 +46,10 @@ export default function NewChatScreen() {
     }
   }, [loading, params.staffId]);
 
-  /** Giriş yapmış kullanıcı (Apple/Google dahil) için app_token getir/oluştur. */
-  const ensureAppToken = async (): Promise<string | null> => {
-    let token = useGuestMessagingStore.getState().appToken;
-    if (token) return token;
-    await supabase.auth.refreshSession();
-    const { data: { session } } = await supabase.auth.getSession();
-    const row = await getOrCreateGuestForCaller(session?.user);
-    const t = row?.app_token ?? null;
-    if (t) await setAppToken(t);
-    return t;
-  };
-
+  /** Oturum varsa: mesajlaşma token’ını daima sunucuyla hizala (yalnızca depoda eski app_token varken yönlendirme/oluşturma boş döner). */
   const loadStaff = async () => {
     const { data: { session } } = await supabase.auth.getSession();
-    if (session) await ensureAppToken();
+    if (session) await syncGuestMessagingAppToken();
     // Giriş yapmış kullanıcı: staff tablosundan çek (verification_badge dahil)
     if (session) {
       const { data: directData } = await supabase
@@ -84,8 +73,7 @@ export default function NewChatScreen() {
   };
 
   const startChat = async (staffId: string) => {
-    let token = appToken;
-    if (!token) token = await ensureAppToken();
+    const token = await syncGuestMessagingAppToken();
     if (!token) {
       router.replace('/customer/(tabs)/messages');
       return;
@@ -93,7 +81,11 @@ export default function NewChatScreen() {
     setStartingId(staffId);
     const convId = await guestGetOrCreateConversationWithStaff(token, staffId);
     setStartingId(null);
-    if (convId) router.replace({ pathname: '/customer/chat/[id]', params: { id: convId } });
+    if (convId) {
+      router.replace({ pathname: '/customer/chat/[id]', params: { id: convId } });
+      return;
+    }
+    Alert.alert(t('chatMessageBlockedTitle'), t('chatMessageBlockedBody'));
   };
 
   if (loading) {
@@ -106,15 +98,15 @@ export default function NewChatScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.sectionTitle}>Personel ile sohbet başlat</Text>
+      <Text style={styles.sectionTitle}>{t('newChatStartWithStaff')}</Text>
       <FlatList
         data={staff}
         keyExtractor={(item) => item.id}
         ListEmptyComponent={
           !loading ? (
             <View style={styles.empty}>
-              <Text style={styles.emptyText}>Listelenecek personel bulunamadı.</Text>
-              <Text style={styles.emptySub}>Aktif personel eklenince burada görünecektir.</Text>
+              <Text style={styles.emptyText}>{t('newChatNoStaff')}</Text>
+              <Text style={styles.emptySub}>{t('newChatNoStaffHint')}</Text>
             </View>
           ) : null
         }
@@ -129,10 +121,10 @@ export default function NewChatScreen() {
               <CachedImage uri={item.profile_image || 'https://via.placeholder.com/56'} style={styles.avatar} contentFit="cover" />
             </AvatarWithBadge>
             <View style={styles.rowBody}>
-              <StaffNameWithBadge name={item.full_name || 'Personel'} badge={item.verification_badge ?? null} textStyle={styles.name} />
+              <StaffNameWithBadge name={item.full_name || t('staffTab')} badge={item.verification_badge ?? null} textStyle={styles.name} />
               <Text style={styles.dept}>
                 {item.department || item.role || '—'}
-                {item.is_online ? '  ·  🟢 Çevrimiçi' : ''}
+                {item.is_online ? `  ·  🟢 ${t('online')}` : ''}
               </Text>
             </View>
             {startingId === item.id ? (

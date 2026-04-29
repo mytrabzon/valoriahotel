@@ -7,6 +7,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEY = 'valoria_guest_messaging_token';
 
+/** Misafir mesaj listesi (customer tabs) — hesap değişiminde/çıkışta temizlenir */
+export const GUEST_CUSTOMER_MESSAGES_LIST_CACHE_KEY = 'customer_messages_list_cache_v1';
+
 interface GuestMessagingState {
   appToken: string | null;
   unreadCount: number;
@@ -20,9 +23,14 @@ export const useGuestMessagingStore = create<GuestMessagingState>((set, get) => 
   unreadCount: 0,
 
   setAppToken: async (token) => {
-    if (token) await AsyncStorage.setItem(KEY, token);
-    else await AsyncStorage.removeItem(KEY);
+    // Belleği önce güncelle: AsyncStorage await edilirken gönder düğmesi eski token ile RPC çağırıyordu.
     set({ appToken: token });
+    try {
+      if (token) await AsyncStorage.setItem(KEY, token);
+      else await AsyncStorage.removeItem(KEY);
+    } catch {
+      /* kalıcı yazım hatası; bellek zaten doğru */
+    }
   },
 
   setUnreadCount: (n) => set({ unreadCount: n }),
@@ -32,3 +40,9 @@ export const useGuestMessagingStore = create<GuestMessagingState>((set, get) => 
     set({ appToken: stored });
   },
 }));
+
+/** Çıkış veya hesap değişiminde: sunucu token eşleşmesi + yerel sohbet listesi önbelleği kalksın */
+export async function clearGuestMessagingLocalState(): Promise<void> {
+  await useGuestMessagingStore.getState().setAppToken(null);
+  await AsyncStorage.removeItem(GUEST_CUSTOMER_MESSAGES_LIST_CACHE_KEY).catch(() => {});
+}

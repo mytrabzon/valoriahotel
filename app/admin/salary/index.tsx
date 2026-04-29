@@ -30,6 +30,7 @@ type PaymentRow = {
   staff_id: string;
   period_month: number;
   period_year: number;
+  created_at: string;
   amount: number;
   payment_date: string;
   status: string;
@@ -79,9 +80,10 @@ export default function AdminSalaryIndexScreen() {
 
     const { data: paymentsData } = await supabase
       .from('salary_payments')
-      .select('id, staff_id, period_month, period_year, amount, payment_date, status, staff_approved_at, staff_rejected_at, rejection_reason')
+      .select('id, staff_id, period_month, period_year, created_at, amount, payment_date, status, staff_approved_at, staff_rejected_at, rejection_reason')
       .order('period_year', { ascending: false })
-      .order('period_month', { ascending: false });
+      .order('period_month', { ascending: false })
+      .order('created_at', { ascending: false });
 
     const payments = (paymentsData ?? []) as PaymentRow[];
     const now = new Date();

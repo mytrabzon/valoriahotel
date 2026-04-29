@@ -1,2 +1,2 @@
-// Ana sayfa: personel paylaşımları, ekip, beğeni ve yorumlar
+// Ana sayfa: feed + karşılama (feed içinde)
 export { default } from '../feed/index';

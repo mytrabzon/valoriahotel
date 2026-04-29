@@ -1,10 +1,11 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { GatewayClient } from '../../integrations/gateway-client/gatewayClient.js';
 import { hasPermission } from '../permissions/permissionService.js';
 import { assertHasPermission } from '../permissions/permission.js';
 import { writeAudit } from '../audit/auditService.js';
 import { Errors } from '../../shared/errors/appError.js';
+import { recordKbsGatewayResult } from '../kbs/kbsLogService.js';
 
 const SubmitSingleSchema = z.object({
   guestDocumentId: z.string().uuid(),
@@ -135,7 +136,7 @@ export const submissionsRoutes: FastifyPluginAsync = async (app) => {
     return { id: existing.id as string, idempotent: true };
   }
 
-  app.post('/submissions/check-in', async (req) => {
+  const handleCheckIn = async (req: FastifyRequest) => {
     const auth = req.auth;
     if (!auth) throw Errors.unauthorized();
 
@@ -184,6 +185,15 @@ export const submissionsRoutes: FastifyPluginAsync = async (app) => {
       return { ok: true, data: { transactionId: tx.id, idempotent: true } };
     }
 
+    await app.supabase
+      .schema('ops')
+      .from('official_submission_transactions')
+      .update({
+        kbs_status: 'pending',
+        kbs_last_attempt_at: new Date().toISOString()
+      })
+      .eq('id', tx.id);
+
     const ctx = await loadGatewaySubmitContext({ hotelId: auth.hotelId, guestDocumentId: body.guestDocumentId, stayAssignmentId });
     const gwRes = await gw.post<{ externalReference?: string; summary?: unknown }>('/gateway/check-in', {
       hotelId: auth.hotelId,
@@ -194,25 +204,65 @@ export const submissionsRoutes: FastifyPluginAsync = async (app) => {
     });
 
     if (!gwRes.ok) {
+      const now = new Date().toISOString();
       await app.supabase
         .schema('ops')
         .from('official_submission_transactions')
-        .update({ status: 'failed', error_message: gwRes.error.message, updated_at: new Date().toISOString() })
+        .update({
+          status: 'failed',
+          error_message: gwRes.error.message,
+          updated_at: now,
+          kbs_status: 'failed',
+          kbs_last_attempt_at: now,
+          kbs_error_code: gwRes.error.code,
+          kbs_error_message: gwRes.error.message,
+          kbs_response_payload: null
+        })
         .eq('id', tx.id);
+      await recordKbsGatewayResult(app.supabase, {
+        hotelId: auth.hotelId,
+        transactionId: tx.id,
+        guestDocumentId: body.guestDocumentId,
+        status: 'failed',
+        errorMessage: gwRes.error.message,
+        requestSummary: { transactionType: 'check_in', guestDocumentId: body.guestDocumentId, stayAssignmentId }
+      });
       return { ok: false, error: gwRes.error };
     }
 
+    const sentAt = new Date().toISOString();
     await app.supabase
       .schema('ops')
       .from('official_submission_transactions')
-      .update({ status: 'submitted', external_reference: gwRes.data.externalReference ?? null, submitted_at: new Date().toISOString() })
+      .update({
+        status: 'submitted',
+        external_reference: gwRes.data.externalReference ?? null,
+        submitted_at: sentAt,
+        kbs_status: 'success',
+        kbs_last_attempt_at: sentAt,
+        kbs_sent_at: sentAt,
+        kbs_error_code: null,
+        kbs_error_message: null,
+        kbs_response_payload: gwRes.data as object
+      })
       .eq('id', tx.id);
+
+    await recordKbsGatewayResult(app.supabase, {
+      hotelId: auth.hotelId,
+      transactionId: tx.id,
+      guestDocumentId: body.guestDocumentId,
+      status: 'success',
+      responseSummary: gwRes.data
+    });
 
     // Best-effort status update (authoritative status is still ops tables).
     await app.supabase.schema('ops').from('guest_documents').update({ scan_status: 'submitted', submitted_at: new Date().toISOString() }).eq('id', body.guestDocumentId);
     await app.supabase.schema('ops').from('stay_assignments').update({ stay_status: 'checked_in' }).eq('id', stayAssignmentId);
     return { ok: true, data: { transactionId: tx.id, ...gwRes.data } };
-  });
+  };
+
+  app.post('/submissions/check-in', handleCheckIn);
+  app.post('/kbs/check-in', handleCheckIn);
 
   app.post('/submissions/retry', async (req) => {
     const auth = req.auth;
@@ -235,10 +285,18 @@ export const submissionsRoutes: FastifyPluginAsync = async (app) => {
     if (tx.status !== 'failed') throw Errors.conflict('Only failed transactions can be retried');
     if (!tx.guest_document_id || !tx.stay_assignment_id) throw Errors.badRequest('Transaction missing references');
 
+    const retryStarted = new Date().toISOString();
     await app.supabase
       .schema('ops')
       .from('official_submission_transactions')
-      .update({ status: 'processing', retry_count: (tx.retry_count ?? 0) + 1, error_message: null, updated_at: new Date().toISOString() })
+      .update({
+        status: 'processing',
+        retry_count: (tx.retry_count ?? 0) + 1,
+        error_message: null,
+        updated_at: retryStarted,
+        kbs_status: 'pending',
+        kbs_last_attempt_at: retryStarted
+      })
       .eq('id', tx.id);
 
     const gatewayPath = tx.transaction_type === 'check_out' ? '/gateway/check-out' : '/gateway/check-in';
@@ -253,19 +311,56 @@ export const submissionsRoutes: FastifyPluginAsync = async (app) => {
     });
 
     if (!gwRes.ok) {
+      const now = new Date().toISOString();
       await app.supabase
         .schema('ops')
         .from('official_submission_transactions')
-        .update({ status: 'failed', error_message: gwRes.error.message, updated_at: new Date().toISOString() })
+        .update({
+          status: 'failed',
+          error_message: gwRes.error.message,
+          updated_at: now,
+          kbs_status: 'failed',
+          kbs_last_attempt_at: now,
+          kbs_error_code: gwRes.error.code,
+          kbs_error_message: gwRes.error.message,
+          kbs_response_payload: null
+        })
         .eq('id', tx.id);
+      await recordKbsGatewayResult(app.supabase, {
+        hotelId: auth.hotelId,
+        transactionId: tx.id,
+        guestDocumentId: tx.guest_document_id,
+        status: 'failed',
+        errorMessage: gwRes.error.message,
+        requestSummary: { transactionType: tx.transaction_type, retry: true }
+      });
       return { ok: false, error: gwRes.error };
     }
 
+    const sentAt = new Date().toISOString();
     await app.supabase
       .schema('ops')
       .from('official_submission_transactions')
-      .update({ status: 'submitted', external_reference: gwRes.data.externalReference ?? null, submitted_at: new Date().toISOString() })
+      .update({
+        status: 'submitted',
+        external_reference: gwRes.data.externalReference ?? null,
+        submitted_at: sentAt,
+        kbs_status: 'success',
+        kbs_last_attempt_at: sentAt,
+        kbs_sent_at: sentAt,
+        kbs_error_code: null,
+        kbs_error_message: null,
+        kbs_response_payload: gwRes.data as object
+      })
       .eq('id', tx.id);
+
+    await recordKbsGatewayResult(app.supabase, {
+      hotelId: auth.hotelId,
+      transactionId: tx.id,
+      guestDocumentId: tx.guest_document_id,
+      status: 'success',
+      responseSummary: gwRes.data
+    });
 
     if (tx.transaction_type === 'check_out') {
       await app.supabase.schema('ops').from('stay_assignments').update({ stay_status: 'checked_out', check_out_at: new Date().toISOString() }).eq('id', tx.stay_assignment_id);

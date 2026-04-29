@@ -6,26 +6,30 @@ const devClientScheme = 'exp+valoria-hotel';
 const easProfile = process.env.EAS_BUILD_PROFILE;
 const expoPushIosMode =
   easProfile === 'production' || easProfile === 'preview' ? 'production' : 'development';
+const easPlatform = process.env.EAS_BUILD_PLATFORM;
+const googleServicesFile =
+  process.env.GOOGLE_SERVICES_JSON || './google-services.json';
 
 const baseConfig = {
   name: 'Valoria',
   slug: 'valoria-hotel',
-  version: '2.2.5',
+  version: '2.2.8',
   orientation: 'portrait',
   icon: './assets/icon.png',
   scheme: 'valoria',
   userInterfaceStyle: 'automatic',
-  newArchEnabled: false,
+  /** Reanimated 4.x + react-native-worklets: New Architecture zorunlu (RNReanimated.podspec). */
+  newArchEnabled: true,
   splash: {
-    image: './assets/splash-icon.png',
+    image: './assets/splash-empty.png',
     resizeMode: 'contain',
-    backgroundColor: '#ffffff',
+    backgroundColor: '#1a365d',
   },
   ios: {
     supportsTablet: false,
     bundleIdentifier: 'com.valoria.hotel',
-    buildNumber: '12',
-    newArchEnabled: false,
+    buildNumber: '15',
+    newArchEnabled: true,
     infoPlist: {
       NSCameraUsageDescription: 'Sözleşme onayı için QR kod okutmanız gerekiyor.',
       NSPhotoLibraryUsageDescription: 'Profil ve belge yükleme için galeri erişimi.',
@@ -36,11 +40,13 @@ const baseConfig = {
     },
   },
   android: {
-    versionCode: 14,
+    newArchEnabled: true,
+    versionCode: 16,
     softwareKeyboardLayoutMode: 'resize',
-    googleServicesFile: './google-services.json',
+    ...(easPlatform === 'ios' ? {} : { googleServicesFile }),
     adaptiveIcon: {
-      foregroundImage: './assets/adaptive-icon.png',
+      // Keep logo inside Android adaptive icon safe zone.
+      foregroundImage: './assets/adaptive-icon-foreground.png',
       backgroundColor: '#0c1222',
     },
     package: 'com.valoria.hotel',
@@ -74,12 +80,12 @@ const baseConfig = {
     [
       'expo-splash-screen',
       {
-        image: './assets/splash-icon.png',
+        image: './assets/splash-empty.png',
         resizeMode: 'contain',
-        backgroundColor: '#ffffff',
-        imageWidth: 240,
-        android: { imageWidth: 240, backgroundColor: '#ffffff' },
-        ios: { backgroundColor: '#ffffff' },
+        backgroundColor: '#1a365d',
+        imageWidth: 1,
+        android: { imageWidth: 1, backgroundColor: '#1a365d' },
+        ios: { backgroundColor: '#1a365d' },
       },
     ],
     [
@@ -122,7 +128,6 @@ const baseConfig = {
     public: {
       supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
       supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
-      railwayApiUrl: process.env.EXPO_PUBLIC_RAILWAY_API_URL,
     },
   },
   owner: 'valoriahotel',
@@ -131,6 +136,9 @@ const baseConfig = {
 const expoWithBuild = withBuildProperties(
   baseConfig,
   {
+    ios: {
+      deploymentTarget: '16.0',
+    },
     android: {
       kotlinVersion: '2.0.21',
       /** react-native-vlc-media-player requires minSdk 26+ */

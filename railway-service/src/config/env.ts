@@ -14,6 +14,9 @@ const EnvSchema = z.object({
 
   KBS_CREDENTIAL_SECRET: z.string().min(16),
 
+  /** Supabase Edge ops-proxy → VPS: aynı değer Edge secret KBS_GATEWAY_TOKEN ile eşleşmeli. Boşsa (yalnızca yerel) kontrol yapılmaz. */
+  KBS_GATEWAY_TOKEN: z.string().optional(),
+
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info')
 });
 

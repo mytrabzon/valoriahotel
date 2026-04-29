@@ -33,3 +33,31 @@ export function canAccessReservationSales(staff: StaffPermissionSlice): boolean 
   if (staff.role === 'admin' || staff.role === 'reception_chief') return true;
   return staff.app_permissions?.satis_komisyon === true;
 }
+
+/** Doküman Yönetimi: belge yükleme/düzenleme yetkisi olan personel. */
+export function canAccessDocumentManagement(staff: StaffPermissionSlice): boolean {
+  if (!staff) return false;
+  if (staff.role === 'admin') return true;
+  const perms = staff.app_permissions ?? {};
+  return (
+    perms.dokuman_yukle === true ||
+    perms.dokuman_yonetimi === true ||
+    perms.document_upload === true ||
+    perms.document_management === true
+  );
+}
+
+/** Kahvaltı teyit kaydı oluşturma (asıl kontrol DB; menü için). */
+export function hasBreakfastConfirmCreatePermission(staff: StaffPermissionSlice): boolean {
+  if (!staff) return false;
+  if (staff.role === 'admin') return true;
+  return staff.app_permissions?.kahvalti_teyit_olustur === true;
+}
+
+/** Tutanak Sistemi: personel olusturma/listeleme, admin tam yonetim */
+export function canAccessIncidentReports(staff: StaffPermissionSlice): boolean {
+  if (!staff) return false;
+  if (staff.role === 'admin') return true;
+  const perms = staff.app_permissions ?? {};
+  return perms.incident_reports === true || perms.tutanaklar === true;
+}

@@ -42,8 +42,10 @@ const DEVICE_PERMISSIONS = [
 const STAFF_APP_PERMISSIONS = [
   { key: 'stok_giris', label: 'Stok girişi yapabilir', desc: 'Stok giriş/çıkış ve barkod okutma.' },
   { key: 'mesajlasma', label: 'Müşterilerle mesajlaşabilir', desc: 'Misafirlerle sohbet ve mesaj görüntüleme.' },
+  { key: 'misafir_mesaj_alabilir', label: 'Müşteriden direkt mesaj alabilir', desc: 'Kapalıysa misafir yeni sohbet başlatamaz ve mevcut sohbete yeni mesaj gönderemez.' },
   { key: 'video_paylasim', label: 'Video/resim paylaşabilir', desc: 'Feed ve sohbetlerde medya paylaşımı.' },
   { key: 'ekip_sohbet', label: 'Ekip sohbetini görebilir', desc: 'Tüm personel sohbet kanalına erişim.' },
+  { key: 'dokuman_yukle', label: 'Doküman yükleyebilir / yönetebilir', desc: 'Doküman Yönetimi modülünde belge yükleme, versiyon ekleme ve yetki kapsamına göre görüntüleme.' },
   {
     key: 'gorev_ata',
     label: 'Görev atayabilir',
@@ -53,6 +55,20 @@ const STAFF_APP_PERMISSIONS = [
   { key: 'personel_ekle', label: 'Personel ekleyebilir', desc: 'Yeni çalışan hesabı oluşturma (genelde yönetici).' },
   { key: 'raporlar', label: 'Raporları görebilir', desc: 'Raporlar ve HMB raporlarına erişim.' },
   { key: 'tum_sozlesmeler', label: 'Tüm sözleşmeleri görüntüleyebilir', desc: 'Tüm müşteri sözleşmelerine tarih filtresiyle erişim; telefon ve WhatsApp iletişim.' },
+  { key: 'kahvalti_teyit_olustur', label: 'Kahvaltı teyidi oluşturabilir', desc: 'Mutfak/restoran + bu yetki: günlük kahvaltı teyit kaydı (foto, kişi sayısı).' },
+  { key: 'kahvalti_teyit_departman', label: 'Kahvaltı teyitleri (mutfak) görüntüleme', desc: 'Aynı işletmede mutfak/restoran personelinin tüm kahvaltı kayıtlarını görür ve düzenler.' },
+  { key: 'kahvalti_teyit_onayla', label: 'Kahvaltı teyitlerini onaylama', desc: 'Kayıtları onaylar (onay zamanı ve onaylayan olarak saklanır).' },
+  { key: 'kahvalti_rapor', label: 'Kahvaltı raporları', desc: 'İşletme kahvaltı kayıtlarını listeler (okuma).' },
+  {
+    key: 'yarin_oda_temizlik_listesi',
+    label: 'Yarın temizlenecek odalar listesi',
+    desc: 'Ertesi gün temizlenecek oda listesini seçili personele gönderir ve planı yönetir.',
+  },
+  {
+    key: 'kbs_mrz_scan',
+    label: 'Pasaport / MRZ tarama (KBS)',
+    desc: 'Kimlik ve pasaport MRZ okuma, KBS tarama ekranı ve header MRZ simgesi.',
+  },
 ];
 
 /** Geçiş kontrolü yetkileri */

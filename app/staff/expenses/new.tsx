@@ -16,7 +16,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
-import { uriToArrayBuffer, getMimeAndExt } from '@/lib/uploadMedia';
+import { uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
 import { ensureCameraPermission } from '@/lib/cameraPermission';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
 import { theme } from '@/constants/theme';
@@ -58,15 +58,11 @@ export default function NewExpenseScreen() {
   }, []);
 
   const uploadReceipt = async (uri: string): Promise<string> => {
-    const arrayBuffer = await uriToArrayBuffer(uri);
-    const { ext } = getMimeAndExt(uri, 'image');
-    const fileName = `receipts/${staff?.id ?? 'anon'}/${Date.now()}.${ext}`;
-    const { error } = await supabase.storage.from('expense-receipts').upload(fileName, arrayBuffer, {
-      contentType: ext === 'png' ? 'image/png' : 'image/jpeg',
-      upsert: true,
+    const { publicUrl } = await uploadUriToPublicBucket({
+      bucketId: 'expense-receipts',
+      uri,
+      subfolder: 'receipt',
     });
-    if (error) throw error;
-    const { data: { publicUrl } } = supabase.storage.from('expense-receipts').getPublicUrl(fileName);
     return publicUrl;
   };
 
@@ -88,7 +84,11 @@ export default function NewExpenseScreen() {
       const url = await uploadReceipt(result.assets[0].uri);
       setReceiptUri(url);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Fotoğraf yüklenemedi.');
+      const msg =
+        e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string'
+          ? (e as { message: string }).message
+          : (e as Error)?.message ?? 'Fotoğraf yüklenemedi.';
+      Alert.alert('Hata', msg);
     } finally {
       setUploading(false);
     }
@@ -114,7 +114,11 @@ export default function NewExpenseScreen() {
       const url = await uploadReceipt(result.assets[0].uri);
       setReceiptUri(url);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Fotoğraf yüklenemedi.');
+      const msg =
+        e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string'
+          ? (e as { message: string }).message
+          : (e as Error)?.message ?? 'Fotoğraf yüklenemedi.';
+      Alert.alert('Hata', msg);
     } finally {
       setUploading(false);
     }
@@ -141,24 +145,48 @@ export default function NewExpenseScreen() {
     const tagArray = tags.trim() ? tags.trim().split(/\s+/).filter(Boolean) : null;
     setSaving(true);
     try {
-      const { error } = await supabase.from('staff_expenses').insert({
-        staff_id: staff.id,
-        category_id: categoryId,
-        expense_date: expenseDate,
-        expense_time: expenseTime,
-        amount: num,
-        payment_type: paymentType,
-        description: description.trim() || null,
-        receipt_image_url: receiptUri,
-        tags: tagArray,
-        status: 'pending',
+      const rpc = await supabase.rpc('insert_my_staff_expense', {
+        p_category_id: categoryId,
+        p_expense_date: expenseDate,
+        p_expense_time: expenseTime,
+        p_amount: num,
+        p_payment_type: paymentType,
+        p_description: description.trim() || null,
+        p_receipt_image_url: receiptUri,
+        p_tags: tagArray,
       });
+      let error = rpc.error;
+      const fnMissing =
+        !!error &&
+        (error.message?.toLowerCase().includes('function') ||
+          error.message?.toLowerCase().includes('does not exist') ||
+          error.code === '42883' ||
+          error.code === 'PGRST202');
+      if (fnMissing) {
+        const direct = await supabase.from('staff_expenses').insert({
+          staff_id: staff.id,
+          category_id: categoryId,
+          expense_date: expenseDate,
+          expense_time: expenseTime,
+          amount: num,
+          payment_type: paymentType,
+          description: description.trim() || null,
+          receipt_image_url: receiptUri,
+          tags: tagArray,
+          status: 'pending',
+        });
+        error = direct.error;
+      }
       if (error) throw error;
       Alert.alert('Kaydedildi', 'Harcamanız admin onayından sonra kesinleşecektir.', [
         { text: 'Tamam', onPress: () => router.replace('/staff/expenses') },
       ]);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Kayıt yapılamadı.');
+      const msg =
+        e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string'
+          ? (e as { message: string }).message
+          : (e as Error)?.message ?? 'Kayıt yapılamadı.';
+      Alert.alert('Hata', msg);
     } finally {
       setSaving(false);
     }

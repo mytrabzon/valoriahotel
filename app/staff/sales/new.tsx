@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { theme } from '@/constants/theme';
 import { useAuthStore } from '@/stores/authStore';
 import { canAccessReservationSales } from '@/lib/staffPermissions';
+import { useTranslation } from 'react-i18next';
 
 type StaffPickRow = { id: string; full_name: string | null };
 
@@ -175,6 +176,7 @@ function PlacePicker({
 
 export default function NewReservationSale() {
   const router = useRouter();
+  const { t } = useTranslation();
   const pathname = usePathname();
   const staff = useAuthStore((s) => s.staff);
   const canUse = canAccessReservationSales(staff);
@@ -227,19 +229,19 @@ export default function NewReservationSale() {
   const submit = useCallback(async () => {
     if (!canUse) return;
     if (!staff?.id) {
-      Alert.alert('Hata', 'Personel oturumu bulunamadı.');
+      Alert.alert(t('error'), t('staffEmergencySessionMissing'));
       return;
     }
     if (!customer_full_name.trim()) {
-      Alert.alert('Hata', 'Müşteri adı soyadı zorunlu.');
+      Alert.alert(t('error'), t('required'));
       return;
     }
     if (!customer_phone.trim()) {
-      Alert.alert('Hata', 'Telefon zorunlu.');
+      Alert.alert(t('error'), t('required'));
       return;
     }
     if (!source_type) {
-      Alert.alert('Hata', 'Satış kaynağı seçin.');
+      Alert.alert(t('error'), t('required'));
       return;
     }
 
@@ -251,19 +253,19 @@ export default function NewReservationSale() {
         checkIn = parseIsoDateOptional('Giriş tarihi', check_in_date);
         checkOut = parseIsoDateOptional('Çıkış tarihi', check_out_date);
       } catch (e) {
-        Alert.alert('Hata', (e as Error)?.message ?? 'Tarih hatası');
+        Alert.alert(t('error'), (e as Error)?.message ?? t('recordError'));
         setLoading(false);
         return;
       }
       if (checkIn && checkOut && checkOut < checkIn) {
-        Alert.alert('Hata', 'Çıkış tarihi giriş tarihinden önce olamaz.');
+        Alert.alert(t('error'), t('invalidCode'));
         setLoading(false);
         return;
       }
 
       const paid = parseMoneyInput(paid_amount);
       if (paid > 0 && !payment_place.trim()) {
-        Alert.alert('Hata', 'Ödeme tutarı girildiyse ödeme yeri seçilmelidir.');
+        Alert.alert(t('error'), t('required'));
         setLoading(false);
         return;
       }
@@ -279,11 +281,11 @@ export default function NewReservationSale() {
       if (dup && dup[0]?.id) {
         const ok = await new Promise<boolean>((resolve) => {
           Alert.alert(
-            'Uyarı',
+            t('warning'),
             `Bu telefonla daha önce kayıt var: ${dup[0].customer_full_name}. Yine de yeni kayıt oluşturulsun mu?`,
             [
-              { text: 'İptal', style: 'cancel', onPress: () => resolve(false) },
-              { text: 'Devam', style: 'default', onPress: () => resolve(true) },
+              { text: t('cancel'), style: 'cancel', onPress: () => resolve(false) },
+              { text: t('save'), style: 'default', onPress: () => resolve(true) },
             ]
           );
         });
@@ -322,7 +324,7 @@ export default function NewReservationSale() {
       const base = pathname?.startsWith('/admin') ? '/admin/sales' : '/staff/sales';
       router.replace(`${base}/${data.id}`);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Kayıt oluşturulamadı.');
+      Alert.alert(t('error'), (e as Error)?.message ?? t('recordError'));
     } finally {
       setLoading(false);
     }

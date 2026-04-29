@@ -22,6 +22,13 @@ const HeaderSchema = z.object({
  */
 export const authPlugin: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', async (req) => {
+    const expected = app.env.KBS_GATEWAY_TOKEN;
+    if (expected && expected.length > 0) {
+      const edge = req.headers['x-kbs-gateway-token'];
+      const got = typeof edge === 'string' ? edge : Array.isArray(edge) ? edge[0] : '';
+      if (got !== expected) throw Errors.forbidden('Invalid or missing gateway token');
+    }
+
     const headers = HeaderSchema.safeParse(req.headers);
     if (!headers.success) throw Errors.unauthorized();
     const bearer = headers.data.authorization;

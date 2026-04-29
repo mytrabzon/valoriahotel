@@ -15,7 +15,7 @@ import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
-import { uriToArrayBuffer } from '@/lib/uploadMedia';
+import { uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
 import { ensureCameraPermission } from '@/lib/cameraPermission';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
 import { CachedImage } from '@/components/CachedImage';
@@ -53,16 +53,11 @@ export default function StockMovementScreen() {
   }, [params.productId]);
 
   const uploadPhotoFromUri = async (uri: string): Promise<string> => {
-    const arrayBuffer = await uriToArrayBuffer(uri);
-    const ext = uri.toLowerCase().includes('.png') ? 'png' : 'jpg';
-    const contentType = ext === 'png' ? 'image/png' : 'image/jpeg';
-    const fileName = `stock/${Date.now()}.${ext}`;
-    const { error } = await supabase.storage.from('stock-proofs').upload(fileName, arrayBuffer, {
-      contentType,
-      upsert: true,
+    const { publicUrl } = await uploadUriToPublicBucket({
+      bucketId: 'stock-proofs',
+      uri,
+      subfolder: 'stock',
     });
-    if (error) throw error;
-    const { data: { publicUrl } } = supabase.storage.from('stock-proofs').getPublicUrl(fileName);
     return publicUrl;
   };
 

@@ -54,13 +54,17 @@ const ROLES = [
 const APP_PERMISSIONS = [
   { key: 'stok_giris', label: 'Stok girişi' },
   { key: 'mesajlasma', label: 'Mesajlaşma' },
+  { key: 'misafir_mesaj_alabilir', label: 'Müşteriden direkt mesaj alabilir' },
   { key: 'video_paylasim', label: 'Video/resim paylaşım' },
   { key: 'ekip_sohbet', label: 'Ekip sohbeti' },
+  { key: 'dokuman_yukle', label: 'Doküman yükleme/yönetim' },
   { key: 'gorev_ata', label: 'Görev atama' },
   { key: 'personel_ekle', label: 'Personel ekle' },
   { key: 'raporlar', label: 'Raporlar' },
   { key: 'satis_komisyon', label: 'Satış / komisyon' },
   { key: 'tum_sozlesmeler', label: 'Tüm sözleşmeler' },
+  { key: 'yarin_oda_temizlik_listesi', label: 'Yarın temizlenecek odalar listesi' },
+  { key: 'kbs_mrz_scan', label: 'Pasaport / MRZ tarama (KBS)' },
 ];
 
 export default function ApproveStaffScreen() {
@@ -78,13 +82,17 @@ export default function ApproveStaffScreen() {
   const [app_permissions, setAppPermissions] = useState<Record<string, boolean>>({
     stok_giris: true,
     mesajlasma: true,
+    misafir_mesaj_alabilir: true,
     video_paylasim: true,
     ekip_sohbet: true,
+    dokuman_yukle: false,
     gorev_ata: false,
     personel_ekle: false,
     raporlar: false,
     satis_komisyon: false,
     tum_sozlesmeler: false,
+    yarin_oda_temizlik_listesi: false,
+    kbs_mrz_scan: false,
   });
   const [organizations, setOrganizations] = useState<OrgRow[]>([]);
   const [organizationId, setOrganizationId] = useState<string | null>(null);

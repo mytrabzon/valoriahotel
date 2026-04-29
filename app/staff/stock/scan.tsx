@@ -3,11 +3,13 @@ import { View, StyleSheet, Alert } from 'react-native';
 import { BarcodeScannerView } from '@/components/BarcodeScannerView';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
+import { useTranslation } from 'react-i18next';
 
 export default function StaffStockScanScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ returnTo?: string }>();
   const { staff } = useAuthStore();
+  const { t } = useTranslation();
 
   const handleScan = async ({ type, data }: { type: string; data: string }) => {
     const barcode = String(data).trim();
@@ -20,7 +22,7 @@ export default function StaffStockScanScreen() {
       .maybeSingle();
 
     if (error) {
-      Alert.alert('Hata', error.message);
+      Alert.alert(t('error'), error.message);
       return;
     }
 
@@ -37,7 +39,7 @@ export default function StaffStockScanScreen() {
         });
       } catch (_) {}
       if (params.returnTo === 'exit') {
-        Alert.alert('Ürün yok', 'Bu barkoda kayıtlı ürün yok. Önce stok girişi ile ürün ekleyin.');
+        Alert.alert(t('productNotFoundTitle'), t('productNotFoundStockExitMessage'));
         return;
       }
       router.replace(`/staff/stock/entry?barcode=${encodeURIComponent(barcode)}`);
@@ -68,8 +70,8 @@ export default function StaffStockScanScreen() {
   return (
     <View style={styles.container}>
       <BarcodeScannerView
-        title={params.returnTo === 'exit' ? 'Stok Çıkışı – Barkod Okut' : 'Stok Girişi – Barkod Okut'}
-        hint="Barkodu çerçeve içine getirin"
+        title={params.returnTo === 'exit' ? t('stockScanExitTitle') : t('stockScanEntryTitle')}
+        hint={t('barcodeAlignHint')}
         onScan={handleScan}
         onClose={() => router.back()}
         showCloseButton

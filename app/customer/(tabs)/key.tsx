@@ -11,8 +11,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BarcodeScannerView } from '@/components/BarcodeScannerView';
 import { useFocusEffect } from 'expo-router';
 import { theme } from '@/constants/theme';
+import { useTranslation } from 'react-i18next';
 
 export default function DigitalKeyScreen() {
+  const { t } = useTranslation();
   const { user } = useAuthStore();
   const [roomNumber, setRoomNumber] = useState<string>('—');
   const [checkIn, setCheckIn] = useState<string>('—');
@@ -64,7 +66,7 @@ export default function DigitalKeyScreen() {
     if (n && typeof n === 'string' && n.trim()) return n.trim();
     const email = user?.email ?? '';
     const part = email.split('@')[0];
-    return part ? part.charAt(0).toUpperCase() + part.slice(1) : 'Misafir';
+    return part ? part.charAt(0).toUpperCase() + part.slice(1) : t('guestDefaultName');
   }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
 
   useEffect(() => {
@@ -97,8 +99,8 @@ export default function DigitalKeyScreen() {
 
       const { data: room } = await supabase.from('rooms').select('room_number').eq('id', guest.room_id).maybeSingle();
       if (room?.room_number) setRoomNumber(String(room.room_number));
-      if (guest.check_in_at) setCheckIn(new Date(guest.check_in_at).toLocaleDateString('tr-TR'));
-      if (guest.check_out_at) setCheckOut(new Date(guest.check_out_at).toLocaleDateString('tr-TR'));
+      if (guest.check_in_at) setCheckIn(new Date(guest.check_in_at).toLocaleDateString());
+      if (guest.check_out_at) setCheckOut(new Date(guest.check_out_at).toLocaleDateString());
 
       const { data: qr } = await supabase
         .from('room_qr_codes')
@@ -131,7 +133,7 @@ export default function DigitalKeyScreen() {
 
   const downloadQrAsImage = useCallback(async (ref: QRCodeRef, label: string) => {
     if (!ref?.toDataURL) {
-      if (Platform.OS === 'web') Alert.alert('Bilgi', 'Web\'de QR indirmek için sağ tıklayıp "Resmi farklı kaydet" kullanın.');
+      if (Platform.OS === 'web') Alert.alert(t('info'), t('qrDownloadWebRightClick'));
       return;
     }
     ref.toDataURL(async (data: string) => {
@@ -141,10 +143,10 @@ export default function DigitalKeyScreen() {
         const path = `${FileSystem.cacheDirectory}${filename}`;
         await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
         const canShare = await Sharing.isAvailableAsync();
-        if (canShare) await Sharing.shareAsync(path, { mimeType: 'image/png', dialogTitle: `QR Kod – ${label}` });
-        else Alert.alert('Kaydedildi', path);
+        if (canShare) await Sharing.shareAsync(path, { mimeType: 'image/png', dialogTitle: t('qrShareDialogTitle', { label }) });
+        else Alert.alert(t('saved'), path);
       } catch (e) {
-        Alert.alert('Hata', (e as Error)?.message ?? 'QR indirilemedi.');
+        Alert.alert(t('error'), (e as Error)?.message ?? t('qrDownloadFailed'));
       }
       setQrDownloading(null);
     });
@@ -153,7 +155,7 @@ export default function DigitalKeyScreen() {
   const startDownloadQr = (which: 'checkin' | 'contract') => {
     const ref = which === 'checkin' ? checkinQrRef : contractQrRef;
     if (!ref?.toDataURL) {
-      if (Platform.OS === 'web') Alert.alert('Bilgi', 'Web\'de QR indirmek için QR görseline sağ tıklayıp "Resmi farklı kaydet" kullanın.');
+      if (Platform.OS === 'web') Alert.alert(t('info'), t('qrDownloadWebRightClickImage'));
       return;
     }
     setQrDownloading(which);
@@ -165,16 +167,16 @@ export default function DigitalKeyScreen() {
     try {
       const result = await readNfcTagForDoor();
       if (!result) {
-        Alert.alert('İptal', 'Etiket okunamadı veya işlem iptal edildi.');
+        Alert.alert(t('cancelled'), t('nfcTagReadCancelled'));
         return;
       }
       if (!result.room) {
-        Alert.alert('Geçersiz etiket', `Bu etiket oda bilgisi içermiyor: ${result.raw || '(boş)'}`);
+        Alert.alert(t('invalidTagTitle'), t('invalidTagNoRoomInfo', { raw: result.raw || '(empty)' }));
         return;
       }
       await openDoorWithRoom(result.room);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'NFC okuma başarısız.');
+      Alert.alert(t('error'), (e as Error)?.message ?? t('nfcReadFailed'));
     } finally {
       setNfcLoading(false);
     }
@@ -188,14 +190,14 @@ export default function DigitalKeyScreen() {
       });
       if (error) throw error;
       const result = data?.result ?? data?.success ? 'granted' : 'denied';
-      const message = (data?.message as string) || (result === 'granted' ? 'Kapı açıldı.' : 'Yetkiniz yok.');
+      const message = (data?.message as string) || (result === 'granted' ? t('doorOpened') : t('noPermission'));
       if (result === 'granted') {
-        Alert.alert('Başarılı', message);
+        Alert.alert(t('success'), message);
       } else {
-        Alert.alert('Açılamadı', message);
+        Alert.alert(t('couldNotOpen'), message);
       }
     } catch (e: unknown) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Kapı açma isteği gönderilemedi.');
+      Alert.alert(t('error'), (e as Error)?.message ?? t('doorOpenRequestFailed'));
     } finally {
       setOpenDoorLoading(false);
     }
@@ -206,7 +208,7 @@ export default function DigitalKeyScreen() {
   const openDoor = async () => {
     const num = doorRoomInput.trim() || (roomNumber !== '—' ? roomNumber : '');
     if (!num) {
-      Alert.alert('Oda numarası girin', 'Açmak istediğiniz kapının oda numarasını yazın (örn. 101).');
+      Alert.alert(t('enterRoomNumberTitle'), t('enterRoomNumberMessage'));
       return;
     }
     await openDoorWithRoom(num);
@@ -215,29 +217,29 @@ export default function DigitalKeyScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.hotelName}>Valoria Hotel</Text>
-      <Text style={styles.welcome}>Hoş geldiniz, {guestName}</Text>
+      <Text style={styles.welcome}>{t('welcomeWithName', { name: guestName })}</Text>
       <View style={styles.infoBox}>
-        <Text style={styles.infoLine}>Oda: {roomNumber}</Text>
-        <Text style={styles.infoLine}>Giriş: {checkIn}</Text>
-        <Text style={styles.infoLine}>Çıkış: {checkOut}</Text>
+        <Text style={styles.infoLine}>{t('roomLabel', { room: roomNumber })}</Text>
+        <Text style={styles.infoLine}>{t('checkinLabel', { date: checkIn })}</Text>
+        <Text style={styles.infoLine}>{t('checkoutLabel', { date: checkOut })}</Text>
       </View>
 
       <View style={[styles.card, !isValid && styles.cardDisabled]}>
-        <Text style={styles.cardTitle}>Dijital Anahtar</Text>
+        <Text style={styles.cardTitle}>{t('digitalKey')}</Text>
         <Text style={styles.note}>
-          Oda numarası yazıp "Kapıyı aç" veya kapıdaki NFC etiketine telefonu yaklaştırın (otomatik okunur). Check-in yapmış olmalısınız.
+          {t('digitalKeyHint')}
         </Text>
         {!isValid && (
           <Text style={styles.invalidHint}>
-            Check-in yaptıktan sonra dijital anahtarınız aktif olacaktır.
+            {t('digitalKeyInactiveHint')}
           </Text>
         )}
       </View>
 
       {isValid && (
         <View style={styles.openDoorCard}>
-          <Text style={styles.sectionTitle}>Kapıyı aç</Text>
-          <Text style={styles.openDoorHint}>Oda numarasını girin (kapıda yazan numara)</Text>
+          <Text style={styles.sectionTitle}>{t('openDoorTitle')}</Text>
+          <Text style={styles.openDoorHint}>{t('openDoorHint')}</Text>
           <TextInput
             style={styles.doorInput}
             value={doorRoomInput}
@@ -255,18 +257,18 @@ export default function DigitalKeyScreen() {
             {openDoorLoading ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
-              <Text style={styles.openDoorBtnText}>Kapıyı aç</Text>
+              <Text style={styles.openDoorBtnText}>{t('openDoorBtn')}</Text>
             )}
           </TouchableOpacity>
           {!nfcAvailable && Platform.OS !== 'web' && (
             <Text style={styles.nfcUnavailableHint}>
-              NFC bu cihazda kullanılamıyor. QR ile giriş yaptıktan sonra oda numarasıyla kapıyı açabilirsiniz.
+              {t('nfcUnavailableHint')}
             </Text>
           )}
           {nfcAvailable && (
             <>
               {nfcListening && (
-                <Text style={styles.nfcListeningHint}>Kapı etiketine yaklaştırın…</Text>
+                <Text style={styles.nfcListeningHint}>{t('nfcListeningHint')}</Text>
               )}
               <TouchableOpacity
                 style={[styles.nfcBtn, (nfcLoading || openDoorLoading) && styles.openDoorBtnDisabled]}
@@ -276,7 +278,7 @@ export default function DigitalKeyScreen() {
                 {nfcLoading ? (
                   <ActivityIndicator color="#1a365d" size="small" />
                 ) : (
-                  <Text style={styles.nfcBtnText}>Manuel NFC ile kapı aç</Text>
+                  <Text style={styles.nfcBtnText}>{t('openDoorWithNfcManualBtn')}</Text>
                 )}
               </TouchableOpacity>
             </>
@@ -286,22 +288,24 @@ export default function DigitalKeyScreen() {
 
       {isValid && urls.checkinUrl && (
         <View style={styles.qrSection}>
-          <Text style={styles.sectionTitle}>QR Kodlar</Text>
+          <Text style={styles.sectionTitle}>{t('qrCodesTitle')}</Text>
           <TouchableOpacity style={styles.qrDrawerBtn} onPress={() => setQrDrawerVisible(true)}>
-            <Text style={styles.qrDrawerBtnText}>{selectedQrType === 'checkin' ? 'Check-in QR' : 'Sözleşme QR'} • {QR_FRAME_LABELS[selectedFrame]}</Text>
-            <Text style={styles.qrDrawerBtnHint}>Tıklayın – QR türü ve çerçeve seçin</Text>
+            <Text style={styles.qrDrawerBtnText}>
+              {selectedQrType === 'checkin' ? t('digitalKeyCheckinType') : t('digitalKeyContractType')} • {QR_FRAME_LABELS[selectedFrame]}
+            </Text>
+            <Text style={styles.qrDrawerBtnHint}>{t('digitalKeyQrDrawerHint')}</Text>
           </TouchableOpacity>
           <View style={styles.qrCard}>
             {selectedQrType === 'checkin' ? (
               <>
-                <Text style={styles.qrTitle}>Odaya giriş (Check-in)</Text>
+                <Text style={styles.qrTitle}>{t('digitalKeyQrCheckinTitle')}</Text>
                 <FramedQR value={urls.checkinUrl} size={190} design={checkinDesign} frame={selectedFrame} getRef={setCheckinQrRef} />
               </>
             ) : urls.contractUrl ? (
               <>
                 <Text style={styles.qrTitle}>Otel kuralları / sözleşme onayı</Text>
                 <FramedQR value={urls.contractUrl} size={190} design={contractDesign} frame={selectedFrame} getRef={setContractQrRef} />
-                <Text style={styles.qrSub}>Bu QR uygulama indirmeden web'de açılır.</Text>
+                <Text style={styles.qrSub}>{t('digitalKeyQrContractWebNote')}</Text>
               </>
             ) : null}
             <TouchableOpacity
@@ -313,7 +317,7 @@ export default function DigitalKeyScreen() {
             </TouchableOpacity>
           </View>
           <TouchableOpacity style={styles.scanBtn} onPress={() => setShowScan(true)} activeOpacity={0.85}>
-            <Text style={styles.scanBtnText}>QR Tara</Text>
+            <Text style={styles.scanBtnText}>{t('digitalKeyScanQr')}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -321,17 +325,19 @@ export default function DigitalKeyScreen() {
       <Modal visible={qrDrawerVisible} transparent animationType="slide">
         <TouchableOpacity style={styles.drawerOverlay} activeOpacity={1} onPress={() => setQrDrawerVisible(false)}>
           <View style={[styles.drawer, { paddingBottom: insets.bottom + 24 }]} onStartShouldSetResponder={() => true}>
-            <Text style={styles.drawerTitle}>QR Kod Seçin</Text>
-            <Text style={styles.drawerLabel}>QR türü</Text>
+            <Text style={styles.drawerTitle}>{t('digitalKeyQrSelectTitle')}</Text>
+            <Text style={styles.drawerLabel}>{t('digitalKeyTypeLabel')}</Text>
             <View style={styles.drawerRow}>
               <TouchableOpacity style={[styles.drawerChip, selectedQrType === 'checkin' && styles.drawerChipActive]} onPress={() => setSelectedQrType('checkin')}>
                 <Text style={[styles.drawerChipText, selectedQrType === 'checkin' && styles.drawerChipTextActive]}>Check-in QR</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.drawerChip, selectedQrType === 'contract' && styles.drawerChipActive]} onPress={() => setSelectedQrType('contract')}>
-                <Text style={[styles.drawerChipText, selectedQrType === 'contract' && styles.drawerChipTextActive]}>Sözleşme QR</Text>
+                <Text style={[styles.drawerChipText, selectedQrType === 'contract' && styles.drawerChipTextActive]}>
+                  {t('digitalKeyContractType')}
+                </Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.drawerLabel}>Çerçeve</Text>
+            <Text style={styles.drawerLabel}>{t('digitalKeyFrameLabel')}</Text>
             <View style={styles.drawerRow}>
               {FRAME_OPTIONS.map((f) => (
                 <TouchableOpacity key={f} style={[styles.drawerChipSmall, selectedFrame === f && styles.drawerChipActive]} onPress={() => setSelectedFrame(f)}>
@@ -346,28 +352,28 @@ export default function DigitalKeyScreen() {
         </TouchableOpacity>
       </Modal>
 
-      <Text style={styles.sectionTitle}>Açabileceğiniz kapılar</Text>
-      <Text style={styles.doorsList}>Oda kapınız (check-in sonrası). Ek yetkiler Admin → Kart Tanımlama ile verilir.</Text>
+      <Text style={styles.sectionTitle}>{t('digitalKeyDoorsTitle')}</Text>
+      <Text style={styles.doorsList}>{t('digitalKeyDoorsBody')}</Text>
 
       <View style={styles.shareRow}>
         <TouchableOpacity style={styles.shareBtn}>
-          <Text style={styles.shareBtnText}>Anahtarı paylaş</Text>
+          <Text style={styles.shareBtnText}>{t('digitalKeyShareKey')}</Text>
         </TouchableOpacity>
       </View>
 
       <Modal visible={showScan} animationType="slide" onRequestClose={() => setShowScan(false)}>
         <BarcodeScannerView
-          title="QR Tara"
-          hint="QR kodu çerçeve içine getirin"
+          title={t('customerQrScanTitle')}
+          hint={t('customerQrScanHint')}
           onClose={() => setShowScan(false)}
           onScan={({ data }) => {
             const s = String(data || '').trim();
             if (!s) return;
             setShowScan(false);
             if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('valoria://') || s.startsWith('exp+')) {
-              Linking.openURL(s).catch(() => Alert.alert('Hata', 'Link açılamadı.'));
+              Linking.openURL(s).catch(() => Alert.alert(t('error'), t('linkCouldNotOpen')));
             } else {
-              Alert.alert('Okundu', s);
+              Alert.alert(t('scanned'), s);
             }
           }}
         />

@@ -68,6 +68,10 @@ export async function upsertMyLocation(params: {
   displayName?: string | null;
   avatarUrl?: string | null;
 }): Promise<boolean> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData.session?.user) {
+    return false;
+  }
   const { data, error } = await supabase
     .from('map_user_locations')
     .upsert(
@@ -92,6 +96,8 @@ export async function upsertMyLocation(params: {
  * Konum paylaşımını kapat (kaydı sil).
  */
 export async function removeMyLocation(userType: 'guest' | 'staff', userId: string): Promise<void> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData.session?.user) return;
   await supabase
     .from('map_user_locations')
     .delete()

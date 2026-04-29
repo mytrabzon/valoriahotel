@@ -1,19 +1,22 @@
-import { useState } from 'react';
+import { useState, memo, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   Pressable,
   StyleSheet,
-  Platform,
   ActivityIndicator,
+  Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { theme } from '@/constants/theme';
+import { pds } from '@/constants/personelDesignSystem';
 import { StaffNameWithBadge, AvatarWithBadge } from '@/components/VerifiedBadge';
 import { CachedImage } from '@/components/CachedImage';
 import { getPostTagVisual } from '@/lib/feedPostTagTheme';
 import type { PostTagValue } from '@/lib/feedPostTags';
+import { feedSharedText } from '@/lib/feedSharedI18n';
 
 const SPACING = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20 } as const;
 
@@ -36,20 +39,30 @@ export type StaffFeedPostCardProps = {
   likeCount: number;
   commentCount: number;
   viewCount: number;
+  /** Görüntülenme satırını göster (misafir: yalnızca kendi paylaşımında) */
+  showViewStats?: boolean;
+  /** true: göz satırına basınca görüntüleyen listesi (yalnızca kendi personel paylaşımı) */
+  viewersListEnabled?: boolean;
+  commentPreview?: { author: string; text: string }[];
   notifOn: boolean;
   togglingLike: boolean;
   togglingNotif: boolean;
   deletingPost: boolean;
   onAuthorPress?: () => void;
+  /** Avatar ayrı dokunulduğunda (ör. hikaye); yalnızca `onAuthorPress` ile birlikte anlamlı */
+  onAvatarPress?: () => void;
+  /** Hikaye varken uzun basınca profil (parent 1000ms kullanmalı) */
+  onAvatarLongPress?: () => void;
   onLike: () => void;
   onComment: () => void;
   onViewers: () => void;
-  onNotif: () => void;
+  /** Sağdaki premium “Detayları Gör” (genelde yorum sayfası) */
+  onDetailsPress: () => void;
   onMenu: () => void;
-  onLayout?: (y: number) => void;
+  horizontalInset?: number;
 };
 
-export function StaffFeedPostCard({
+export const StaffFeedPostCard = memo(function StaffFeedPostCard({
   postTag,
   authorName,
   authorAvatarUrl,
@@ -65,23 +78,29 @@ export function StaffFeedPostCard({
   likeCount,
   commentCount,
   viewCount,
-  notifOn,
+  showViewStats = true,
+  viewersListEnabled = true,
+  commentPreview,
   togglingLike,
-  togglingNotif,
   deletingPost,
   onAuthorPress,
+  onAvatarPress,
+  onAvatarLongPress,
   onLike,
   onComment,
   onViewers,
-  onNotif,
+  onDetailsPress,
   onMenu,
-  onLayout,
+  horizontalInset = SPACING.lg,
 }: StaffFeedPostCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const introOpacity = useRef(new Animated.Value(0)).current;
+  const introTranslateY = useRef(new Animated.Value(10)).current;
   const visual = getPostTagVisual(postTag);
   const rawTitle = (title ?? '').trim();
   const isShort = rawTitle.length > 0 && rawTitle.length <= SHORT_TITLE_MAX_LEN && !rawTitle.includes('\n\n');
   const showReadMore = rawTitle.length > 140;
+  const showAuthorAvatar = !isGuestPost;
 
   const ringGlow = isGuestPost
     ? 'rgba(74,111,138,0.5)'
@@ -91,53 +110,97 @@ export function StaffFeedPostCard({
         ? 'rgba(234,179,8,0.45)'
         : visual.avatarGlow;
 
-  const AuthorWrapper = onAuthorPress ? TouchableOpacity : View;
-  const authorProps = onAuthorPress
-    ? { onPress: onAuthorPress, activeOpacity: 0.75 as const }
-    : {};
+  const AuthorWrapper = onAuthorPress && !(showAuthorAvatar && onAvatarPress) ? TouchableOpacity : View;
+  const authorProps =
+    onAuthorPress && !(showAuthorAvatar && onAvatarPress)
+      ? { onPress: onAuthorPress, activeOpacity: 0.75 as const }
+      : {};
+
+  const splitHeader = showAuthorAvatar && onAvatarPress != null && onAuthorPress != null;
+
+  const avatarBlock = showAuthorAvatar ? (
+    <View style={[styles.avatarWrap, { shadowColor: ringGlow }]}>
+      <AvatarWithBadge badge={authorBadge} avatarSize={36} badgeSize={11} showBadge={false}>
+        {authorAvatarUrl ? (
+          <CachedImage uri={authorAvatarUrl} style={styles.avatarImg} contentFit="cover" transition={0} />
+        ) : (
+          <View style={styles.avatarPh}>
+            <Text style={styles.avatarLetter}>{(authorName || '?').charAt(0).toUpperCase()}</Text>
+          </View>
+        )}
+      </AvatarWithBadge>
+    </View>
+  ) : null;
+
+  const nameAndMeta = (
+    <>
+      <StaffNameWithBadge name={authorName} badge={authorBadge} textStyle={styles.name} />
+      <View style={styles.metaRow}>
+        {roleLabel ? (
+          <View style={styles.roleChip}>
+            <Text style={styles.roleChipText} numberOfLines={1}>
+              {roleLabel}
+            </Text>
+          </View>
+        ) : null}
+        <Text style={styles.time} numberOfLines={1}>
+          {timeAgo || 'şimdi'}
+        </Text>
+      </View>
+      <Text style={styles.dateTime}>{createdAtLabel}</Text>
+      {isGuestPost ? <Text style={styles.guestHint}>Misafir paylaşımı</Text> : null}
+    </>
+  );
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(introOpacity, {
+        toValue: 1,
+        duration: 260,
+        useNativeDriver: true,
+      }),
+      Animated.timing(introTranslateY, {
+        toValue: 0,
+        duration: 260,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [introOpacity, introTranslateY]);
 
   return (
-    <View
-      style={styles.outer}
-      onLayout={(e) => onLayout?.(e.nativeEvent.layout.y)}
+    <Animated.View
+      style={[
+        styles.outer,
+        { marginHorizontal: horizontalInset },
+        { opacity: introOpacity, transform: [{ translateY: introTranslateY }] },
+      ]}
     >
       <View style={styles.pressable}>
         <View style={styles.surface}>
-          <View pointerEvents="none" style={styles.surfaceHighlight} />
           <View style={styles.row}>
-            <View style={[styles.accentBar, { backgroundColor: visual.bar }]} />
             <View style={styles.inner}>
               <View style={styles.headerRow}>
-                <AuthorWrapper style={styles.headerLeft} {...authorProps}>
-                  <View style={[styles.avatarWrap, { shadowColor: ringGlow }]}>
-                    <AvatarWithBadge badge={authorBadge} avatarSize={36} badgeSize={11} showBadge={false}>
-                      {authorAvatarUrl ? (
-                        <CachedImage uri={authorAvatarUrl} style={styles.avatarImg} contentFit="cover" />
-                      ) : (
-                        <View style={isGuestPost ? styles.avatarPhGuest : styles.avatarPh}>
-                          <Text style={isGuestPost ? styles.avatarLetterGuest : styles.avatarLetter}>{(authorName || '?').charAt(0).toUpperCase()}</Text>
-                        </View>
-                      )}
-                    </AvatarWithBadge>
+                {splitHeader ? (
+                  <View style={styles.headerLeft}>
+                    <TouchableOpacity
+                      onPress={onAvatarPress}
+                      onLongPress={onAvatarLongPress}
+                      delayLongPress={1000}
+                      activeOpacity={0.75}
+                      hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                    >
+                      {avatarBlock}
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={onAuthorPress} activeOpacity={0.75} style={styles.headerText}>
+                      {nameAndMeta}
+                    </TouchableOpacity>
                   </View>
-                  <View style={styles.headerText}>
-                    <StaffNameWithBadge name={authorName} badge={authorBadge} textStyle={styles.name} />
-                    <View style={styles.metaRow}>
-                      {roleLabel ? (
-                        <View style={styles.roleChip}>
-                          <Text style={styles.roleChipText} numberOfLines={1}>
-                            {roleLabel}
-                          </Text>
-                        </View>
-                      ) : null}
-                      <Text style={styles.time} numberOfLines={1}>
-                        {timeAgo || 'şimdi'}
-                      </Text>
-                    </View>
-                    <Text style={styles.dateTime}>{createdAtLabel}</Text>
-                    {isGuestPost ? <Text style={styles.guestHint}>Misafir paylaşımı</Text> : null}
-                  </View>
-                </AuthorWrapper>
+                ) : (
+                  <AuthorWrapper style={styles.headerLeft} {...authorProps}>
+                    {avatarBlock}
+                    <View style={styles.headerText}>{nameAndMeta}</View>
+                  </AuthorWrapper>
+                )}
                 <TouchableOpacity
                   style={styles.menuBtn}
                   onPress={onMenu}
@@ -182,108 +245,106 @@ export function StaffFeedPostCard({
                 </View>
               ) : null}
 
-              <View style={styles.actions}>
-                <Pressable
-                  style={({ pressed }) => [styles.actionItem, pressed && styles.actionPressed]}
-                  onPress={onLike}
-                  disabled={!!togglingLike}
-                >
-                  {togglingLike ? (
-                    <Ionicons name="heart-outline" size={18} color={theme.colors.textMuted} />
+              {commentPreview && commentPreview.length > 0 ? (
+                <TouchableOpacity style={styles.commentPreviewWrap} onPress={onComment} activeOpacity={0.85}>
+                  {commentPreview.slice(0, 2).map((c, idx) => (
+                    <View key={`${idx}-${c.author}`} style={styles.commentPreviewRow}>
+                      <Text style={styles.commentPreviewAuthor} numberOfLines={1}>
+                        {c.author}
+                      </Text>
+                      <Text style={styles.commentPreviewText} numberOfLines={1}>
+                        {c.text}
+                      </Text>
+                    </View>
+                  ))}
+                  {commentCount > commentPreview.length ? (
+                    <Text style={styles.commentPreviewMore}>Tüm yorumları gör</Text>
                   ) : (
+                    <Text style={styles.commentPreviewMore}>Yorumlara bak</Text>
+                  )}
+                </TouchableOpacity>
+              ) : null}
+
+              <View style={styles.actionsRow}>
+                <View style={styles.actionLeft}>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.actionPill,
+                      liked && styles.actionPillActive,
+                      pressed && styles.actionPressed,
+                    ]}
+                    onPress={onLike}
+                    disabled={!!togglingLike}
+                  >
                     <Ionicons
                       name={liked ? 'heart' : 'heart-outline'}
                       size={18}
-                      color={liked ? theme.colors.error : theme.colors.textMuted}
+                      color={liked ? theme.colors.error : pds.subtext}
                     />
-                  )}
-                  <Text style={[styles.actionCount, liked && styles.actionCountActive]}>{likeCount}</Text>
-                </Pressable>
+                    <Text style={[styles.actionPillText, liked && styles.actionPillTextActive]}>{likeCount}</Text>
+                  </Pressable>
 
-                <Pressable style={({ pressed }) => [styles.actionItem, pressed && styles.actionPressed]} onPress={onComment}>
-                  <Ionicons name="chatbubble-outline" size={17} color={theme.colors.textMuted} />
-                  <Text style={styles.actionCount}>{commentCount}</Text>
-                </Pressable>
+                  <Pressable style={({ pressed }) => [styles.actionPill, pressed && styles.actionPressed]} onPress={onComment}>
+                    <Ionicons name="chatbubble-outline" size={17} color={pds.subtext} />
+                    <Text style={styles.actionPillText}>{commentCount}</Text>
+                  </Pressable>
 
-                <Pressable style={({ pressed }) => [styles.actionItem, pressed && styles.actionPressed]} onPress={onViewers}>
-                  <Ionicons name="eye-outline" size={18} color={theme.colors.textMuted} />
-                  <Text style={styles.actionCount}>{viewCount}</Text>
-                </Pressable>
+                  {showViewStats ? (
+                    viewersListEnabled ? (
+                      <Pressable style={({ pressed }) => [styles.actionPill, pressed && styles.actionPressed]} onPress={onViewers}>
+                        <Ionicons name="paper-plane-outline" size={17} color={pds.subtext} />
+                        <Text style={styles.actionPillText}>{viewCount}</Text>
+                      </Pressable>
+                    ) : (
+                      <View style={styles.actionPill}>
+                        <Ionicons name="paper-plane-outline" size={17} color={pds.subtext} />
+                        <Text style={styles.actionPillText}>{viewCount}</Text>
+                      </View>
+                    )
+                  ) : null}
+                </View>
 
-                <Pressable
-                  style={({ pressed }) => [styles.actionItem, pressed && styles.actionPressed]}
-                  onPress={onNotif}
-                  disabled={!!togglingNotif}
-                >
-                  {togglingNotif ? (
-                    <Ionicons name="notifications-outline" size={18} color={theme.colors.textMuted} />
-                  ) : (
-                    <Ionicons
-                      name={notifOn ? 'notifications' : 'notifications-outline'}
-                      size={18}
-                      color={notifOn ? theme.colors.primary : theme.colors.textMuted}
-                    />
-                  )}
-                </Pressable>
+                <TouchableOpacity onPress={onDetailsPress} activeOpacity={0.88} style={styles.detailsBtnWrap}>
+                  <LinearGradient colors={pds.gradientPremium} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.detailsBtn}>
+                    <Text style={styles.detailsBtnText}>{feedSharedText('feedDetailsButton')}</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
         </View>
       </View>
-    </View>
+    </Animated.View>
   );
-}
+});
+
+StaffFeedPostCard.displayName = 'StaffFeedPostCard';
 
 const styles = StyleSheet.create({
   outer: {
-    marginHorizontal: SPACING.lg,
-    marginTop: SPACING.lg,
-    marginBottom: SPACING.xs,
-    borderRadius: 20,
-    backgroundColor: theme.colors.white,
-    overflow: 'hidden',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#0f172a',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.08,
-        shadowRadius: 14,
-      },
-      android: { elevation: 2 },
-      default: {},
-    }),
+    marginTop: pds.cardGap,
+    marginBottom: 0,
+    borderRadius: pds.cardRadius,
+    backgroundColor: pds.cardBg,
+    ...pds.shadowCard,
   },
   pressable: {
-    borderRadius: 20,
+    borderRadius: pds.cardRadius,
     overflow: 'hidden',
   },
   surface: {
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    backgroundColor: theme.colors.surface,
-  },
-  surfaceHighlight: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 56,
-    backgroundColor: 'rgba(248,250,252,0.95)',
+    borderRadius: pds.cardRadius,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#F3F4F6',
+    backgroundColor: pds.cardBg,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'stretch',
   },
-  accentBar: {
-    width: 4,
-    borderTopLeftRadius: 20,
-    borderBottomLeftRadius: 20,
-  },
   inner: {
     flex: 1,
-    padding: SPACING.xl,
-    paddingLeft: SPACING.md,
+    padding: pds.cardPadding,
   },
   headerRow: {
     flexDirection: 'row',
@@ -295,7 +356,7 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: SPACING.md,
+    gap: 8,
     minWidth: 0,
   },
   avatarWrap: {
@@ -329,7 +390,7 @@ const styles = StyleSheet.create({
   avatarLetter: { fontSize: 15, fontWeight: '700', color: theme.colors.white },
   avatarLetterGuest: { fontSize: 15, fontWeight: '700', color: theme.colors.guestAvatarLetter },
   headerText: { flex: 1, minWidth: 0 },
-  name: { fontSize: 15, fontWeight: '700', color: theme.colors.text },
+  name: { fontSize: 15, fontWeight: '700', color: pds.text },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -345,11 +406,11 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.borderLight,
   },
   roleChipText: { fontSize: 11, fontWeight: '600', color: theme.colors.textSecondary },
-  time: { fontSize: 12, fontWeight: '500', color: theme.colors.textMuted },
-  dateTime: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
+  time: { fontSize: 12, fontWeight: '500', color: pds.subtext },
+  dateTime: { fontSize: 11, color: pds.subtext, marginTop: 2 },
   guestHint: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2, fontStyle: 'italic' },
   menuBtn: { padding: SPACING.sm, marginTop: -4 },
-  tagRow: { marginTop: SPACING.md },
+  tagRow: { marginTop: 10 },
   tagPill: {
     alignSelf: 'flex-start',
     paddingHorizontal: 10,
@@ -357,13 +418,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   tagPillText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
-  /** İç padding sol 12 / sağ 20 olduğu için tam genişlik için asimetrik negatif margin */
-  mediaSlot: { marginTop: SPACING.md, marginLeft: -SPACING.md, marginRight: -SPACING.xl },
+  mediaSlot: {
+    marginTop: 10,
+    marginLeft: -pds.cardPadding,
+    marginRight: -pds.cardPadding,
+    borderRadius: pds.mediaRadius,
+    overflow: 'hidden',
+  },
   body: { marginTop: SPACING.md },
   postTitle: {
     fontSize: 16,
     fontWeight: '400',
-    color: theme.colors.text,
+    color: pds.text,
     lineHeight: 24,
   },
   postTitleShort: {
@@ -377,28 +443,58 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: theme.colors.primary,
   },
-  actions: {
+  commentPreviewWrap: {
+    marginTop: SPACING.md,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: theme.colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+  },
+  commentPreviewRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  commentPreviewAuthor: { fontSize: 12, fontWeight: '900', color: theme.colors.text, maxWidth: '42%' },
+  commentPreviewText: { flex: 1, fontSize: 12, fontWeight: '600', color: theme.colors.textSecondary },
+  commentPreviewMore: { marginTop: 2, fontSize: 12, fontWeight: '800', color: theme.colors.primary },
+  actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: SPACING.xl,
-    paddingTop: SPACING.md,
+    justifyContent: 'space-between',
+    gap: 10,
+    marginTop: 14,
+    paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.borderLight,
-    gap: SPACING.lg,
+    borderTopColor: '#F3F4F6',
   },
-  actionItem: {
+  actionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  actionPressed: { opacity: 0.75 },
+  actionPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 2,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: pds.actionBtnRadius,
+    backgroundColor: pds.pageBg,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
-  actionPressed: { opacity: 0.75 },
-  actionCount: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: theme.colors.textMuted,
-    minWidth: 16,
+  actionPillActive: {
+    backgroundColor: `${theme.colors.error}10`,
+    borderColor: `${theme.colors.error}33`,
   },
-  actionCountActive: { color: theme.colors.error },
+  actionPillText: { fontSize: 13, fontWeight: '800', color: pds.subtext, minWidth: 16 },
+  actionPillTextActive: { color: theme.colors.error },
+  detailsBtnWrap: { flexShrink: 0 },
+  detailsBtn: {
+    borderRadius: pds.actionBtnRadius,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  detailsBtnText: { color: '#fff', fontSize: 13, fontWeight: '800' },
 });

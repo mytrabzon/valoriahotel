@@ -1,9 +1,12 @@
 // Valoria Hotel - Sohbet mesajı sonrası alıcılara push bildirimi gönderir
 // Kullanım: POST { conversationId, excludeAppToken?, excludeStaffId?, title, body, data? }
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { fetchAppIconBadgeForGuest, fetchAppIconBadgeForStaff, iconBadgeForPush } from "../_shared/appBadgeFromRpc.ts";
+import { getExpoPushHeaders } from "../_shared/expoPushHeaders.ts";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const BATCH_SIZE = 100;
+const ANDROID_CHANNEL_ID = "valoria_urgent";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -89,63 +92,79 @@ Deno.serve(async (req: Request) => {
     const displayBody = expoDisplayBody(bodyTrim);
     const payload = { ...data, screen: "messages" };
 
-    // Bildirimlerim sayfasında görünsün: staff/admin alıcılarına notifications tablosuna insert
-    if (staffIds.length > 0) {
-      const rows = staffIds.map((sid) => ({
-        staff_id: sid,
-        guest_id: null,
-        title: titleTrim,
-        body: bodyTrim,
-        category: "guest",
-        notification_type: "message",
-        data: payload,
-        sent_via: "both",
-        sent_at: new Date().toISOString(),
-      }));
-      await supabase.from("notifications").insert(rows);
-    }
+    // Mesaj için sadece push; "Bildirimler" listesine (notifications tablosu) kayıt eklenmez — çift kayıt önlenir.
+    // Simge sayacı: app_badge_total_* = okunmamış notifications + okunmamış mesajlar (yeni mesaj zaten tabloda).
 
-    const tokens: string[] = [];
+    const badgeByStaff = new Map<string, number>();
+    const badgeByGuest = new Map<string, number>();
+    await Promise.all(
+      staffIds.map(async (sid) => {
+        badgeByStaff.set(sid, await fetchAppIconBadgeForStaff(supabase, sid));
+      })
+    );
+    await Promise.all(
+      guestIds.map(async (gid) => {
+        badgeByGuest.set(gid, await fetchAppIconBadgeForGuest(supabase, gid));
+      })
+    );
+
+    type TokenRow = { token: string; staff_id: string | null; guest_id: string | null };
+    const byToken = new Map<string, TokenRow>();
+
     if (guestIds.length > 0) {
       const { data: rows } = await supabase
         .from("push_tokens")
-        .select("token")
+        .select("token, staff_id, guest_id")
         .in("guest_id", guestIds)
         .not("token", "is", null);
       for (const r of rows ?? []) {
-        const t = (r as { token: string }).token?.trim();
-        if (t && t.startsWith("ExponentPushToken")) tokens.push(t);
+        const t = (r as { token: string; staff_id: string | null; guest_id: string | null }).token?.trim();
+        if (t && t.startsWith("ExponentPushToken")) {
+          if (!byToken.has(t)) byToken.set(t, { token: t, staff_id: r.staff_id ?? null, guest_id: r.guest_id ?? null });
+        }
       }
     }
     if (staffIds.length > 0) {
       const { data: rows } = await supabase
         .from("push_tokens")
-        .select("token")
+        .select("token, staff_id, guest_id")
         .in("staff_id", staffIds)
         .not("token", "is", null);
       for (const r of rows ?? []) {
-        const t = (r as { token: string }).token?.trim();
-        if (t && t.startsWith("ExponentPushToken")) tokens.push(t);
+        const t = (r as { token: string; staff_id: string | null; guest_id: string | null }).token?.trim();
+        if (t && t.startsWith("ExponentPushToken")) {
+          if (!byToken.has(t)) byToken.set(t, { token: t, staff_id: r.staff_id ?? null, guest_id: r.guest_id ?? null });
+        }
       }
     }
 
-    const uniqueTokens = [...new Set(tokens)];
-    if (uniqueTokens.length === 0) {
+    if (byToken.size === 0) {
       return new Response(
         JSON.stringify({ sent: 0, failed: 0, message: "Kayıtlı push token yok" }),
         { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
       );
     }
 
-    const messages = uniqueTokens.map((to) => ({
-      to,
-      title: titleTrim,
-      body: displayBody,
-      priority: "high" as const,
-      sound: "default" as const,
-      interruptionLevel: "active" as const,
-      data: payload,
-    }));
+    function badgeForRow(row: TokenRow): number {
+      if (row.staff_id) return iconBadgeForPush(badgeByStaff.get(row.staff_id) ?? 1);
+      if (row.guest_id) return iconBadgeForPush(badgeByGuest.get(row.guest_id) ?? 1);
+      return 1;
+    }
+
+    const messages = [...byToken.values()].map((row) => {
+      const b = badgeForRow(row);
+      return {
+        to: row.token,
+        title: titleTrim,
+        body: displayBody,
+        channelId: ANDROID_CHANNEL_ID,
+        priority: "high" as const,
+        sound: "default" as const,
+        badge: b,
+        interruptionLevel: "active" as const,
+        data: { ...payload, app_badge: b },
+      };
+    });
 
     let sent = 0;
     let failed = 0;
@@ -155,7 +174,7 @@ Deno.serve(async (req: Request) => {
       const chunk = messages.slice(i, i + BATCH_SIZE);
       const res = await fetch(EXPO_PUSH_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: getExpoPushHeaders(),
         body: JSON.stringify(chunk),
       });
       if (!res.ok) {
@@ -181,7 +200,7 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({
         sent,
         failed,
-        total: uniqueTokens.length,
+        total: messages.length,
         ...(expoHttpError ? { expoHttpError } : {}),
         ...(pushTicketErrors.length ? { pushTicketErrors } : {}),
       }),

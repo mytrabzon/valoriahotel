@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,9 +8,12 @@ import {
   ActivityIndicator,
   Pressable,
   Alert,
+  Modal,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/stores/authStore';
 import { useStaffUnreadMessagesStore } from '@/stores/staffUnreadMessagesStore';
 import { staffDeleteConversation, staffListConversations, subscribeToConversationList, staffSetConversationMuted } from '@/lib/messagingApi';
@@ -20,6 +23,12 @@ import { CachedImage } from '@/components/CachedImage';
 import { SwipeToDelete } from '@/components/SwipeToDelete';
 
 const ALL_STAFF_GROUP_NAME = 'Tüm Çalışanlar';
+let conversationListCache: ConversationWithMeta[] = [];
+let conversationListCacheUpdatedAt = 0;
+let conversationListDirty = false;
+const LIST_CACHE_TTL_MS = 45_000;
+const MIN_LOAD_INTERVAL_MS = 2_500;
+const STAFF_MESSAGES_PERSIST_KEY = 'staff_messages_list_cache_v1';
 
 function formatTime(iso: string | null): string {
   if (!iso) return '';
@@ -43,9 +52,10 @@ function ConversationRow({
   onDelete?: () => void;
   staffId?: string;
 }) {
+  const { t } = useTranslation();
   const unread = item.unread_count ?? 0;
   const isAllStaff = item.type === 'group' && item.name === ALL_STAFF_GROUP_NAME;
-  const displayName = item.name || 'Sohbet';
+  const displayName = item.name || t('messages');
   const isMuted = item.is_muted ?? false;
 
   return (
@@ -83,7 +93,7 @@ function ConversationRow({
             style={[styles.rowPreview, unread > 0 && styles.rowPreviewUnread]}
             numberOfLines={1}
           >
-            {item.last_message_preview || 'Henüz mesaj yok'}
+            {item.last_message_preview || t('messagesNoMessagesYet')}
           </Text>
         </View>
         {isAllStaff && staffId && onMutePress ? (
@@ -111,55 +121,121 @@ function ConversationRow({
 
 export default function StaffMessagesTabScreen() {
   const router = useRouter();
+  const { t } = useTranslation();
   const { staff } = useAuthStore();
   const { setUnreadCount } = useStaffUnreadMessagesStore();
-  const [conversations, setConversations] = useState<ConversationWithMeta[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [conversations, setConversations] = useState<ConversationWithMeta[]>(() => conversationListCache);
+  const [loading, setLoading] = useState(() => conversationListCache.length === 0);
   const [refreshing, setRefreshing] = useState(false);
+  const [adminMenuVisible, setAdminMenuVisible] = useState(false);
+  const loadingRef = useRef(false);
+  const reloadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLoadAtRef = useRef(0);
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    let cancelled = false;
+    if (conversationListCache.length > 0) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(STAFF_MESSAGES_PERSIST_KEY);
+        if (!raw || cancelled) return;
+        const parsed = JSON.parse(raw) as {
+          conversations?: ConversationWithMeta[];
+          updatedAt?: number;
+        };
+        const cachedList = Array.isArray(parsed?.conversations) ? parsed.conversations : [];
+        if (cachedList.length === 0) return;
+        conversationListCache = cachedList;
+        conversationListCacheUpdatedAt = Number(parsed?.updatedAt ?? Date.now());
+        conversationListDirty = false;
+        setConversations(cachedList);
+      } catch {
+        // Sessiz: bozuk cache açılışı engellemesin.
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const load = useCallback(async (opts?: { showRefreshing?: boolean; force?: boolean }) => {
     if (!staff) return;
-    setRefreshing(true);
-    const list = await staffListConversations(staff.id);
-    setConversations(list);
-    const total = list.reduce((s, c) => s + (c.unread_count ?? 0), 0);
-    setUnreadCount(total);
-    setRefreshing(false);
-    setLoading(false);
+    if (loadingRef.current) return;
+    const now = Date.now();
+    if (!opts?.force && now - lastLoadAtRef.current < MIN_LOAD_INTERVAL_MS) return;
+    loadingRef.current = true;
+    lastLoadAtRef.current = now;
+    if (opts?.showRefreshing) setRefreshing(true);
+    try {
+      const list = await staffListConversations(staff.id);
+      conversationListCache = list;
+      conversationListCacheUpdatedAt = Date.now();
+      conversationListDirty = false;
+      setConversations(list);
+      void AsyncStorage.setItem(
+        STAFF_MESSAGES_PERSIST_KEY,
+        JSON.stringify({ conversations: list, updatedAt: conversationListCacheUpdatedAt })
+      ).catch(() => {});
+      const total = list.reduce((s, c) => s + (c.unread_count ?? 0), 0);
+      setUnreadCount(total);
+    } finally {
+      if (opts?.showRefreshing) setRefreshing(false);
+      setLoading(false);
+      loadingRef.current = false;
+    }
   }, [staff, setUnreadCount]);
 
   useFocusEffect(
     useCallback(() => {
       setUnreadCount(0);
-      return () => {};
-    }, [setUnreadCount])
+      const hasCache = conversationListCache.length > 0;
+      const isCacheFresh = Date.now() - conversationListCacheUpdatedAt < LIST_CACHE_TTL_MS;
+      if (!hasCache || conversationListDirty || !isCacheFresh) {
+        load();
+      }
+      if (!staff?.id) {
+        return () => {};
+      }
+      const sub = subscribeToConversationList(staff.id, () => {
+        conversationListDirty = true;
+        if (reloadDebounceRef.current) return;
+        reloadDebounceRef.current = setTimeout(() => {
+          reloadDebounceRef.current = null;
+          load();
+        }, 350);
+      });
+      return () => {
+        sub.unsubscribe?.();
+        if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
+        reloadDebounceRef.current = null;
+      };
+    }, [setUnreadCount, load, staff?.id])
   );
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  useEffect(() => {
-    if (!staff?.id) return;
-    const sub = subscribeToConversationList(staff.id, load);
-    return () => sub.unsubscribe?.();
-  }, [staff?.id, load]);
 
   const handleDeleteConversation = (item: ConversationWithMeta) => {
     if (!staff?.id) return;
-    const name = item.name || 'Sohbet';
-    Alert.alert('Sohbeti sil', `"${name}" sohbetini listenizden kaldırmak istiyor musunuz?`, [
-      { text: 'İptal', style: 'cancel' },
+    const name = item.name || t('messages');
+    Alert.alert(t('messagesDeleteTitle'), t('messagesDeleteBody', { name }), [
+      { text: t('cancel'), style: 'cancel' },
       {
-        text: 'Sil',
+        text: t('delete'),
         style: 'destructive',
         onPress: async () => {
           const { error } = await staffDeleteConversation(item.id, staff.id);
           if (error) {
-            Alert.alert('Hata', error);
+            Alert.alert(t('error'), error);
             return;
           }
           setConversations((prev) => prev.filter((c) => c.id !== item.id));
+          conversationListCache = conversationListCache.filter((c) => c.id !== item.id);
+          conversationListCacheUpdatedAt = Date.now();
         },
       },
     ]);
@@ -168,15 +244,16 @@ export default function StaffMessagesTabScreen() {
   if (!staff) return null;
 
   const allStaffConv = conversations.find((c) => c.type === 'group' && c.name === ALL_STAFF_GROUP_NAME);
-  const otherConvs = conversations.filter((c) => !(c.type === 'group' && c.name === ALL_STAFF_GROUP_NAME));
+  const editableGroupConv = allStaffConv ?? conversations.find((c) => c.type === 'group') ?? null;
+  const otherConvs = conversations.filter((c) => !(allStaffConv && c.id === allStaffConv.id));
   const sections: { title: string; data: ConversationWithMeta[] }[] = [];
-  if (allStaffConv) sections.push({ title: 'Grup', data: [allStaffConv] });
-  if (otherConvs.length) sections.push({ title: 'Sohbetler', data: otherConvs });
+  if (allStaffConv) sections.push({ title: t('group'), data: [allStaffConv] });
+  if (otherConvs.length) sections.push({ title: t('messages'), data: otherConvs });
 
   const renderSectionHeader = ({ section }: { section: { title: string } }) => (
     <View style={styles.sectionHeader}>
       <Ionicons
-        name={section.title === 'Grup' ? 'people' : 'chatbubbles-outline'}
+        name={section.title === t('group') ? 'people' : 'chatbubbles-outline'}
         size={18}
         color={theme.colors.primary}
       />
@@ -186,58 +263,41 @@ export default function StaffMessagesTabScreen() {
 
   const openAllStaffChat = () => {
     if (!allStaffConv) {
-      Alert.alert('Bilgi', 'Ekip sohbeti henüz oluşturulmamış.');
+      Alert.alert(t('info'), t('messagesTeamChatNotCreated'));
       return;
     }
     router.push({ pathname: '/staff/chat/[id]', params: { id: allStaffConv.id } });
   };
 
   const openGroupEdit = () => {
-    if (!allStaffConv) {
-      Alert.alert('Bilgi', 'Düzenlenecek ekip grubu bulunamadı.');
+    if (!editableGroupConv) {
+      Alert.alert(t('info'), t('messagesGroupEditNotFound'));
       return;
     }
-    // Staff chat içinde admin'lere grup ayarlarını aç (admin layout'a geçiş bazı cihazlarda redirect tetikleyebiliyor).
-    router.push({ pathname: '/staff/chat/[id]', params: { id: allStaffConv.id, openGroupSettings: '1' } });
+    router.push({ pathname: '/staff/chat/[id]', params: { id: editableGroupConv.id, openGroupSettings: '1' } });
   };
 
   const isAdmin = staff?.role === 'admin';
 
   const renderHeaderActions = () => (
     <>
-      <Pressable
-        onPress={() => router.push('/staff/new-chat')}
-        style={({ pressed }) => [styles.newMessageBtn, pressed && { opacity: 0.92 }]}
-        android_ripple={{ color: theme.colors.borderLight }}
-      >
-        <Ionicons name="create-outline" size={18} color={theme.colors.white} />
-        <Text style={styles.newMessageBtnText}>Yeni mesaj</Text>
-      </Pressable>
-      {isAdmin && (
-        <View style={styles.adminTools}>
+      <View style={styles.headerActionRow}>
+        <Pressable
+          onPress={() => router.push('/staff/new-chat')}
+          style={({ pressed }) => [styles.newMessageBtn, pressed && styles.headerBtnPressed]}
+        >
+          <Ionicons name="create-outline" size={18} color={theme.colors.white} />
+          <Text style={styles.newMessageBtnText}>{t('screenNewChat')}</Text>
+        </Pressable>
+        {isAdmin ? (
           <Pressable
-            onPress={openAllStaffChat}
-            style={({ pressed }) => [styles.adminToolBtn, pressed && styles.adminToolBtnPressed]}
+            onPress={() => setAdminMenuVisible(true)}
+            style={({ pressed }) => [styles.moreBtn, pressed && styles.moreBtnPressed]}
           >
-            <Ionicons name="people-outline" size={16} color={theme.colors.primary} />
-            <Text style={styles.adminToolBtnText}>Ekip sohbeti</Text>
+            <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.primary} />
           </Pressable>
-          <Pressable
-            onPress={() => router.push('/staff/new-group')}
-            style={({ pressed }) => [styles.adminToolBtn, pressed && styles.adminToolBtnPressed]}
-          >
-            <Ionicons name="add-circle-outline" size={16} color={theme.colors.primary} />
-            <Text style={styles.adminToolBtnText}>Grup oluştur</Text>
-          </Pressable>
-          <Pressable
-            onPress={openGroupEdit}
-            style={({ pressed }) => [styles.adminToolBtn, pressed && styles.adminToolBtnPressed]}
-          >
-            <Ionicons name="create-outline" size={16} color={theme.colors.primary} />
-            <Text style={styles.adminToolBtnText}>Grup düzenle / isim ver</Text>
-          </Pressable>
-        </View>
-      )}
+        ) : null}
+      </View>
     </>
   );
 
@@ -246,15 +306,15 @@ export default function StaffMessagesTabScreen() {
       {loading && conversations.length === 0 ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={styles.loadingText}>Sohbetler yükleniyor...</Text>
+          <Text style={styles.loadingText}>{t('messagesLoading')}</Text>
         </View>
       ) : conversations.length === 0 ? (
         <View style={styles.empty}>
           <View style={styles.emptyIconWrap}>
             <Ionicons name="chatbubbles-outline" size={48} color={theme.colors.textMuted} />
           </View>
-          <Text style={styles.emptyTitle}>Henüz sohbet yok</Text>
-          <Text style={styles.emptyText}>Misafirler veya ekip arkadaşlarınızla mesajlaşmaya başlayın.</Text>
+          <Text style={styles.emptyTitle}>{t('messagesEmptyTitle')}</Text>
+          <Text style={styles.emptyText}>{t('messagesEmptyBody')}</Text>
           {renderHeaderActions()}
         </View>
       ) : (
@@ -265,7 +325,7 @@ export default function StaffMessagesTabScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={load}
+              onRefresh={() => load({ showRefreshing: true })}
               colors={[theme.colors.primary]}
               tintColor={theme.colors.primary}
             />
@@ -285,7 +345,9 @@ export default function StaffMessagesTabScreen() {
                   ? async () => {
                       const next = !(item.is_muted ?? false);
                       await staffSetConversationMuted(item.id, staff.id, next);
-                      load();
+                      setConversations((prev) => prev.map((c) => (c.id === item.id ? { ...c, is_muted: next } : c)));
+                      conversationListCache = conversationListCache.map((c) => (c.id === item.id ? { ...c, is_muted: next } : c));
+                      conversationListCacheUpdatedAt = Date.now();
                     }
                   : undefined
               }
@@ -293,6 +355,43 @@ export default function StaffMessagesTabScreen() {
           )}
         />
       )}
+      <Modal visible={adminMenuVisible} transparent animationType="fade" onRequestClose={() => setAdminMenuVisible(false)}>
+        <Pressable style={styles.menuOverlay} onPress={() => setAdminMenuVisible(false)}>
+          <Pressable style={styles.menuCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.menuTitle}>{t('messagesGroupActionsTitle')}</Text>
+            <Pressable
+              onPress={() => {
+                setAdminMenuVisible(false);
+                openAllStaffChat();
+              }}
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
+            >
+              <Ionicons name="people-outline" size={18} color={theme.colors.primary} />
+              <Text style={styles.menuItemText}>{t('teamChat')}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setAdminMenuVisible(false);
+                router.push('/staff/new-group');
+              }}
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
+            >
+              <Ionicons name="add-circle-outline" size={18} color={theme.colors.primary} />
+              <Text style={styles.menuItemText}>{t('screenNewGroup')}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setAdminMenuVisible(false);
+                openGroupEdit();
+              }}
+              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
+            >
+              <Ionicons name="create-outline" size={18} color={theme.colors.primary} />
+              <Text style={styles.menuItemText}>{t('messagesGroupEdit')}</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -316,6 +415,14 @@ const styles = StyleSheet.create({
     paddingVertical: theme.spacing.sm,
     paddingBottom: theme.spacing.xxl,
   },
+  headerActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: theme.spacing.lg,
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+    gap: 10,
+  },
   newMessageBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -323,9 +430,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 14,
     paddingHorizontal: 18,
-    marginHorizontal: theme.spacing.lg,
-    marginTop: theme.spacing.md,
-    marginBottom: theme.spacing.sm,
+    flex: 1,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.primary,
     borderWidth: 1,
@@ -338,31 +443,50 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.2,
   },
-  adminTools: {
-    marginHorizontal: theme.spacing.lg,
-    marginTop: 4,
-    marginBottom: theme.spacing.sm,
-    gap: 8,
+  headerBtnPressed: {
+    transform: [{ scale: 0.98 }],
   },
-  adminToolBtn: {
-    flexDirection: 'row',
+  moreBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
   },
-  adminToolBtnPressed: {
-    opacity: 0.9,
+  moreBtnPressed: { transform: [{ scale: 0.96 }] },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+    padding: 16,
   },
-  adminToolBtnText: {
-    color: theme.colors.primary,
+  menuCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+  },
+  menuTitle: {
+    fontSize: 14,
     fontWeight: '700',
-    fontSize: 13,
+    color: theme.colors.text,
+    marginBottom: 6,
+    paddingHorizontal: 6,
   },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  menuItemPressed: { backgroundColor: theme.colors.backgroundSecondary },
+  menuItemText: { fontSize: 14, fontWeight: '600', color: theme.colors.text },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',

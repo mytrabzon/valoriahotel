@@ -25,6 +25,7 @@ import { adminTheme } from '@/constants/adminTheme';
 import { AdminCard } from '@/components/admin';
 import { CachedImage } from '@/components/CachedImage';
 import { formatDateShort } from '@/lib/date';
+import { sendPdfToPrinterEmail } from '@/lib/printerEmail';
 
 type ExpenseRow = {
   id: string;
@@ -79,6 +80,7 @@ export default function AdminExpensesAllScreen() {
   const [receiptModal, setReceiptModal] = useState<string | null>(null);
   const [detailExpense, setDetailExpense] = useState<ExpenseRow | null>(null);
   const [pdfExportingStaffId, setPdfExportingStaffId] = useState<string | null>(null);
+  const [mailSendingKey, setMailSendingKey] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -143,21 +145,13 @@ export default function AdminExpensesAllScreen() {
   const getExpenseSummary = (e: ExpenseRow) =>
     `${fmtMoney(Number(e.amount))} · ${formatDateShort(e.expense_date)} · ${e.category?.name ?? '—'}`;
 
-  const exportStaffExpensesPdf = useCallback(
-    async (e: ExpenseRow) => {
+  const exportSingleExpensePdf = useCallback(
+    async (e: ExpenseRow, mode: 'share' | 'mail' = 'share') => {
       if (!e.staff_id) return;
-      setPdfExportingStaffId(e.staff_id);
+      if (mode === 'mail') setMailSendingKey(`staff:${e.staff_id}`);
+      else setPdfExportingStaffId(e.staff_id);
       try {
-        const { data: staffExpenses, error } = await supabase
-          .from('staff_expenses')
-          .select('id, amount, description, status, expense_date, expense_time, staff_id, staff:staff_id(full_name, department), category:category_id(name)')
-          .eq('staff_id', e.staff_id)
-          .order('expense_date', { ascending: true })
-          .order('created_at', { ascending: true });
-        if (error) throw new Error(error.message);
-        const rawList = (staffExpenses ?? []) as ExpenseRow[];
-        const list = rawList.filter((x) => x.status !== 'rejected');
-        if (list.length === 0) return;
+        const list = [e];
 
         let logoHtml = '';
         try {
@@ -165,12 +159,8 @@ export default function AdminExpensesAllScreen() {
           await asset.downloadAsync();
           if (asset.localUri) logoHtml = `<img src="${asset.localUri}" style="height:32px;margin-bottom:4px;" alt="Valoria" />`;
         } catch {}
-        const personName = list[0]?.staff?.full_name ?? '—';
-        const personDept = list[0]?.staff?.department ?? '';
-        const sorted = [...list].sort(
-          (a, b) => new Date(a.expense_date).getTime() - new Date(b.expense_date).getTime() ||
-            (a.expense_time || '').localeCompare(b.expense_time || '')
-        );
+        const personName = e.staff?.full_name ?? '—';
+        const personDept = e.staff?.department ?? '';
         const html = `
 <!DOCTYPE html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -203,19 +193,30 @@ tr:nth-child(even) td{background:#f8fafc}
 </div>
 <table>
 <tr><th class="colDate">Tarih</th><th class="colTime">Saat</th><th class="colCat">Kategori</th><th class="colAmount">Tutar</th><th class="colStatus">Durum</th><th class="colDesc">Açıklama</th></tr>
-${sorted.map((x) => `<tr><td class="colDate">${formatDateShort(x.expense_date)}</td><td class="colTime">${formatTimeOnly(x.expense_time)}</td><td class="colCat">${(x.category?.name ?? '—').replace(/</g, '&lt;')}</td><td class="colAmount">${fmtMoney(Number(x.amount))}</td><td class="colStatus">${statusLabel(x.status)}</td><td class="colDesc">${(x.description ?? '—').replace(/</g, '&lt;')}</td></tr>`).join('')}
+${list.map((x) => `<tr><td class="colDate">${formatDateShort(x.expense_date)}</td><td class="colTime">${formatTimeOnly(x.expense_time)}</td><td class="colCat">${(x.category?.name ?? '—').replace(/</g, '&lt;')}</td><td class="colAmount">${fmtMoney(Number(x.amount))}</td><td class="colStatus">${statusLabel(x.status)}</td><td class="colDesc">${(x.description ?? '—').replace(/</g, '&lt;')}</td></tr>`).join('')}
 </table>
 <div class="totals">Toplam: ${fmtMoney(list.reduce((s, x) => s + Number(x.amount), 0))} · Kayıt: ${list.length}</div>
 <div class="footer">VALORİA HOTEL · Bu rapor otomatik oluşturulmuştur.</div>
 </div>
 </body></html>`;
         const { uri } = await Print.printToFileAsync({ html });
+        if (mode === 'mail') {
+          await sendPdfToPrinterEmail({
+            pdfUri: uri,
+            subject: `Harcama Belgesi - ${personName}`,
+            fileName: `harcama-${e.id}.pdf`,
+          });
+          Alert.alert('Gönderildi', 'Belge yazıcı e-posta adresine gönderildi.');
+          return;
+        }
         const canShare = await Sharing.isAvailableAsync();
         if (canShare) await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Harcama Bildirimi - ${personName}` });
       } catch (err) {
         console.warn('Staff expenses PDF failed', err);
+        if (mode === 'mail') Alert.alert('Hata', (err as Error)?.message ?? 'Belge gönderilemedi.');
       } finally {
-        setPdfExportingStaffId(null);
+        if (mode === 'mail') setMailSendingKey(null);
+        else setPdfExportingStaffId(null);
       }
     },
     []
@@ -381,7 +382,7 @@ ${sorted.map((x) => `<tr><td class="colDate">${formatDateShort(x.expense_date)}<
     }
   }, [expenses, dateStart, dateEnd]);
 
-  const exportPdf = useCallback(async () => {
+  const exportPdf = useCallback(async (mode: 'share' | 'mail' = 'share') => {
     const forPdf = expenses.filter((e) => e.status !== 'rejected');
     const sorted = [...forPdf].sort(
       (a, b) => new Date(a.expense_date).getTime() - new Date(b.expense_date).getTime() ||
@@ -441,10 +442,20 @@ ${sorted.map((e) => `<tr><td class="colDate">${formatDateShort(e.expense_date)}<
 </body></html>`;
     try {
       const { uri } = await Print.printToFileAsync({ html });
+      if (mode === 'mail') {
+        await sendPdfToPrinterEmail({
+          pdfUri: uri,
+          subject: `Tüm Harcamalar Raporu ${dateStart} - ${dateEnd}`,
+          fileName: `tum-harcamalar-${dateStart}-${dateEnd}.pdf`,
+        });
+        Alert.alert('Gönderildi', 'PDF yazıcı e-posta adresine gönderildi.');
+        return;
+      }
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Tüm harcamalar (PDF)' });
     } catch (e) {
       console.warn('PDF export failed', e);
+      if (mode === 'mail') Alert.alert('Hata', (e as Error)?.message ?? 'Belge gönderilemedi.');
     }
   }, [expenses, dateStart, dateEnd, totalAmount, approvedTotal]);
 
@@ -534,6 +545,23 @@ ${sorted.map((e) => `<tr><td class="colDate">${formatDateShort(e.expense_date)}<
             <Ionicons name="document-text-outline" size={20} color={adminTheme.colors.accent} />
             <Text style={styles.exportBtnText}>PDF</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.exportBtn}
+            onPress={async () => {
+              setMailSendingKey('all');
+              await exportPdf('mail');
+              setMailSendingKey(null);
+            }}
+            activeOpacity={0.8}
+            disabled={mailSendingKey === 'all'}
+          >
+            {mailSendingKey === 'all' ? (
+              <ActivityIndicator size="small" color={adminTheme.colors.accent} />
+            ) : (
+              <Ionicons name="mail-outline" size={20} color={adminTheme.colors.accent} />
+            )}
+            <Text style={styles.exportBtnText}>Yazıcı Mail</Text>
+          </TouchableOpacity>
         </View>
 
         <Text style={styles.listTitle}>Tüm Harcamalar ({expenses.length})</Text>
@@ -588,8 +616,8 @@ ${sorted.map((e) => `<tr><td class="colDate">${formatDateShort(e.expense_date)}<
                 )}
                 <TouchableOpacity
                   style={[styles.tableCell, styles.thPdf]}
-                  onPress={(ev) => { ev.stopPropagation(); exportStaffExpensesPdf(e); }}
-                  disabled={pdfExportingStaffId === e.staff_id}
+                  onPress={(ev) => { ev.stopPropagation(); exportSingleExpensePdf(e); }}
+                  disabled={pdfExportingStaffId === e.staff_id || mailSendingKey === `staff:${e.staff_id}`}
                 >
                   {pdfExportingStaffId === e.staff_id ? (
                     <ActivityIndicator size="small" color={adminTheme.colors.accent} />
@@ -656,8 +684,8 @@ ${sorted.map((e) => `<tr><td class="colDate">${formatDateShort(e.expense_date)}<
                   ) : null}
                     <TouchableOpacity
                       style={styles.detailPdfBtn}
-                      onPress={() => exportStaffExpensesPdf(detailExpense)}
-                      disabled={pdfExportingStaffId === detailExpense.staff_id}
+                      onPress={() => exportSingleExpensePdf(detailExpense)}
+                      disabled={pdfExportingStaffId === detailExpense.staff_id || mailSendingKey === `staff:${detailExpense.staff_id}`}
                     >
                       {pdfExportingStaffId === detailExpense.staff_id ? (
                         <ActivityIndicator size="small" color="#fff" />
@@ -665,6 +693,20 @@ ${sorted.map((e) => `<tr><td class="colDate">${formatDateShort(e.expense_date)}<
                         <>
                           <Ionicons name="document-text-outline" size={20} color="#fff" />
                           <Text style={styles.detailPdfBtnText}>Harcama Bildirimi PDF</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.detailPdfBtn, { marginTop: 10, backgroundColor: adminTheme.colors.surfaceTertiary }]}
+                      onPress={() => exportSingleExpensePdf(detailExpense, 'mail')}
+                      disabled={mailSendingKey === `staff:${detailExpense.staff_id}`}
+                    >
+                      {mailSendingKey === `staff:${detailExpense.staff_id}` ? (
+                        <ActivityIndicator size="small" color={adminTheme.colors.accent} />
+                      ) : (
+                        <>
+                          <Ionicons name="mail-outline" size={20} color={adminTheme.colors.accent} />
+                    <Text style={[styles.detailPdfBtnText, { color: adminTheme.colors.accent }]}>Tek Belgeyi Mail Gönder</Text>
                         </>
                       )}
                     </TouchableOpacity>

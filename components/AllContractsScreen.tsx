@@ -91,20 +91,28 @@ export function AllContractsScreen() {
     }
     setLoadError(null);
 
-    const roomIds = (list ?? []).map((r) => r.room_id).filter(Boolean) as string[];
-    const staffIds = (list ?? []).map((r) => r.assigned_staff_id).filter(Boolean) as string[];
+    const roomIds = [...new Set((list ?? []).map((r) => r.room_id).filter(Boolean))] as string[];
+    const staffIds = [...new Set((list ?? []).map((r) => r.assigned_staff_id).filter(Boolean))] as string[];
 
     let roomNumbers: Record<string, string> = {};
     let staffNames: Record<string, string> = {};
 
-    if (roomIds.length > 0) {
-      const { data: rooms } = await supabase.from('rooms').select('id, room_number').in('id', roomIds);
-      roomNumbers = (rooms ?? []).reduce((acc, r) => ({ ...acc, [r.id]: r.room_number }), {} as Record<string, string>);
-    }
-    if (staffIds.length > 0) {
-      const { data: staff } = await supabase.from('staff').select('id, full_name').in('id', staffIds);
-      staffNames = (staff ?? []).reduce((acc, s) => ({ ...acc, [s.id]: s.full_name ?? '—' }), {} as Record<string, string>);
-    }
+    const [roomsResult, staffResult] = await Promise.all([
+      roomIds.length > 0
+        ? supabase.from('rooms').select('id, room_number').in('id', roomIds)
+        : Promise.resolve({ data: [] as { id: string; room_number: string }[] }),
+      staffIds.length > 0
+        ? supabase.from('staff').select('id, full_name').in('id', staffIds)
+        : Promise.resolve({ data: [] as { id: string; full_name: string | null }[] }),
+    ]);
+    roomNumbers = (roomsResult.data ?? []).reduce(
+      (acc, r) => ({ ...acc, [r.id]: r.room_number }),
+      {} as Record<string, string>
+    );
+    staffNames = (staffResult.data ?? []).reduce(
+      (acc, s) => ({ ...acc, [s.id]: s.full_name ?? '—' }),
+      {} as Record<string, string>
+    );
 
     setRows(
       (list ?? []).map((r) => {
@@ -237,8 +245,6 @@ export function AllContractsScreen() {
     }
   };
 
-  if (loading) return <Text style={styles.loading}>Yükleniyor...</Text>;
-
   return (
     <View style={styles.container}>
       {loadError ? (
@@ -277,9 +283,19 @@ export function AllContractsScreen() {
       <FlatList
         data={rows}
         keyExtractor={(r) => r.id}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, loading && styles.listLoading]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[adminTheme.colors.primary]} />}
-        ListEmptyComponent={<Text style={styles.emptyText}>Bu tarih aralığında kayıt yok.</Text>}
+        ListHeaderComponent={
+          loading ? (
+            <View style={styles.listLoadingBanner}>
+              <ActivityIndicator size="small" color={adminTheme.colors.primary} />
+              <Text style={styles.listLoadingText}>Liste yükleniyor…</Text>
+            </View>
+          ) : null
+        }
+        ListEmptyComponent={
+          loading ? null : <Text style={styles.emptyText}>Bu tarih aralığında kayıt yok.</Text>
+        }
         renderItem={({ item }) => (
           <TouchableOpacity style={styles.card} onPress={() => openDetailModal(item)} activeOpacity={0.85}>
             <View style={styles.cardRow}>
@@ -398,8 +414,17 @@ const styles = StyleSheet.create({
   dateInput: { backgroundColor: '#f1f5f9', borderRadius: 8, padding: 10, fontSize: 14, color: '#1e293b' },
   filterBtn: { backgroundColor: adminTheme.colors.primary, padding: 12, borderRadius: 8, justifyContent: 'center' },
   hint: { padding: 12, paddingHorizontal: 16, fontSize: 12, color: '#64748b', backgroundColor: '#f0f9ff' },
-  loading: { padding: 24, fontSize: 14, color: '#64748b' },
   list: { padding: 16, paddingBottom: 32 },
+  listLoading: { flexGrow: 1 },
+  listLoadingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 28,
+    marginBottom: 8,
+  },
+  listLoadingText: { fontSize: 14, color: '#64748b' },
   emptyText: { padding: 24, textAlign: 'center', color: '#64748b', fontSize: 14 },
   card: {
     backgroundColor: '#fff',

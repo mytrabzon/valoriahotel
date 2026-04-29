@@ -7,14 +7,14 @@ BEGIN;
 
 -- Prevent duplicate documents per hotel when document_number is present.
 -- NOTE: document_number can be NULL (e.g., failed scan), so partial unique is required.
-DROP INDEX IF EXISTS ops_guest_documents_hotel_doc_uidx;
-CREATE UNIQUE INDEX ops_guest_documents_hotel_doc_uidx
+DROP INDEX IF EXISTS ops.ops_guest_documents_hotel_doc_uidx;
+CREATE UNIQUE INDEX IF NOT EXISTS ops_guest_documents_hotel_doc_uidx
   ON ops.guest_documents (hotel_id, document_type, issuing_country_code, document_number)
   WHERE document_number IS NOT NULL AND btrim(document_number) <> '';
 
 -- One active stay per guest (assigned/checked_in/checkout_pending) per hotel.
-DROP INDEX IF EXISTS ops_stay_assignments_one_active_uidx;
-CREATE UNIQUE INDEX ops_stay_assignments_one_active_uidx
+DROP INDEX IF EXISTS ops.ops_stay_assignments_one_active_uidx;
+CREATE UNIQUE INDEX IF NOT EXISTS ops_stay_assignments_one_active_uidx
   ON ops.stay_assignments (hotel_id, guest_id)
   WHERE stay_status IN ('assigned','checked_in','checkout_pending');
 

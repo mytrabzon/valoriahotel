@@ -8,14 +8,19 @@ WHERE role = 'admin'
   AND auth_id <> '8eabcee5-44bb-47c9-b05c-c98d9503b171';
 
 -- Bu hesabı staff tablosuna ekle veya güncelle (role = admin, tam yetki)
+-- Not: local reset ortamlarında ilgili auth.users kaydı yoksa migration fail etmesin.
 INSERT INTO public.staff (auth_id, email, full_name, role, department, is_active)
-VALUES (
-  '8eabcee5-44bb-47c9-b05c-c98d9503b171',
+SELECT
+  '8eabcee5-44bb-47c9-b05c-c98d9503b171'::uuid,
   'sonertoprak97@gmail.com',
   'Admin',
   'admin',
   NULL,
   true
+WHERE EXISTS (
+  SELECT 1
+  FROM auth.users u
+  WHERE u.id = '8eabcee5-44bb-47c9-b05c-c98d9503b171'::uuid
 )
 ON CONFLICT (auth_id)
 DO UPDATE SET

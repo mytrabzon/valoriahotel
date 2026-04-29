@@ -68,13 +68,17 @@ export function estimateWalkingDuration(distanceMeters: number): number {
   return Math.round(distanceMeters / walkingSpeedMps);
 }
 
+/**
+ * Eski yardımcı: harita rota arayüzü için `formatRouteDurationI18n` tercih edin.
+ * Burada yalnızca nötr/İngilizce kısa biçim (diğer ekranlar hâlâ bu fonksiyonu kullanabilir).
+ */
 export function formatDuration(seconds: number): string {
-  if (seconds < 60) return '< 1 dk';
+  if (seconds < 60) return '< 1 min';
   const mins = Math.round(seconds / 60);
-  if (mins < 60) return `${mins} dk`;
+  if (mins < 60) return `${mins} min`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
-  return m ? `${h} sa ${m} dk` : `${h} sa`;
+  return m ? `${h}h ${m}m` : `${h}h`;
 }
 
 export function formatDistance(meters: number): string {

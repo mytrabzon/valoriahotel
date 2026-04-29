@@ -7,9 +7,9 @@ import { Platform } from 'react-native';
 import CustomerMapNative from '@/components/CustomerMapNative';
 import ValoriaMapView from '@/components/ValoriaMapView';
 import type { Poi } from '@/lib/map/pois';
-import type { MapUserMarker, MapPostMarker } from '@/lib/map/types';
+import type { MapUserMarker, MapPostMarker, MapDiningMarker, MapTransferTourMarker } from '@/lib/map/types';
 
-export type { MapUserMarker, MapPostMarker };
+export type { MapUserMarker, MapPostMarker, MapDiningMarker, MapTransferTourMarker };
 
 export type CustomerMapPickerProps = {
   initialLat?: number;
@@ -23,9 +23,13 @@ export type CustomerMapPickerProps = {
   hotelMarker?: { lat: number; lng: number; title: string };
   userMarkers?: MapUserMarker[];
   postMarkers?: MapPostMarker[];
+  diningMarkers?: MapDiningMarker[];
+  transferTourMarkers?: MapTransferTourMarker[];
   onPoiPress?: (poi: Poi) => void;
   onHotelPress?: () => void;
   onPostPress?: (postId: string) => void;
+  onDiningPress?: (venueId: string) => void;
+  onTransferTourPress?: (serviceId: string) => void;
   onRegionChangeComplete?: (center: { lat: number; lng: number }) => void;
   onRegionChange?: (center: { lat: number; lng: number }) => void;
   style?: object;
@@ -43,9 +47,11 @@ export default function CustomerMapPicker(props: CustomerMapPickerProps) {
         hotelMarker={props.hotelMarker}
         userMarkers={props.userMarkers}
         postMarkers={props.postMarkers}
+        diningMarkers={props.diningMarkers}
         onPoiPress={props.onPoiPress}
         onHotelPress={props.onHotelPress}
         onPostPress={props.onPostPress}
+        onDiningPress={props.onDiningPress}
         onRegionChangeComplete={props.onRegionChangeComplete ?? props.onRegionChange}
         style={props.style}
       />
@@ -61,9 +67,13 @@ export default function CustomerMapPicker(props: CustomerMapPickerProps) {
       hotelMarker={props.hotelMarker}
       userMarkers={props.userMarkers}
       postMarkers={props.postMarkers}
+      diningMarkers={props.diningMarkers}
+      transferTourMarkers={props.transferTourMarkers}
       onPoiPress={props.onPoiPress}
       onHotelPress={props.onHotelPress}
       onPostPress={props.onPostPress}
+      onDiningPress={props.onDiningPress}
+      onTransferTourPress={props.onTransferTourPress}
       onRegionChange={props.onRegionChange ?? props.onRegionChangeComplete}
       style={props.style}
     />

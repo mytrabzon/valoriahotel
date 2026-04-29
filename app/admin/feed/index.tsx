@@ -7,6 +7,7 @@ import {
   ScrollView,
   RefreshControl,
   Alert,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +15,7 @@ import { supabase } from '@/lib/supabase';
 import { adminTheme } from '@/constants/adminTheme';
 import { AdminCard } from '@/components/admin';
 import { CachedImage } from '@/components/CachedImage';
+import { removeFeedMediaObjectsForPostUrls } from '@/lib/feedMediaStorageDelete';
 
 type FeedPostRow = {
   id: string;
@@ -30,6 +32,7 @@ export default function AdminFeedScreen() {
   const [feedPosts, setFeedPosts] = useState<FeedPostRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [visibleFeedCount, setVisibleFeedCount] = useState(30);
 
   const load = async () => {
     setRefreshing(true);
@@ -47,6 +50,10 @@ export default function AdminFeedScreen() {
     load();
   }, []);
 
+  useEffect(() => {
+    setVisibleFeedCount(30);
+  }, [feedPosts]);
+
   const handleDeletePost = (post: FeedPostRow) => {
     Alert.alert(
       'Paylaşımı sil',
@@ -62,6 +69,7 @@ export default function AdminFeedScreen() {
               Alert.alert('Hata', error.message);
               return;
             }
+            await removeFeedMediaObjectsForPostUrls([post.media_url, post.thumbnail_url]);
             setFeedPosts((prev) => prev.filter((p) => p.id !== post.id));
           },
         },
@@ -102,7 +110,7 @@ export default function AdminFeedScreen() {
         {feedPosts.length === 0 ? (
           <Text style={styles.feedEmpty}>Henüz paylaşım yok.</Text>
         ) : (
-          feedPosts.map((p, idx) => {
+          feedPosts.slice(0, visibleFeedCount).map((p, idx) => {
             const previewUri = feedPreviewUri(p);
             let previewContent: React.ReactNode;
             if (p.media_type === 'image' && previewUri) {
@@ -124,42 +132,44 @@ export default function AdminFeedScreen() {
                 </View>
               );
             }
+            const title =
+              p.title ||
+              (p.media_type === 'video'
+                ? 'Video'
+                : p.media_type === 'image'
+                  ? 'Fotoğraf'
+                  : 'Metin paylaşımı');
+            const author = (p.staff as { full_name?: string } | null)?.full_name ?? 'Personel';
+            const dept = (p.staff as { department?: string } | null)?.department ?? null;
+            const date = new Date(p.created_at).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', year: 'numeric' });
             return (
-              <View key={p.id} style={[styles.feedItem, idx === feedPosts.length - 1 && styles.feedItemLast]}>
-                <View style={styles.feedPreviewWrap}>{previewContent}</View>
-                <View style={styles.feedBody}>
-                  <Text style={styles.feedItemTitle} numberOfLines={2}>
-                    {p.title ||
-                      (p.media_type === 'video'
-                        ? 'Video'
-                        : p.media_type === 'image'
-                          ? 'Fotoğraf'
-                          : 'Metin paylaşımı')}
+              <View key={p.id} style={styles.feedCard}>
+                <View pointerEvents="none" style={styles.feedCardTopAccent} />
+                <View style={styles.feedMediaWrap}>{previewContent}</View>
+                <View style={styles.feedCardBody}>
+                  <Text style={styles.feedCardTitle} numberOfLines={2}>
+                    {title}
                   </Text>
-                  <Text style={styles.feedItemMeta}>
-                    {(p.staff as { full_name?: string } | null)?.full_name ?? 'Personel'}
-                    {(p.staff as { department?: string } | null)?.department
-                      ? ` · ${(p.staff as { department: string }).department}`
-                      : ''}
-                    {' · '}
-                    {new Date(p.created_at).toLocaleDateString('tr-TR', {
-                      day: 'numeric',
-                      month: 'short',
-                      year: 'numeric',
-                    })}
+                  <Text style={styles.feedCardMeta} numberOfLines={2}>
+                    {author}
+                    {dept ? ` · ${dept}` : ''} · {date}
                   </Text>
+                  <View style={styles.feedCardActions}>
+                    <TouchableOpacity onPress={() => handleDeletePost(p)} style={styles.dangerPill} activeOpacity={0.8}>
+                      <Ionicons name="trash-outline" size={18} color={adminTheme.colors.error} />
+                      <Text style={styles.dangerPillText}>Sil</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <TouchableOpacity
-                  onPress={() => handleDeletePost(p)}
-                  style={styles.feedDeleteBtn}
-                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                >
-                  <Ionicons name="trash-outline" size={22} color={adminTheme.colors.error} />
-                </TouchableOpacity>
               </View>
             );
           })
         )}
+        {feedPosts.length > visibleFeedCount ? (
+          <TouchableOpacity style={styles.moreBtn} onPress={() => setVisibleFeedCount((c) => c + 30)} activeOpacity={0.85}>
+            <Text style={styles.moreBtnText}>Daha fazla göster</Text>
+          </TouchableOpacity>
+        ) : null}
       </AdminCard>
     </ScrollView>
   );
@@ -189,33 +199,69 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: 24,
   },
-  feedItem: {
+  feedCard: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: adminTheme.colors.borderLight,
+    gap: 12,
+    padding: 12,
+    borderRadius: 18,
+    backgroundColor: adminTheme.colors.surface,
+    borderWidth: 1,
+    borderColor: `${adminTheme.colors.accent}22`,
+    marginBottom: 10,
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: adminTheme.shadow.sm,
+      android: { elevation: 2 },
+    }),
   },
-  feedItemLast: { borderBottomWidth: 0 },
-  feedPreviewWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 10,
+  feedCardTopAccent: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: adminTheme.colors.accent,
+    opacity: 0.9,
+  },
+  feedMediaWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 14,
     overflow: 'hidden',
     backgroundColor: adminTheme.colors.surfaceTertiary,
-    marginRight: 12,
   },
-  feedPreviewImage: { width: 56, height: 56 },
+  feedPreviewImage: { width: 72, height: 72 },
   feedPreviewPlaceholder: {
-    width: 56,
-    height: 56,
+    width: 72,
+    height: 72,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: adminTheme.colors.surfaceTertiary,
   },
-  feedBody: { flex: 1, minWidth: 0 },
-  feedDeleteBtn: { padding: 8, marginLeft: 4 },
-  feedItemTitle: { fontSize: 15, fontWeight: '600', color: adminTheme.colors.text },
-  feedItemMeta: { fontSize: 12, color: adminTheme.colors.textMuted, marginTop: 2 },
+  feedCardBody: { flex: 1, minWidth: 0, paddingTop: 2 },
+  feedCardTitle: { fontSize: 15, fontWeight: '800', color: adminTheme.colors.text, letterSpacing: -0.2 },
+  feedCardMeta: { fontSize: 12, color: adminTheme.colors.textMuted, marginTop: 4, lineHeight: 16 },
+  feedCardActions: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10 },
+  dangerPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: `${adminTheme.colors.error}10`,
+    borderWidth: 1,
+    borderColor: `${adminTheme.colors.error}33`,
+  },
+  dangerPillText: { fontSize: 13, fontWeight: '800', color: adminTheme.colors.error },
+  moreBtn: {
+    marginTop: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: adminTheme.colors.accent + '33',
+    backgroundColor: adminTheme.colors.surfaceSecondary,
+  },
+  moreBtnText: { fontSize: 14, fontWeight: '700', color: adminTheme.colors.accent },
 });

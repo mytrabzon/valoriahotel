@@ -1,5 +1,6 @@
 import { parse } from 'mrz';
 import type { ParsedDocument } from './types';
+import { mrzSixDigitsToIso } from './mrzDates';
 
 function cleanMrz(raw: string): string {
   return raw
@@ -10,19 +11,27 @@ function cleanMrz(raw: string): string {
     .join('\n');
 }
 
+function mapMrzSex(v: unknown): 'M' | 'F' | 'X' | null {
+  if (v == null) return null;
+  const s = String(v).toLowerCase();
+  if (s === 'm' || s === 'male') return 'M';
+  if (s === 'f' || s === 'female') return 'F';
+  if (s === 'x' || s === '<' || s === 'nonspecified') return 'X';
+  return null;
+}
+
 export function parseMrzToNormalized(rawMrz: string): ParsedDocument {
   const raw = cleanMrz(rawMrz);
   const warnings: string[] = [];
 
   try {
-    // mrz.parse expects lines array or string; keep as string
     const res: any = parse(raw);
 
     const docTypeRaw = String(res?.format ?? '').toLowerCase();
-    const documentType: ParsedDocument['documentType'] =
-      docTypeRaw.includes('td1') || docTypeRaw.includes('td2') || docTypeRaw.includes('td3')
-        ? 'passport'
-        : 'other';
+    // ICAO: TD1 = ID-1 (kimlik), TD2 = genelde ID/visa, TD3 = pasaport (MRP 2 satır)
+    let documentType: ParsedDocument['documentType'] = 'other';
+    if (docTypeRaw.includes('td3')) documentType = 'passport';
+    else if (docTypeRaw.includes('td1') || docTypeRaw.includes('td2')) documentType = 'id_card';
 
     const firstName = res?.fields?.firstName ?? res?.fields?.givenNames ?? null;
     const lastName = res?.fields?.lastName ?? res?.fields?.surname ?? null;
@@ -32,8 +41,18 @@ export function parseMrzToNormalized(rawMrz: string): ParsedDocument {
         : [firstName, lastName].filter(Boolean).join(' ').trim() || null;
 
     const checksumsValid =
-      typeof res?.valid === 'boolean' ? res.valid : (typeof res?.validCheckDigits === 'boolean' ? res.validCheckDigits : null);
+      typeof res?.valid === 'boolean' ? res.valid : typeof res?.validCheckDigits === 'boolean' ? res.validCheckDigits : null;
     if (checksumsValid === false) warnings.push('MRZ checksum validation failed');
+
+    // mrz@5: issuing country = `issuingState` (ICAO 3-letter), NOT `issuingCountry`
+    const issuingRaw =
+      res?.fields?.issuingState ?? res?.fields?.issuingCountry ?? res?.fields?.issuer ?? null;
+
+    const birthRaw = res?.fields?.birthDate ? String(res.fields.birthDate) : null;
+    const expiryRaw = res?.fields?.expirationDate ? String(res.fields.expirationDate) : null;
+
+    const birthDate = birthRaw && /^\d{6}$/.test(birthRaw) ? mrzSixDigitsToIso(birthRaw, 'birth') : birthRaw;
+    const expiryDate = expiryRaw && /^\d{6}$/.test(expiryRaw) ? mrzSixDigitsToIso(expiryRaw, 'expiry') : expiryRaw;
 
     return {
       documentType,
@@ -43,16 +62,16 @@ export function parseMrzToNormalized(rawMrz: string): ParsedDocument {
       middleName: null,
       documentNumber: res?.fields?.documentNumber ? String(res.fields.documentNumber) : null,
       nationalityCode: res?.fields?.nationality ? String(res.fields.nationality) : null,
-      issuingCountryCode: res?.fields?.issuingCountry ? String(res.fields.issuingCountry) : null,
-      birthDate: res?.fields?.birthDate ? String(res.fields.birthDate) : null,
-      expiryDate: res?.fields?.expirationDate ? String(res.fields.expirationDate) : null,
-      gender: res?.fields?.sex ? (String(res.fields.sex).toUpperCase() as any) : null,
+      issuingCountryCode: issuingRaw ? String(issuingRaw).toUpperCase() : null,
+      birthDate,
+      expiryDate,
+      gender: mapMrzSex(res?.fields?.sex),
       rawMrz: raw,
       confidence: null,
       checksumsValid,
       warnings,
     };
-  } catch (e) {
+  } catch {
     return {
       documentType: 'other',
       fullName: null,
@@ -72,4 +91,3 @@ export function parseMrzToNormalized(rawMrz: string): ParsedDocument {
     };
   }
 }
-

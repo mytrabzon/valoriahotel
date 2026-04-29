@@ -7,22 +7,23 @@ import {
   TouchableOpacity,
   Linking,
   ActivityIndicator,
-  Dimensions,
+  useWindowDimensions,
   Modal,
   Pressable,
   TextInput,
   Alert,
   KeyboardAvoidingView,
   Platform,
+  StatusBar,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
-import { getOrCreateGuestForCaller, getOrCreateGuestForCurrentSession } from '@/lib/getOrCreateGuestForCaller';
+import { getOrCreateGuestForCurrentSession, syncGuestMessagingAppToken } from '@/lib/getOrCreateGuestForCaller';
 import { guestGetOrCreateConversationWithStaff } from '@/lib/messagingApi';
-import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
 import { useAuthStore } from '@/stores/authStore';
 import { theme } from '@/constants/theme';
 import { AvatarWithBadge, StaffNameWithBadge } from '@/components/VerifiedBadge';
@@ -30,17 +31,24 @@ import { CachedImage } from '@/components/CachedImage';
 import { ImagePreviewModal } from '@/components/ImagePreviewModal';
 import { blockUserForGuest, getHiddenUsersForGuest } from '@/lib/userBlocks';
 import type { HubReview } from '@/components/StaffEvaluationHub';
-import { StaffEvaluationHub, StaffReviewsFullModal } from '@/components/StaffEvaluationHub';
-import { resolveStaffEvaluation } from '@/lib/staffEvaluation';
+import { StaffReviewsFullModal } from '@/components/StaffEvaluationHub';
 import { STAFF_SOCIAL_KEYS, staffSocialOpenUrl, type StaffSocialKey } from '@/lib/staffSocialLinks';
+import { recordStaffProfileVisit } from '@/lib/staffProfileVisits';
+import { LinkifiedText } from '@/components/LinkifiedText';
+import { profileScreenTheme as P } from '@/constants/profileScreenTheme';
+import { StaffProfileFeedGrid } from '@/components/StaffProfileFeedGrid';
+import { ProfileStatsCard } from '@/components/ProfileStatsCard';
+import { loadStaffEngagementStats, type StaffEngagementStats } from '@/lib/staffEngagementStats';
+import { ProfileCover } from '@/components/ProfileCover';
 
 const COVER_HEIGHT = 260;
 const AVATAR_SIZE = 116;
 const HEADER_AVATAR_SIZE = 64;
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 type StaffDetail = {
   id: string;
+  created_at?: string | null;
+  tenure_note?: string | null;
   full_name: string | null;
   department: string | null;
   position: string | null;
@@ -90,9 +98,10 @@ export default function StaffProfileScreen() {
   const id = typeof params.id === 'string' ? params.id : Array.isArray(params.id) ? params.id[0] : undefined;
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { t } = useTranslation();
+  const { width: windowWidth } = useWindowDimensions();
+  const { t, i18n } = useTranslation();
   const { user } = useAuthStore();
-  const { appToken, setAppToken } = useGuestMessagingStore();
+  const safeTop = Math.max(insets.top, StatusBar.currentHeight ?? 0);
   const [staff, setStaff] = useState<StaffDetail | null>(null);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,26 +117,30 @@ export default function StaffProfileScreen() {
   const [submittingReview, setSubmittingReview] = useState(false);
   const [myReview, setMyReview] = useState<Review | null>(null);
   const [profileMenuVisible, setProfileMenuVisible] = useState(false);
-
+  const [languagesModalVisible, setLanguagesModalVisible] = useState(false);
+  const [tenureModalVisible, setTenureModalVisible] = useState(false);
+  const [engagement, setEngagement] = useState<StaffEngagementStats>({ posts: 0, likes: 0, comments: 0, visits: 0 });
+  const [todayAnchor, setTodayAnchor] = useState(() => Date.now());
   const loadStaff = useCallback(async () => {
     if (!id) return;
-      const guestRow = await getOrCreateGuestForCurrentSession();
+    setLoading(true);
+    try {
+      // Misafir satırı + personel profili aynı anda: ardışık beklemek sayfayı yavaşlatıyordu
+      const [guestRow, profRes] = await Promise.all([
+        getOrCreateGuestForCurrentSession(),
+        supabase.rpc('get_staff_public_profile', { p_staff_id: id }),
+      ]);
       if (guestRow?.guest_id) {
         const hidden = await getHiddenUsersForGuest(guestRow.guest_id);
         if (hidden.hiddenStaffIds.has(id)) {
           setStaff(null);
-          setLoading(false);
           return;
         }
       }
-      // RPC kullan: profil ziyaretlerinde telefon/e-posta kesin gelsin (migration 042)
-      const { data: rows, error: e } = await supabase.rpc('get_staff_public_profile', {
-        p_staff_id: id,
-      });
+      const { data: rows, error: e } = profRes;
       const s = Array.isArray(rows) ? rows[0] : rows;
       if (e || !s) {
         setStaff(null);
-        setLoading(false);
         return;
       }
       const raw = s as StaffDetail & {
@@ -142,9 +155,20 @@ export default function StaffProfileScreen() {
       };
       const c = raw.profile_contact;
       const rawSocial = (raw as { social_links?: Record<string, string> | null }).social_links;
+      let joinFallback: { created_at: string | null; hire_date: string | null } | null = null;
+      if (!raw.created_at && !raw.hire_date) {
+        const { data: joinRow } = await supabase
+          .from('staff')
+          .select('created_at, hire_date')
+          .eq('id', id)
+          .maybeSingle();
+        joinFallback = joinRow as { created_at: string | null; hire_date: string | null } | null;
+      }
       const staffData: StaffDetail = {
         ...raw,
         shift: undefined,
+        created_at: raw.created_at ?? joinFallback?.created_at ?? null,
+        hire_date: raw.hire_date ?? joinFallback?.hire_date ?? null,
         phone: c?.phone ?? raw.phone,
         email: c?.email ?? raw.email,
         whatsapp: c?.whatsapp ?? raw.whatsapp,
@@ -154,6 +178,7 @@ export default function StaffProfileScreen() {
         social_links: rawSocial && typeof rawSocial === 'object' ? rawSocial : null,
       };
       setStaff(staffData);
+      recordStaffProfileVisit(id).catch(() => {});
       if (s.shift_id) {
         const { data: shift } = await supabase
           .from('shifts')
@@ -215,10 +240,7 @@ export default function StaffProfileScreen() {
           }))
         );
       }
-      // Oturum misafir kaydı (Apple/Google e-postası guests’ta farklı olabilir — RPC tek kaynak)
-      const { data: sessionData } = await supabase.auth.getSession();
-      const guestFromAuth = await getOrCreateGuestForCaller(sessionData?.session?.user ?? null);
-      let viewerGuestId: string | null = guestFromAuth?.guest_id ?? null;
+      let viewerGuestId: string | null = guestRow?.guest_id ?? null;
       if (!viewerGuestId) {
         const email = (user?.email ?? user?.user_metadata?.email ?? '').toString().trim();
         if (email) {
@@ -250,25 +272,39 @@ export default function StaffProfileScreen() {
       } else {
         setMyReview(null);
       }
+    } finally {
       setLoading(false);
-  }, [id, user?.id, user?.email, user?.user_metadata?.email]);
+    }
+  }, [id, user?.email, user?.user_metadata?.email]);
 
   useEffect(() => {
     loadStaff();
   }, [loadStaff]);
 
+  useEffect(() => {
+    if (!id) return;
+    loadStaffEngagementStats(id).then(setEngagement).catch(() => {});
+  }, [id]);
+
+  useEffect(() => {
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setHours(24, 0, 0, 0);
+    const delay = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const timeout = setTimeout(() => {
+      setTodayAnchor(Date.now());
+      interval = setInterval(() => setTodayAnchor(Date.now()), 24 * 60 * 60 * 1000);
+    }, delay);
+    return () => {
+      clearTimeout(timeout);
+      if (interval) clearInterval(interval);
+    };
+  }, []);
+
   const onMessage = async () => {
     if (!id) return;
-    let token = appToken;
-    if (!token) {
-      await supabase.auth.refreshSession();
-      const { data: { session } } = await supabase.auth.getSession();
-      const row = await getOrCreateGuestForCaller(session?.user);
-      if (row?.app_token) {
-        await setAppToken(row.app_token);
-        token = row.app_token;
-      }
-    }
+    const token = await syncGuestMessagingAppToken();
     if (!token) {
       router.push({ pathname: '/customer/new-chat', params: { staffId: id } });
       return;
@@ -359,13 +395,13 @@ export default function StaffProfileScreen() {
   const handleBlockFromProfile = async () => {
     const guestRow = await getOrCreateGuestForCurrentSession();
     if (!guestRow?.guest_id || !id) {
-      Alert.alert('Giriş gerekli', 'Kullanıcı engellemek için giriş yapın.');
+      Alert.alert(t('loginRequiredTitle'), t('loginRequiredBlockMessage'));
       return;
     }
-    Alert.alert('Kullanıcıyı engelle', 'Bu personel artık sizi göremez ve siz de onu göremezsiniz.', [
-      { text: 'İptal', style: 'cancel' },
+    Alert.alert(t('blockUserTitle'), t('blockUserMessage', { name: staff?.full_name?.trim() || t('userShort') }), [
+      { text: t('cancelAction'), style: 'cancel' },
       {
-        text: 'Engelle',
+        text: t('block'),
         style: 'destructive',
         onPress: async () => {
           const { error } = await blockUserForGuest({
@@ -374,7 +410,7 @@ export default function StaffProfileScreen() {
             blockedId: id,
           });
           if (error && error.code !== '23505') {
-            Alert.alert('Hata', error.message || 'Kullanıcı engellenemedi.');
+            Alert.alert(t('error'), error.message || t('blockUserFailed'));
             return;
           }
           setProfileMenuVisible(false);
@@ -388,16 +424,16 @@ export default function StaffProfileScreen() {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={theme.colors.primary} />
-        <Text style={styles.loadingText}>Yükleniyor...</Text>
+        <Text style={styles.loadingText}>{t('loading')}</Text>
       </View>
     );
   }
   if (!staff) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorText}>Personel bulunamadı</Text>
+        <Text style={styles.errorText}>{t('staffProfileNotFound')}</Text>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Text style={styles.backBtnText}>Geri</Text>
+          <Text style={styles.backBtnText}>{t('back')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -409,10 +445,28 @@ export default function StaffProfileScreen() {
   const showPhone = (staff.show_phone_to_guest !== false) && hasPhone;
   const showEmail = (staff.show_email_to_guest !== false) && hasEmail;
   const showWhatsApp = (staff.show_whatsapp_to_guest !== false) && hasWhatsApp;
+  const yearsExperience = staff.hire_date
+    ? Math.max(0, new Date().getFullYear() - new Date(staff.hire_date).getFullYear())
+    : null;
+  const joinDateIso = staff.hire_date ?? staff.created_at;
+  const daysWithUs = joinDateIso ? calculateDaysWithUs(joinDateIso, todayAnchor) : null;
+  const tenureCopy = getTenureCopy(i18n.language, daysWithUs ?? 0);
+  const tenureSubtitle = staff.tenure_note?.trim() || tenureCopy.subtitle;
+  const tenureTimeline = joinDateIso ? buildTenureTimeline(joinDateIso, todayAnchor) : [];
+  const statItems = [
+    { value: engagement.posts, label: 'Paylasim' },
+    { value: engagement.likes, label: 'Begeni' },
+    { value: engagement.comments, label: 'Yorum' },
+    { value: engagement.visits, label: 'Ziyaret' },
+  ];
 
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[styles.scrollContent, { width: windowWidth, minWidth: windowWidth }]}
+        showsVerticalScrollIndicator={false}
+      >
       <Modal
         visible={profileMenuVisible}
         transparent
@@ -423,40 +477,36 @@ export default function StaffProfileScreen() {
           <View style={styles.profileMenuBox}>
             <TouchableOpacity style={styles.profileMenuItem} onPress={handleBlockFromProfile} activeOpacity={0.7}>
               <Ionicons name="ban-outline" size={20} color={theme.colors.error} />
-              <Text style={styles.profileMenuItemText}>Engelle</Text>
+              <Text style={styles.profileMenuItemText}>{t('block')}</Text>
             </TouchableOpacity>
           </View>
         </Pressable>
       </Modal>
 
-      <View style={styles.coverBlock}>
-        <TouchableOpacity
-          style={[styles.coverActionBtn, styles.coverBackBtn, { top: insets.top + 8 }]}
-          onPress={() => router.back()}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="chevron-back" size={24} color={theme.colors.white} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.coverActionBtn, styles.coverMenuBtn, { top: insets.top + 8 }]}
-          onPress={() => setProfileMenuVisible(true)}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.white} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.coverImageClip}
-          activeOpacity={1}
-          onPress={() => staff.cover_image && setCoverModalVisible(true)}
-        >
-          {staff.cover_image ? (
-            <CachedImage uri={staff.cover_image} style={StyleSheet.absoluteFill} contentFit="cover" />
-          ) : (
-            <View style={styles.coverPlaceholder} />
-          )}
-        </TouchableOpacity>
-      </View>
-      <View style={styles.profileHeaderRow}>
+      <ProfileCover
+        imageUri={staff.cover_image}
+        height={COVER_HEIGHT}
+        onPress={() => staff.cover_image && setCoverModalVisible(true)}
+        disabled={!staff.cover_image}
+      >
+        <View style={[styles.profileTopBar, { paddingTop: safeTop + 12 }]}>
+          <TouchableOpacity
+            style={styles.coverActionBtn}
+            onPress={() => router.back()}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="chevron-back" size={24} color={theme.colors.white} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.coverActionBtn}
+            onPress={() => setProfileMenuVisible(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.white} />
+          </TouchableOpacity>
+        </View>
+      </ProfileCover>
+      <View style={styles.heroOverlap}>
         <TouchableOpacity activeOpacity={1} onPress={() => staff.profile_image && setAvatarModalVisible(true)}>
           <AvatarWithBadge badge={staff.verification_badge ?? null} avatarSize={HEADER_AVATAR_SIZE} badgeSize={18} showBadge={false}>
             {staff.profile_image ? (
@@ -469,110 +519,152 @@ export default function StaffProfileScreen() {
           </AvatarWithBadge>
         </TouchableOpacity>
         <View style={styles.header}>
-          <StaffNameWithBadge name={staff.full_name || 'Personel'} badge={staff.verification_badge ?? null} badgeSize={18} textStyle={styles.name} center />
-          <Text style={styles.dept}>{staff.position || staff.department || '—'}</Text>
+          <StaffNameWithBadge name={staff.full_name || t('visitorTypeStaff')} badge={staff.verification_badge ?? null} badgeSize={18} textStyle={styles.name} center />
+          <View style={styles.headerMetaRow}>
+            <View style={styles.jobBadge}>
+              <Text style={styles.jobBadgeText}>{staff.position || staff.department || '—'}</Text>
+            </View>
+            <TouchableOpacity style={styles.reviewToggleBtn} onPress={() => setReviewsModalVisible(true)} activeOpacity={0.85}>
+              <Ionicons name="star-outline" size={14} color={theme.colors.primary} />
+              <Text style={styles.reviewToggleText}>Degerlendirmeler</Text>
+            </TouchableOpacity>
+            {!!staff.languages?.length && (
+              <TouchableOpacity style={styles.langBadgeTop} onPress={() => setLanguagesModalVisible(true)} activeOpacity={0.85}>
+                <Ionicons name="language-outline" size={14} color="#fff" />
+                <Text style={styles.langBadgeTopText}>
+                  Diller ({staff.languages.length})
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
           <View style={styles.onlineRow}>
             <View style={[styles.dot, staff.is_online ? styles.dotOn : styles.dotOff]} />
-            <Text style={styles.onlineText}>{staff.is_online ? 'Çevrimiçi' : 'Çevrimdışı'}</Text>
+            <Text style={styles.onlineText}>
+              {staff.is_online ? t('staffStatusOnline') : t('staffStatusOffline')}
+            </Text>
           </View>
         </View>
+        {daysWithUs != null ? (
+          <TouchableOpacity activeOpacity={0.9} style={styles.tenureButtonWrap} onPress={() => setTenureModalVisible(true)}>
+            <LinearGradient
+              colors={['#0f766e', '#0ea5e9']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.tenureButton}
+            >
+              <View style={styles.tenureBadge}>
+                <Ionicons name="ribbon-outline" size={14} color="#fff" />
+                <Text style={styles.tenureBadgeText}>{tenureCopy.badge}</Text>
+              </View>
+              <Text style={styles.tenureButtonText}>{tenureCopy.headline}</Text>
+              <Text style={styles.tenureButtonSubText}>{tenureSubtitle}</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        ) : null}
+        <View style={styles.statsWrap}>
+          <ProfileStatsCard items={statItems} />
+        </View>
+        <View style={styles.headerActionsTop}>
+          {showPhone && (
+            <TouchableOpacity onPress={onCall} style={[styles.pillBtn, styles.pillBtnPhone]} activeOpacity={0.85}>
+              <Ionicons name="call-outline" size={14} color="#fff" />
+              <Text style={styles.pillBtnText}>Telefon</Text>
+            </TouchableOpacity>
+          )}
+          {showWhatsApp && (
+            <TouchableOpacity
+              onPress={() => Linking.openURL(`https://wa.me/${staff.whatsapp!.trim().replace(/\D/g, '')}`)}
+              style={[styles.pillBtn, styles.pillBtnWhatsApp]}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="logo-whatsapp" size={14} color="#fff" />
+              <Text style={styles.pillBtnText}>WhatsApp</Text>
+            </TouchableOpacity>
+          )}
+          {showEmail && (
+            <TouchableOpacity
+              onPress={() => Linking.openURL(`mailto:${staff.email!.trim()}`)}
+              style={[styles.pillBtn, styles.pillBtnMail]}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="mail-outline" size={14} color="#fff" />
+              <Text style={styles.pillBtnText}>Mail</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            onPress={onMessage}
+            style={[styles.pillBtn, styles.pillBtnMessage]}
+            disabled={startingChat}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={14} color="#fff" />
+            <Text style={styles.pillBtnText}>Mesaj</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
+      {staff.bio ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>📝 {t('staffProfileAbout')}</Text>
+          <View style={styles.card}>
+            <LinkifiedText text={staff.bio} textStyle={styles.bio} linkStyle={styles.bioLink} />
+          </View>
+        </View>
+      ) : null}
+
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>📋 Temel bilgiler</Text>
-        <View style={styles.card}>
-          {staff.hire_date && (
-            <Row
-              label="İşe başlama"
-              value={new Date(staff.hire_date).toLocaleDateString('tr-TR')}
-            />
-          )}
-          {staff.shift && (
-            <Row
-              label="Çalışma saatleri"
-              value={`${staff.shift.start_time} - ${staff.shift.end_time}`}
-            />
-          )}
-          {staff.office_location && (
-            <Row label="Konum" value={staff.office_location} />
-          )}
-          {staff.is_online != null && (
-            <Row
-              label="Durum"
-              value={staff.is_online ? 'Çevrimiçi' : 'Çevrimdışı'}
-            />
-          )}
+        <View style={styles.postsPreviewCard}>
+          <View style={styles.postsHeaderRow}>
+            <Text style={styles.postsHeaderTitle}>{t('profileFeedPostsSection')}</Text>
+            <TouchableOpacity
+              onPress={() => router.push({ pathname: '/customer/staff-posts/[id]', params: { id: staff.id } } as never)}
+              activeOpacity={0.8}
+              style={styles.postsSeeAllBtn}
+            >
+              <Text style={styles.postsSeeAllText}>Tumunu gor</Text>
+            </TouchableOpacity>
+          </View>
+          <StaffProfileFeedGrid staffId={staff.id} linkVariant="customer" maxPreview={6} showEmptyHint={false} />
         </View>
       </View>
 
       <View style={styles.section}>
-        <StaffEvaluationHub
-          resolved={resolveStaffEvaluation({
-            id: staff.id,
-            evaluation_score: staff.evaluation_score,
-            evaluation_discipline: staff.evaluation_discipline,
-            evaluation_communication: staff.evaluation_communication,
-            evaluation_speed: staff.evaluation_speed,
-            evaluation_responsibility: staff.evaluation_responsibility,
-            evaluation_insight: staff.evaluation_insight,
-            average_rating: staff.average_rating,
-          })}
-          averageRating={staff.average_rating}
-          totalReviews={staff.total_reviews}
-          reviews={reviews as HubReview[]}
-          previewLimit={3}
-          onOpenAllReviews={() => setReviewsModalVisible(true)}
-          formatReviewDate={formatReviewDate}
-          headerActions={
-            myReview ? (
-              <View style={styles.evaluateDoneBanner}>
-                <Ionicons name="checkmark-circle" size={22} color={theme.colors.success} />
-                <Text style={styles.evaluateDoneText}>{t('evaluateStaffDone')}</Text>
-              </View>
-            ) : (
-              <TouchableOpacity style={styles.evaluatePrimaryBtn} onPress={openRateModal} activeOpacity={0.88}>
-                <Ionicons name="star" size={22} color={theme.colors.white} />
-                <Text style={styles.evaluatePrimaryBtnText}>{t('evaluateStaffButton')}</Text>
-              </TouchableOpacity>
-            )
-          }
-        />
+        <Text style={styles.sectionTitle}>📋 {t('staffProfileBasicInfo')}</Text>
+        <View style={styles.quickStats}>
+          {staff.department ? <StatPill label="Departman" value={staff.department} /> : null}
+          {staff.position ? <StatPill label="Pozisyon" value={staff.position} /> : null}
+          {yearsExperience != null ? <StatPill label="Deneyim" value={`${yearsExperience}+ yil`} /> : null}
+          {staff.hire_date ? (
+            <StatPill
+              label={t('staffHireDateLabel')}
+              value={new Date(staff.hire_date).toLocaleDateString(
+                i18n.language?.startsWith('tr') ? 'tr-TR' : i18n.language || 'en-US'
+              )}
+            />
+          ) : null}
+          {staff.shift ? <StatPill label={t('staffShiftLabel')} value={`${staff.shift.start_time} - ${staff.shift.end_time}`} /> : null}
+          {staff.office_location ? <StatPill label={t('staffLocationLabel')} value={staff.office_location} /> : null}
+        </View>
       </View>
 
       {staff.specialties?.length ? (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>🔧 Uzmanlıklar</Text>
+          <Text style={styles.sectionTitle}>🔧 {t('staffProfileSpecialties')}</Text>
           <View style={styles.card}>
-            {staff.specialties.map((s, i) => (
-              <Text key={i} style={styles.bullet}>• {s}</Text>
-            ))}
-          </View>
-        </View>
-      ) : null}
-
-      {staff.languages?.length ? (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>🗣️ Konuşulan diller</Text>
-          <View style={styles.card}>
-            {staff.languages.map((l, i) => (
-              <Text key={i} style={styles.bullet}>• {l}</Text>
-            ))}
-          </View>
-        </View>
-      ) : null}
-
-      {staff.bio ? (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>📝 Hakkımda</Text>
-          <View style={styles.card}>
-            <Text style={styles.bio}>{staff.bio}</Text>
+            <View style={styles.chipWrap}>
+              {staff.specialties.map((s, i) => (
+                <View key={i} style={styles.infoChip}>
+                  <Text style={styles.infoChipText}>{s}</Text>
+                </View>
+              ))}
+            </View>
           </View>
         </View>
       ) : null}
 
       {staff.achievements?.length ? (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>🏆 Başarılar</Text>
+          <Text style={styles.sectionTitle}>🏆 {t('staffProfileAchievements')}</Text>
           <View style={styles.card}>
             {staff.achievements.map((a, i) => (
               <Text key={i} style={styles.bullet}>• {a}</Text>
@@ -582,35 +674,6 @@ export default function StaffProfileScreen() {
       ) : null}
 
       <View style={styles.avatarActionsRow}>
-        {showPhone && (
-          <TouchableOpacity
-            onPress={onCall}
-            style={[styles.avatarActionCircle, styles.avatarActionPhone]}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="call" size={20} color={theme.colors.white} />
-          </TouchableOpacity>
-        )}
-        {showWhatsApp && (
-          <TouchableOpacity
-            onPress={() =>
-              Linking.openURL(`https://wa.me/${staff.whatsapp!.trim().replace(/\D/g, '')}`)
-            }
-            style={[styles.avatarActionCircle, styles.avatarActionWhatsApp]}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="logo-whatsapp" size={20} color={theme.colors.white} />
-          </TouchableOpacity>
-        )}
-        {showEmail && (
-          <TouchableOpacity
-            onPress={() => Linking.openURL(`mailto:${staff.email!.trim()}`)}
-            style={[styles.avatarActionCircle, styles.avatarActionMail]}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="mail" size={20} color={theme.colors.white} />
-          </TouchableOpacity>
-        )}
         {STAFF_SOCIAL_KEYS.map((key) => {
           const raw = staff.social_links?.[key]?.trim();
           if (!raw) return null;
@@ -643,14 +706,6 @@ export default function StaffProfileScreen() {
             </TouchableOpacity>
           );
         })}
-        <TouchableOpacity
-          onPress={onMessage}
-          style={[styles.avatarActionCircle, styles.avatarActionMessage]}
-          disabled={startingChat}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="chatbubble-outline" size={20} color={theme.colors.white} />
-        </TouchableOpacity>
       </View>
       <View style={styles.bottomPad} />
 
@@ -693,6 +748,49 @@ export default function StaffProfileScreen() {
           </View>
         }
       />
+
+      <Modal
+        visible={tenureModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTenureModalVisible(false)}
+      >
+        <Pressable style={styles.languagesOverlay} onPress={() => setTenureModalVisible(false)}>
+          <Pressable style={styles.tenureModalBox} onPress={() => {}}>
+            <Text style={styles.tenureModalTitle}>{tenureCopy.title}</Text>
+            <Text style={styles.tenureModalSubtitle}>{tenureCopy.timelineTitle}</Text>
+            <View style={styles.tenureModalList}>
+              {tenureTimeline.map((d, idx) => (
+                <View key={`${d.toISOString()}-${idx}`} style={styles.tenureModalRow}>
+                  <Text style={styles.tenureModalRowLeft}>
+                    {idx === 0 ? tenureCopy.startLabel : idx === tenureTimeline.length - 1 ? tenureCopy.todayLabel : `${idx}. ${tenureCopy.monthLabel}`}
+                  </Text>
+                  <Text style={styles.tenureModalRowRight}>{formatTenureDate(d, i18n.language)}</Text>
+                </View>
+              ))}
+            </View>
+            <TouchableOpacity style={styles.tenureModalCloseBtn} onPress={() => setTenureModalVisible(false)} activeOpacity={0.85}>
+              <Text style={styles.tenureModalCloseText}>{tenureCopy.close}</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={languagesModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLanguagesModalVisible(false)}
+      >
+        <Pressable style={styles.languagesOverlay} onPress={() => setLanguagesModalVisible(false)}>
+          <Pressable style={styles.languagesModalBox} onPress={() => {}}>
+            <Text style={styles.languagesModalTitle}>Konusulan Diller</Text>
+            {(staff.languages ?? []).map((lang, idx) => (
+              <Text key={`${lang}-${idx}`} style={styles.languagesModalLine}>• {lang}</Text>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal
         visible={rateModalVisible}
@@ -771,7 +869,7 @@ export default function StaffProfileScreen() {
                       onPress={() => !submittingReview && setRateModalVisible(false)}
                       disabled={submittingReview}
                     >
-                      <Text style={styles.rateModalBtnCancelText}>İptal</Text>
+                      <Text style={styles.rateModalBtnCancelText}>{t('cancelAction')}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={[styles.rateModalBtn, styles.rateModalBtnSubmit]}
@@ -782,7 +880,7 @@ export default function StaffProfileScreen() {
                       {submittingReview ? (
                         <ActivityIndicator size="small" color={theme.colors.white} />
                       ) : (
-                        <Text style={styles.rateModalBtnSubmitText}>Gönder</Text>
+                        <Text style={styles.rateModalBtnSubmitText}>{t('submit')}</Text>
                       )}
                     </TouchableOpacity>
                   </View>
@@ -797,11 +895,11 @@ export default function StaffProfileScreen() {
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function StatPill({ label, value }: { label: string; value: string }) {
   return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={styles.rowValue}>{value}</Text>
+    <View style={styles.statPill}>
+      <Text style={styles.statPillLabel}>{label}</Text>
+      <Text style={styles.statPillValue}>{value}</Text>
     </View>
   );
 }
@@ -817,45 +915,107 @@ function formatReviewDate(iso: string) {
   return d.toLocaleDateString('tr-TR');
 }
 
+function calculateDaysWithUs(isoDate: string, anchorMs: number) {
+  const joinedAt = new Date(isoDate);
+  if (Number.isNaN(joinedAt.getTime())) return null;
+  const anchor = new Date(anchorMs);
+  const joinedDay = Date.UTC(joinedAt.getFullYear(), joinedAt.getMonth(), joinedAt.getDate());
+  const anchorDay = Date.UTC(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+  return Math.max(1, Math.floor((anchorDay - joinedDay) / (24 * 60 * 60 * 1000)) + 1);
+}
+
+function resolveLocale(lang: string) {
+  const code = (lang || 'en').toLowerCase();
+  if (code.startsWith('tr')) return 'tr-TR';
+  if (code.startsWith('de')) return 'de-DE';
+  if (code.startsWith('fr')) return 'fr-FR';
+  if (code.startsWith('es')) return 'es-ES';
+  if (code.startsWith('ru')) return 'ru-RU';
+  if (code.startsWith('ar')) return 'ar-SA';
+  return 'en-US';
+}
+
+function formatTenureDate(d: Date, lang: string) {
+  return d.toLocaleDateString(resolveLocale(lang), { day: '2-digit', month: 'long', year: 'numeric' });
+}
+
+function buildTenureTimeline(isoDate: string, anchorMs: number) {
+  const start = new Date(isoDate);
+  if (Number.isNaN(start.getTime())) return [];
+  const anchor = new Date(anchorMs);
+  const rows: Date[] = [start];
+  const cursor = new Date(start);
+  let safety = 0;
+  while (cursor.getTime() < anchor.getTime() && safety < 360) {
+    cursor.setMonth(cursor.getMonth() + 1);
+    if (cursor.getTime() <= anchor.getTime()) rows.push(new Date(cursor));
+    safety += 1;
+  }
+  if (rows[rows.length - 1]?.toDateString() !== anchor.toDateString()) rows.push(anchor);
+  return rows;
+}
+
+function getTenureCopy(lang: string, days: number) {
+  const code = (lang || 'en').toLowerCase();
+  if (code.startsWith('tr')) {
+    return {
+      title: 'Çalışma Kıdem Bilgisi',
+      badge: 'Kıdem',
+      headline: `${days}. gündeyiz`,
+      subtitle: 'Valoria ailesindeki aktif çalışma süresi',
+      timelineTitle: 'Başlangıç tarihinden bugüne aylık zaman çizelgesi',
+      startLabel: 'Başlangıç',
+      todayLabel: 'Bugün',
+      monthLabel: 'ay',
+      close: 'Kapat',
+    };
+  }
+  if (code.startsWith('de')) return { title: 'Betriebszugehörigkeit', badge: 'Dauer', headline: `Tag ${days}`, subtitle: 'Aktive Betriebszugehörigkeit bei Valoria', timelineTitle: 'Monatliche Zeitleiste seit dem Startdatum', startLabel: 'Start', todayLabel: 'Heute', monthLabel: 'Monat', close: 'Schließen' };
+  if (code.startsWith('fr')) return { title: "Ancienneté de l'équipe", badge: 'Ancienneté', headline: `Jour ${days}`, subtitle: "Durée active au sein de Valoria", timelineTitle: 'Chronologie mensuelle depuis la date de début', startLabel: 'Début', todayLabel: "Aujourd'hui", monthLabel: 'mois', close: 'Fermer' };
+  if (code.startsWith('es')) return { title: 'Antigüedad laboral', badge: 'Antigüedad', headline: `Día ${days}`, subtitle: 'Tiempo activo en Valoria', timelineTitle: 'Cronología mensual desde la fecha de inicio', startLabel: 'Inicio', todayLabel: 'Hoy', monthLabel: 'mes', close: 'Cerrar' };
+  if (code.startsWith('ru')) return { title: 'Стаж работы', badge: 'Стаж', headline: `${days}-й день`, subtitle: 'Активный срок работы в Valoria', timelineTitle: 'Помесячная шкала с даты начала', startLabel: 'Начало', todayLabel: 'Сегодня', monthLabel: 'месяц', close: 'Закрыть' };
+  if (code.startsWith('ar')) return { title: 'مدة الخدمة', badge: 'الخبرة', headline: `اليوم ${days}`, subtitle: 'مدة العمل الفعلي ضمن Valoria', timelineTitle: 'جدول زمني شهري منذ تاريخ البداية', startLabel: 'البداية', todayLabel: 'اليوم', monthLabel: 'شهر', close: 'إغلاق' };
+  return {
+    title: 'Employment Tenure',
+    badge: 'Tenure',
+    headline: `Day ${days}`,
+    subtitle: 'Active employment period in Valoria',
+    timelineTitle: 'Monthly timeline since start date',
+    startLabel: 'Start',
+    todayLabel: 'Today',
+    monthLabel: 'month',
+    close: 'Close',
+  };
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.backgroundSecondary },
   scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 32 },
+  scrollContent: { paddingBottom: 32, width: '100%', minWidth: '100%', alignItems: 'stretch' as const },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   loadingText: { marginTop: 8, fontSize: 15, color: theme.colors.textMuted },
   errorText: { fontSize: 16, color: theme.colors.text },
   backBtn: { marginTop: 16, paddingVertical: 12, paddingHorizontal: 24, backgroundColor: theme.colors.primary, borderRadius: 12 },
   backBtnText: { color: theme.colors.white, fontWeight: '600' },
-  coverBlock: {
-    width: SCREEN_WIDTH,
-    height: COVER_HEIGHT,
-    position: 'relative',
-    overflow: 'visible',
-    backgroundColor: theme.colors.borderLight,
+  profileTopBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    marginBottom: 0,
+    zIndex: 40,
+    elevation: 20,
   },
   coverActionBtn: {
-    position: 'absolute',
-    zIndex: 10,
     width: 40,
     height: 40,
     borderRadius: 20,
     backgroundColor: 'rgba(0,0,0,0.4)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  coverBackBtn: { left: 16 },
-  coverMenuBtn: { right: 16 },
-  coverImageClip: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: COVER_HEIGHT,
-    overflow: 'hidden',
-  },
-  coverPlaceholder: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: theme.colors.borderLight,
   },
   profileHeaderRow: {
     flexDirection: 'row',
@@ -868,6 +1028,19 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginTop: 12,
     borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  heroOverlap: {
+    marginTop: -(HEADER_AVATAR_SIZE / 2),
+    marginHorizontal: 16,
+    backgroundColor: theme.colors.surface,
+    borderRadius: 20,
+    padding: 16,
+    alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
@@ -890,13 +1063,117 @@ const styles = StyleSheet.create({
   header: { alignItems: 'center', paddingHorizontal: 20, paddingTop: 0 },
   name: { ...theme.typography.title, fontSize: 24, color: theme.colors.text, textAlign: 'center' },
   dept: { fontSize: 16, fontWeight: '600', color: theme.colors.primary, marginTop: 4 },
+  headerMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap', justifyContent: 'center' },
+  jobBadge: {
+    backgroundColor: theme.colors.primary + '18',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: theme.colors.primary + '35',
+  },
+  jobBadgeText: { fontSize: 12, fontWeight: '700', color: theme.colors.primary },
+  reviewToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.backgroundSecondary,
+  },
+  reviewToggleText: { fontSize: 12, fontWeight: '700', color: theme.colors.primary },
+  langBadgeTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#2563eb',
+  },
+  langBadgeTopText: { fontSize: 12, fontWeight: '700', color: '#fff' },
   onlineRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
   dot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },
   dotOn: { backgroundColor: theme.colors.success },
   dotOff: { backgroundColor: theme.colors.textMuted },
   onlineText: { fontSize: 13, color: theme.colors.textMuted },
+  statsWrap: { width: '100%', marginTop: 10 },
+  tenureButtonWrap: { width: '100%', marginTop: 10, borderRadius: 16, overflow: 'hidden' },
+  tenureButton: {
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    shadowColor: '#0f766e',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  tenureBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginBottom: 6,
+  },
+  tenureBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
+  tenureButtonText: { color: '#fff', fontSize: 17, fontWeight: '900' },
+  tenureButtonSubText: { marginTop: 2, color: 'rgba(255,255,255,0.92)', fontSize: 12, fontWeight: '600' },
+  headerActionsTop: {
+    marginTop: 10,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    justifyContent: 'center',
+  },
+  pillBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  pillBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  pillBtnPhone: { backgroundColor: '#2563eb' },
+  pillBtnWhatsApp: { backgroundColor: '#16a34a' },
+  pillBtnMail: { backgroundColor: '#7c3aed' },
+  pillBtnMessage: { backgroundColor: '#0ea5e9' },
   section: { paddingHorizontal: theme.spacing.lg, marginTop: theme.spacing.lg },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: theme.colors.text, marginBottom: 8 },
+  quickStats: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  statPill: {
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    minWidth: '48%',
+  },
+  statPillLabel: {
+    fontSize: 11,
+    color: theme.colors.textMuted,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  statPillValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: theme.colors.text,
+    marginTop: 2,
+  },
   evaluatePrimaryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -941,11 +1218,52 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 4,
   },
-  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  rowLabel: { fontSize: 14, color: theme.colors.textMuted },
-  rowValue: { fontSize: 14, fontWeight: '500', color: theme.colors.text },
+  postsNavRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: theme.colors.surface,
+    borderRadius: 20,
+    padding: theme.spacing.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  postsNavText: { flex: 1, fontSize: 17, fontWeight: '600', color: theme.colors.text },
+  postsPreviewCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: 20,
+    padding: theme.spacing.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  postsHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  postsHeaderTitle: { fontSize: 16, fontWeight: '700', color: theme.colors.text },
+  postsSeeAllBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: theme.colors.primary + '18',
+  },
+  postsSeeAllText: { color: theme.colors.primary, fontWeight: '700', fontSize: 12 },
   bullet: { fontSize: 14, color: theme.colors.text, marginBottom: 4 },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  infoChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: theme.colors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+  },
+  infoChipText: { fontSize: 13, fontWeight: '600', color: theme.colors.text },
   bio: { fontSize: 14, color: theme.colors.text, lineHeight: 22 },
+  bioLink: { color: theme.colors.primary, fontWeight: '600' },
   rating: { fontSize: 14, color: theme.colors.primary, fontWeight: '600' },
   reviewCard: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: theme.colors.borderLight },
   reviewMeta: { fontSize: 12, color: theme.colors.textMuted, marginBottom: 4 },
@@ -1017,7 +1335,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   imageModalContent: { maxWidth: '100%', maxHeight: '90%', justifyContent: 'center', alignItems: 'center' },
-  imageModalImage: { width: SCREEN_WIDTH, height: 280, maxWidth: '100%' },
+  imageModalImage: { width: '100%', height: 280, maxWidth: '100%' },
   profileMenuBox: {
     marginTop: 80,
     marginLeft: 'auto',
@@ -1075,4 +1393,57 @@ const styles = StyleSheet.create({
   rateModalBtnCancelText: { fontSize: 15, fontWeight: '600', color: theme.colors.text },
   rateModalBtnSubmit: { backgroundColor: theme.colors.primary },
   rateModalBtnSubmitText: { fontSize: 15, fontWeight: '600', color: theme.colors.white },
+  languagesModalBox: {
+    width: '86%',
+    maxWidth: 360,
+    backgroundColor: theme.colors.surface,
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+    elevation: 12,
+  },
+  languagesOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  languagesModalTitle: { fontSize: 16, fontWeight: '800', color: theme.colors.text, marginBottom: 10 },
+  languagesModalLine: { fontSize: 14, color: theme.colors.text, marginBottom: 6 },
+  tenureModalBox: {
+    width: '90%',
+    maxWidth: 420,
+    maxHeight: '78%',
+    backgroundColor: theme.colors.surface,
+    borderRadius: 16,
+    padding: 16,
+  },
+  tenureModalTitle: { fontSize: 18, fontWeight: '800', color: theme.colors.text },
+  tenureModalSubtitle: { marginTop: 4, fontSize: 12, color: theme.colors.textMuted, marginBottom: 12 },
+  tenureModalList: { borderWidth: 1, borderColor: theme.colors.borderLight, borderRadius: 12, overflow: 'hidden' },
+  tenureModalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.borderLight,
+  },
+  tenureModalRowLeft: { fontSize: 13, fontWeight: '700', color: theme.colors.text },
+  tenureModalRowRight: { fontSize: 13, color: theme.colors.textSecondary },
+  tenureModalCloseBtn: {
+    marginTop: 12,
+    borderRadius: 12,
+    backgroundColor: theme.colors.primary,
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  tenureModalCloseText: { color: theme.colors.white, fontSize: 14, fontWeight: '700' },
 });

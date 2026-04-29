@@ -32,6 +32,10 @@ import { hasPolicyConsent } from '@/lib/policyConsent';
 const GEOFENCE_CHECKIN_PROMPT_KEY = '@valoria/geofence_checkin_prompt_shown';
 const GEOFENCE_LOCATION_PERMISSION_PROMPT_KEY = '@valoria/geofence_location_permission_prompt_shown';
 const CHECKIN_PROMPT_CARD_DISMISSED_KEY = '@valoria/checkin_prompt_card_dismissed';
+/** app/_layout splash ile aynı — açılışta boş ekran hissi (özellikle Android) olmasın */
+const BOOT_SCREEN_BG = '#1a365d';
+/** Geçici: Android’de Google ile giriş — tekrar açmak için true yapın */
+const GOOGLE_SIGN_IN_ANDROID_ENABLED = false;
 
 function AnimatedLobbyBackground() {
   const { width, height } = useWindowDimensions();
@@ -296,7 +300,8 @@ export default function HomeScreen() {
     const path = staff ? '/staff' : '/customer';
     const nextParam = staff ? 'staff' : 'customer';
     let cancelled = false;
-    hasPolicyConsent().then((accepted) => {
+    // loadSession bitti; user.id vererek getUser ağ turu yok, yalnızca privacy_consent sorgusu
+    hasPolicyConsent(user?.id ?? null).then((accepted) => {
       if (cancelled) return;
       if (accepted) {
         router.replace(path);
@@ -329,7 +334,7 @@ export default function HomeScreen() {
           await linkGuestToRoom(user.email, pendingRoom.roomId, user.user_metadata?.full_name);
           clearPendingRoom();
         }
-        const accepted = await hasPolicyConsent();
+        const accepted = await hasPolicyConsent(user?.id ?? null);
         const path = staff ? '/staff' : '/customer';
         const nextParam = staff ? 'staff' : 'customer';
         if (accepted) {
@@ -369,8 +374,8 @@ export default function HomeScreen() {
       });
       if (error) throw error;
       await useAuthStore.getState().loadSession();
-      const { staff } = useAuthStore.getState();
-      const accepted = await hasPolicyConsent();
+      const { user, staff } = useAuthStore.getState();
+      const accepted = await hasPolicyConsent(user?.id ?? null);
       const path = staff ? '/staff' : '/customer';
       const nextParam = staff ? 'staff' : 'customer';
       if (accepted) {
@@ -432,7 +437,7 @@ export default function HomeScreen() {
         await linkGuestToRoom(user.email, pendingRoom.roomId, user.user_metadata?.full_name);
         clearPendingRoom();
       }
-      const accepted = await hasPolicyConsent();
+      const accepted = await hasPolicyConsent(user?.id ?? null);
       const path = staff ? '/staff' : '/customer';
       const nextParam = staff ? 'staff' : 'customer';
       if (accepted) {
@@ -475,7 +480,7 @@ export default function HomeScreen() {
           log.warn('HomeScreen', 'notify-new-guest-account', (e as Error)?.message);
         }
       }
-      const accepted = await hasPolicyConsent();
+      const accepted = await hasPolicyConsent(anonUser.id);
       if (accepted) {
         router.replace('/customer');
       } else {
@@ -519,20 +524,25 @@ export default function HomeScreen() {
   const cardWidth = width - 24;
   const paddingH = 12;
 
+  /** Oturum okunurken: dönen yükleme simgesi yok (_layout nokta animasyonu yeterli); aynı lobi arka planı */
   if (loading) {
-    return <View style={[styles.wrapper, { paddingTop: insets.top, paddingBottom: insets.bottom }]} />;
+    return (
+      <View style={[styles.bootLoaderRoot, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        <AnimatedLobbyBackground />
+      </View>
+    );
   }
 
   if (isOffline) {
     return <OfflineWelcome onRetry={() => NetInfo.fetch().then((s) => setIsOffline(!s.isConnected))} />;
   }
 
-  // Giriş yapmış kullanıcı: sözleşme kontrolü bitene kadar lobi gösterme, tek ekranda yönlendirme
+  // Giriş yapmış kullanıcı: hasPolicyConsent() ağ çağrısı bitene kadar boş View yerine boot ekranı
+  // (aksi halde _layout nokta animasyonundan sonra uzun süre boş / donmuş hissi oluşuyordu).
   if (user || staff) {
     return (
-      <View style={[styles.wrapper, styles.redirectingWrapper, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-        <ActivityIndicator size="large" color="#ffffff" />
-        <Text style={styles.redirectingText}>{t('loading')}</Text>
+      <View style={[styles.bootLoaderRoot, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        <AnimatedLobbyBackground />
       </View>
     );
   }
@@ -664,7 +674,7 @@ export default function HomeScreen() {
                   <View style={styles.lobbyOrLine} />
                 </View>
 
-                {Platform.OS === 'android' && (
+                {Platform.OS === 'android' && GOOGLE_SIGN_IN_ANDROID_ENABLED && (
                   <TouchableOpacity
                     style={[styles.cardBtn, styles.cardBtnOutlined, googleLoading && styles.cardBtnDisabled]}
                     onPress={signInWithGoogle}
@@ -715,20 +725,34 @@ export default function HomeScreen() {
               <Text style={styles.lobbySectionLabel}>{t('moreOptions') || 'Diğer seçenekler'}</Text>
               <View style={styles.lobbyActionGrid}>
                 <TouchableOpacity style={styles.lobbyActionTile} onPress={() => router.push('/guest')} activeOpacity={0.85}>
+                  <View style={styles.lobbyActionTileTop}>
+                    <View style={[styles.lobbyActionPill, styles.lobbyActionPillGuest]}>
+                      <Text style={styles.lobbyActionPillText}>MİSAFİR</Text>
+                    </View>
+                    <View style={styles.lobbyActionChevronWrap}>
+                      <Text style={styles.lobbyActionChevron}>→</Text>
+                    </View>
+                  </View>
                   <View style={[styles.lobbyActionTileIcon, styles.lobbyActionTileGuest]}>
-                    <Text style={styles.lobbyActionTileEmoji}>📋</Text>
+                    <Text style={styles.lobbyActionTileEmoji}>M</Text>
                   </View>
                   <Text style={styles.lobbyActionTileTitle}>{t('guestCheckIn') || 'Misafir check-in'}</Text>
                   <Text style={styles.lobbyActionTileHint} numberOfLines={2}>{t('guestCheckInHint') || 'QR veya link ile sözleşme onayı'}</Text>
-                  <Text style={styles.lobbyActionTileArrow}>→</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.lobbyActionTile} onPress={() => router.push('/join')} activeOpacity={0.85}>
+                  <View style={styles.lobbyActionTileTop}>
+                    <View style={[styles.lobbyActionPill, styles.lobbyActionPillStaff]}>
+                      <Text style={styles.lobbyActionPillText}>PERSONEL</Text>
+                    </View>
+                    <View style={styles.lobbyActionChevronWrap}>
+                      <Text style={styles.lobbyActionChevron}>→</Text>
+                    </View>
+                  </View>
                   <View style={[styles.lobbyActionTileIcon, styles.lobbyActionTileStaff]}>
-                    <Text style={styles.lobbyActionTileEmoji}>💼</Text>
+                    <Text style={styles.lobbyActionTileEmoji}>P</Text>
                   </View>
                   <Text style={styles.lobbyActionTileTitle}>{t('staffApplication')}</Text>
                   <Text style={styles.lobbyActionTileHint} numberOfLines={2}>{t('staffApplicationHint')}</Text>
-                  <Text style={styles.lobbyActionTileArrow}>→</Text>
                 </TouchableOpacity>
               </View>
 
@@ -784,14 +808,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0c1222',
   },
-  redirectingWrapper: {
+  /** Oturum + sözleşme yönlendirmesi beklerken; layout splash (#1a365d) ile hizalı */
+  bootLoaderRoot: {
+    flex: 1,
+    backgroundColor: BOOT_SCREEN_BG,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  redirectingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.9)',
   },
   scrollView: {
     flex: 1,
@@ -1008,6 +1030,48 @@ const styles = StyleSheet.create({
     borderColor: '#e2e8f0',
     minHeight: 140,
   },
+  lobbyActionTileTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  lobbyActionPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  lobbyActionPillGuest: {
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    borderColor: 'rgba(59, 130, 246, 0.24)',
+  },
+  lobbyActionPillStaff: {
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    borderColor: 'rgba(34, 197, 94, 0.24)',
+  },
+  lobbyActionPillText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#334155',
+    letterSpacing: 0.9,
+  },
+  lobbyActionChevronWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lobbyActionChevron: {
+    fontSize: 14,
+    color: '#64748b',
+    fontWeight: '800',
+    marginTop: -1,
+  },
   lobbyActionTileIcon: {
     width: 52,
     height: 52,
@@ -1023,7 +1087,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(34, 197, 94, 0.14)',
   },
   lobbyActionTileEmoji: {
-    fontSize: 26,
+    fontSize: 24,
+    color: '#0f172a',
+    fontWeight: '800',
   },
   lobbyActionTileTitle: {
     fontSize: 15,
@@ -1036,11 +1102,6 @@ const styles = StyleSheet.create({
     color: '#64748b',
     lineHeight: 16,
     marginBottom: 12,
-  },
-  lobbyActionTileArrow: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#64748b',
   },
   lobbyFooter: {
     marginTop: 2,

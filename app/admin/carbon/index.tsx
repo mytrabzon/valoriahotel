@@ -9,12 +9,18 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
+  Linking,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
 import { useRouter } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { adminTheme } from '@/constants/adminTheme';
+import { DEFAULT_METHODOLOGY_SUMMARY } from '@/lib/carbonConstants';
+import { uploadBufferToPublicBucket } from '@/lib/storagePublicUpload';
+import { uriToArrayBuffer, getMimeAndExt } from '@/lib/uploadMedia';
 
 type CarbonInputRow = {
   month_start: string;
@@ -28,6 +34,31 @@ type CarbonInputRow = {
   gas_factor: number;
   waste_factor: number;
   notes: string | null;
+  methodology_version: string | null;
+  methodology_summary: string | null;
+  electricity_factor_source: string | null;
+  water_factor_source: string | null;
+  gas_factor_source: string | null;
+  waste_factor_source: string | null;
+  data_collection_notes: string | null;
+  prepared_by_name: string | null;
+  verification_notes: string | null;
+};
+
+type EvidenceRow = {
+  id: string;
+  month_start: string;
+  storage_path: string;
+  public_url: string;
+  file_label: string | null;
+  mime_type: string | null;
+  created_at: string;
+};
+
+type HistoryRow = {
+  id: string;
+  changed_at: string;
+  changed_by: string | null;
 };
 
 function toMonthStart(monthInput: string): string | null {
@@ -40,6 +71,12 @@ function toNumberOrZero(value: string): number {
   const n = Number(value.replace(',', '.'));
   if (!Number.isFinite(n) || n < 0) return 0;
   return n;
+}
+
+function evidenceMime(uri: string): { mime: string; ext: string } {
+  const lower = uri.toLowerCase();
+  if (lower.includes('.pdf')) return { mime: 'application/pdf', ext: 'pdf' };
+  return getMimeAndExt(uri, 'image');
 }
 
 export default function AdminCarbonScreen() {
@@ -56,9 +93,21 @@ export default function AdminCarbonScreen() {
   const [gasFactor, setGasFactor] = useState('1.90');
   const [wasteFactor, setWasteFactor] = useState('0.50');
   const [notes, setNotes] = useState('');
+  const [methodologyVersion, setMethodologyVersion] = useState('1.0');
+  const [methodologySummary, setMethodologySummary] = useState(DEFAULT_METHODOLOGY_SUMMARY);
+  const [electricitySource, setElectricitySource] = useState('');
+  const [waterSource, setWaterSource] = useState('');
+  const [gasSource, setGasSource] = useState('');
+  const [wasteSource, setWasteSource] = useState('');
+  const [dataCollectionNotes, setDataCollectionNotes] = useState('');
+  const [preparedByName, setPreparedByName] = useState('');
+  const [verificationNotes, setVerificationNotes] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
+  const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [uploadingEvidence, setUploadingEvidence] = useState(false);
 
   const monthStart = useMemo(() => toMonthStart(month), [month]);
 
@@ -74,6 +123,15 @@ export default function AdminCarbonScreen() {
       setGasFactor('1.90');
       setWasteFactor('0.50');
       setNotes('');
+      setMethodologyVersion('1.0');
+      setMethodologySummary(DEFAULT_METHODOLOGY_SUMMARY);
+      setElectricitySource('');
+      setWaterSource('');
+      setGasSource('');
+      setWasteSource('');
+      setDataCollectionNotes('');
+      setPreparedByName(staff?.full_name?.trim() || '');
+      setVerificationNotes('');
       return;
     }
     setElectricity(String(row.electricity_kwh ?? ''));
@@ -86,13 +144,53 @@ export default function AdminCarbonScreen() {
     setGasFactor(String(row.gas_factor ?? 1.9));
     setWasteFactor(String(row.waste_factor ?? 0.5));
     setNotes(row.notes ?? '');
+    setMethodologyVersion(row.methodology_version?.trim() || '1.0');
+    setMethodologySummary(row.methodology_summary?.trim() || DEFAULT_METHODOLOGY_SUMMARY);
+    setElectricitySource(row.electricity_factor_source ?? '');
+    setWaterSource(row.water_factor_source ?? '');
+    setGasSource(row.gas_factor_source ?? '');
+    setWasteSource(row.waste_factor_source ?? '');
+    setDataCollectionNotes(row.data_collection_notes ?? '');
+    setPreparedByName(row.prepared_by_name?.trim() || staff?.full_name?.trim() || '');
+    setVerificationNotes(row.verification_notes ?? '');
   };
+
+  const loadEvidence = useCallback(async (ms: string) => {
+    const { data, error } = await supabase
+      .from('hotel_carbon_evidence')
+      .select('id, month_start, storage_path, public_url, file_label, mime_type, created_at')
+      .eq('month_start', ms)
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.warn('carbon evidence', error.message);
+      setEvidence([]);
+      return;
+    }
+    setEvidence((data as EvidenceRow[]) ?? []);
+  }, []);
+
+  const loadHistory = useCallback(async (ms: string) => {
+    const { data, error } = await supabase
+      .from('hotel_carbon_monthly_history')
+      .select('id, changed_at, changed_by')
+      .eq('month_start', ms)
+      .order('changed_at', { ascending: false })
+      .limit(25);
+    if (error) {
+      console.warn('carbon history', error.message);
+      setHistory([]);
+      return;
+    }
+    setHistory((data as HistoryRow[]) ?? []);
+  }, []);
 
   const load = useCallback(async () => {
     if (!monthStart) return;
     const { data, error } = await supabase
       .from('hotel_carbon_monthly_inputs')
-      .select('month_start, electricity_kwh, water_m3, gas_m3, waste_kg, occupancy_nights_override, electricity_factor, water_factor, gas_factor, waste_factor, notes')
+      .select(
+        'month_start, electricity_kwh, water_m3, gas_m3, waste_kg, occupancy_nights_override, electricity_factor, water_factor, gas_factor, waste_factor, notes, methodology_version, methodology_summary, electricity_factor_source, water_factor_source, gas_factor_source, waste_factor_source, data_collection_notes, prepared_by_name, verification_notes'
+      )
       .eq('month_start', monthStart)
       .maybeSingle();
     if (error) {
@@ -101,7 +199,8 @@ export default function AdminCarbonScreen() {
       return;
     }
     fillFromRow((data as CarbonInputRow | null) ?? null);
-  }, [monthStart]);
+    await Promise.all([loadEvidence(monthStart), loadHistory(monthStart)]);
+  }, [monthStart, loadEvidence, loadHistory]);
 
   useEffect(() => {
     setLoading(true);
@@ -120,7 +219,13 @@ export default function AdminCarbonScreen() {
       return;
     }
     setSaving(true);
-    const payload = {
+    const { data: existingRow } = await supabase
+      .from('hotel_carbon_monthly_inputs')
+      .select('month_start')
+      .eq('month_start', monthStart)
+      .maybeSingle();
+
+    const payload: Record<string, unknown> = {
       month_start: monthStart,
       electricity_kwh: toNumberOrZero(electricity),
       water_m3: toNumberOrZero(water),
@@ -132,19 +237,97 @@ export default function AdminCarbonScreen() {
       gas_factor: toNumberOrZero(gasFactor),
       waste_factor: toNumberOrZero(wasteFactor),
       notes: notes.trim() || null,
+      methodology_version: methodologyVersion.trim() || '1.0',
+      methodology_summary: methodologySummary.trim() || null,
+      electricity_factor_source: electricitySource.trim() || null,
+      water_factor_source: waterSource.trim() || null,
+      gas_factor_source: gasSource.trim() || null,
+      waste_factor_source: wasteSource.trim() || null,
+      data_collection_notes: dataCollectionNotes.trim() || null,
+      prepared_by_name: preparedByName.trim() || null,
+      verification_notes: verificationNotes.trim() || null,
       updated_by: staff?.id ?? null,
-      created_by: staff?.id ?? null,
     };
-    const { error } = await supabase
-      .from('hotel_carbon_monthly_inputs')
-      .upsert(payload, { onConflict: 'month_start' });
+    if (!existingRow) payload.created_by = staff?.id ?? null;
+
+    const { error } = await supabase.from('hotel_carbon_monthly_inputs').upsert(payload, { onConflict: 'month_start' });
     setSaving(false);
     if (error) {
       Alert.alert('Hata', error.message);
       return;
     }
-    Alert.alert('Kaydedildi', 'Aylık karbon girdileri güncellendi.');
+    Alert.alert('Kaydedildi', 'Aylık karbon girdileri ve metodoloji güncellendi.');
     await load();
+  };
+
+  const pickAndUploadEvidence = async () => {
+    if (!monthStart) {
+      Alert.alert('Ay seçin', 'Önce geçerli bir ay (YYYY-MM) girin.');
+      return;
+    }
+    const { data: monthRow } = await supabase
+      .from('hotel_carbon_monthly_inputs')
+      .select('month_start')
+      .eq('month_start', monthStart)
+      .maybeSingle();
+    if (!monthRow) {
+      Alert.alert('Önce kaydedin', 'Kanıt dosyası eklemek için bu ay için en az bir kez «Karbon girdisini kaydet» ile kayıt oluşturun.');
+      return;
+    }
+    try {
+      setUploadingEvidence(true);
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['image/*', 'application/pdf'],
+        copyToCacheDirectory: true,
+      });
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      const uri = asset.uri;
+      const { mime, ext } = asset.mimeType?.includes('pdf')
+        ? { mime: 'application/pdf', ext: 'pdf' }
+        : evidenceMime(uri);
+      const buf = await uriToArrayBuffer(uri, { mediaKind: 'image' });
+      const sub = `carbon/${monthStart.replace(/[^0-9-]/g, '')}`;
+      const { publicUrl, path } = await uploadBufferToPublicBucket({
+        bucketId: 'carbon-evidence',
+        buffer: buf,
+        contentType: mime,
+        extension: ext,
+        subfolder: sub,
+      });
+      const { error } = await supabase.from('hotel_carbon_evidence').insert({
+        month_start: monthStart,
+        storage_path: path,
+        public_url: publicUrl,
+        file_label: asset.name ?? null,
+        mime_type: mime,
+        created_by: staff?.id ?? null,
+      });
+      if (error) {
+        Alert.alert('Hata', error.message);
+        return;
+      }
+      await loadEvidence(monthStart);
+    } catch (e) {
+      Alert.alert('Yükleme', (e as Error)?.message ?? 'Dosya yüklenemedi');
+    } finally {
+      setUploadingEvidence(false);
+    }
+  };
+
+  const deleteEvidence = (ev: EvidenceRow) => {
+    Alert.alert('Kanıtı sil', 'Bu dosya kalıcı olarak silinsin mi?', [
+      { text: 'İptal', style: 'cancel' },
+      {
+        text: 'Sil',
+        style: 'destructive',
+        onPress: async () => {
+          await supabase.storage.from('carbon-evidence').remove([ev.storage_path]);
+          await supabase.from('hotel_carbon_evidence').delete().eq('id', ev.id);
+          if (monthStart) await loadEvidence(monthStart);
+        },
+      },
+    ]);
   };
 
   return (
@@ -162,7 +345,8 @@ export default function AdminCarbonScreen() {
         </TouchableOpacity>
       </View>
       <Text style={styles.headerHint}>
-        Admin aylık tüketimleri girer. Sistem misafir karbonunu konaklama gecesine göre otomatik hesaplar.
+        Aylık tesis tüketimi ve emisyon katsayıları kayıt altına alınır; misafir payı konaklama gecesine göre otomatik dağıtılır. Denetim için
+        katsayı kaynağı ve kanıt dosyası ekleyin.
       </Text>
 
       {loading ? (
@@ -182,10 +366,10 @@ export default function AdminCarbonScreen() {
           <Text style={styles.label}>Elektrik (kWh)</Text>
           <TextInput style={styles.input} value={electricity} onChangeText={setElectricity} keyboardType="decimal-pad" />
 
-          <Text style={styles.label}>Su (m3)</Text>
+          <Text style={styles.label}>Su (m³)</Text>
           <TextInput style={styles.input} value={water} onChangeText={setWater} keyboardType="decimal-pad" />
 
-          <Text style={styles.label}>Doğalgaz (m3)</Text>
+          <Text style={styles.label}>Doğalgaz (m³)</Text>
           <TextInput style={styles.input} value={gas} onChangeText={setGas} keyboardType="decimal-pad" />
 
           <Text style={styles.label}>Atık (kg)</Text>
@@ -198,11 +382,11 @@ export default function AdminCarbonScreen() {
             value={occupancyNights}
             onChangeText={setOccupancyNights}
             keyboardType="decimal-pad"
-            placeholder="Boş bırakırsanız sistem guests verisinden hesaplar"
+            placeholder="Boş: sistem guests kayıtlarından hesaplar"
             placeholderTextColor={adminTheme.colors.textMuted}
           />
 
-          <Text style={styles.sectionTitle}>Emisyon katsayıları (kg CO2 birim başı)</Text>
+          <Text style={styles.sectionTitle}>Emisyon katsayıları (kg CO₂ birim başına)</Text>
           <Text style={styles.label}>Elektrik faktörü</Text>
           <TextInput style={styles.input} value={electricityFactor} onChangeText={setElectricityFactor} keyboardType="decimal-pad" />
 
@@ -215,7 +399,65 @@ export default function AdminCarbonScreen() {
           <Text style={styles.label}>Atık faktörü</Text>
           <TextInput style={styles.input} value={wasteFactor} onChangeText={setWasteFactor} keyboardType="decimal-pad" />
 
-          <Text style={styles.label}>Not</Text>
+          <Text style={styles.sectionTitle}>Metodoloji ve kaynaklar</Text>
+          <Text style={styles.label}>Metodoloji sürümü</Text>
+          <TextInput style={styles.input} value={methodologyVersion} onChangeText={setMethodologyVersion} placeholder="1.0" />
+
+          <Text style={styles.label}>Metodoloji özeti (rapor ve misafir ekranı)</Text>
+          <TextInput
+            style={[styles.input, styles.noteInput]}
+            value={methodologySummary}
+            onChangeText={setMethodologySummary}
+            multiline
+            numberOfLines={6}
+            textAlignVertical="top"
+          />
+
+          <Text style={styles.label}>Elektrik katsayısı kaynağı</Text>
+          <TextInput
+            style={styles.input}
+            value={electricitySource}
+            onChangeText={setElectricitySource}
+            placeholder="Örn: TBMP 2024 şebeke emisyon faktörü"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+          <Text style={styles.label}>Su katsayısı kaynağı</Text>
+          <TextInput style={styles.input} value={waterSource} onChangeText={setWaterSource} placeholderTextColor={adminTheme.colors.textMuted} />
+          <Text style={styles.label}>Doğalgaz katsayısı kaynağı</Text>
+          <TextInput style={styles.input} value={gasSource} onChangeText={setGasSource} placeholderTextColor={adminTheme.colors.textMuted} />
+          <Text style={styles.label}>Atık katsayısı kaynağı</Text>
+          <TextInput style={styles.input} value={wasteSource} onChangeText={setWasteSource} placeholderTextColor={adminTheme.colors.textMuted} />
+
+          <Text style={styles.label}>Veri toplama (fatura / sayaç)</Text>
+          <TextInput
+            style={[styles.input, styles.noteInput]}
+            value={dataCollectionNotes}
+            onChangeText={setDataCollectionNotes}
+            multiline
+            numberOfLines={3}
+            placeholder="Örn: Elektrik EPDK faturası Mart kesimi"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+
+          <Text style={styles.label}>İç doğrulama / kontrol notu</Text>
+          <TextInput
+            style={[styles.input, styles.noteInput]}
+            value={verificationNotes}
+            onChangeText={setVerificationNotes}
+            multiline
+            numberOfLines={2}
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+
+          <Text style={styles.label}>Raporu hazırlayan (ad soyad)</Text>
+          <TextInput
+            style={styles.input}
+            value={preparedByName}
+            onChangeText={setPreparedByName}
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+
+          <Text style={styles.label}>Genel not</Text>
           <TextInput
             style={[styles.input, styles.noteInput]}
             value={notes}
@@ -225,6 +467,62 @@ export default function AdminCarbonScreen() {
             placeholder="Örn: Fatura gecikmeli geldi, tahmini değer girildi."
             placeholderTextColor={adminTheme.colors.textMuted}
           />
+
+          <Text style={styles.sectionTitle}>Kanıt dosyaları (fatura / PDF / foto)</Text>
+          <TouchableOpacity
+            style={[styles.evidenceBtn, uploadingEvidence && { opacity: 0.7 }]}
+            onPress={pickAndUploadEvidence}
+            disabled={uploadingEvidence}
+          >
+            {uploadingEvidence ? (
+              <ActivityIndicator color={adminTheme.colors.primary} />
+            ) : (
+              <>
+                <Ionicons name="cloud-upload-outline" size={20} color={adminTheme.colors.primary} />
+                <Text style={styles.evidenceBtnText}>Dosya yükle</Text>
+              </>
+            )}
+          </TouchableOpacity>
+          {evidence.length === 0 ? (
+            <Text style={styles.evidenceEmpty}>Bu ay için kanıt yok.</Text>
+          ) : (
+            evidence.map((ev) => (
+              <View key={ev.id} style={styles.evidenceRow}>
+                <TouchableOpacity
+                  style={{ flex: 1 }}
+                  onPress={() => Linking.openURL(ev.public_url).catch(() => {})}
+                  disabled={Platform.OS === 'web'}
+                >
+                  <Text style={styles.evidenceName} numberOfLines={1}>
+                    {ev.file_label || ev.public_url}
+                  </Text>
+                  <Text style={styles.evidenceMeta}>{ev.mime_type || '—'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => deleteEvidence(ev)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="trash-outline" size={20} color="#b91c1c" />
+                </TouchableOpacity>
+              </View>
+            ))
+          )}
+
+          <Text style={styles.sectionTitle}>Denetim geçmişi (bu ay)</Text>
+          {history.length === 0 ? (
+            <Text style={styles.evidenceEmpty}>Henüz kayıt yok (ilk kayıttan sonra oluşur).</Text>
+          ) : (
+            history.map((h) => (
+              <Text key={h.id} style={styles.historyLine}>
+                •{' '}
+                {new Date(h.changed_at).toLocaleString('tr-TR', {
+                  day: '2-digit',
+                  month: 'short',
+                  year: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}{' '}
+                — sürüm kaydı saklandı
+              </Text>
+            ))
+          )}
 
           <TouchableOpacity style={[styles.saveBtn, saving && styles.saveBtnDisabled]} onPress={save} disabled={saving}>
             {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>Karbon girdisini kaydet</Text>}
@@ -300,4 +598,28 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.7 },
   saveText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  evidenceBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: adminTheme.colors.border,
+    borderRadius: 10,
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  evidenceBtnText: { color: adminTheme.colors.primary, fontWeight: '700' },
+  evidenceEmpty: { color: adminTheme.colors.textMuted, fontSize: 13, marginBottom: 8 },
+  evidenceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: adminTheme.colors.borderLight,
+    gap: 8,
+  },
+  evidenceName: { color: adminTheme.colors.primary, fontSize: 14, fontWeight: '600' },
+  evidenceMeta: { color: adminTheme.colors.textMuted, fontSize: 12 },
+  historyLine: { color: adminTheme.colors.textSecondary, fontSize: 12, marginBottom: 4 },
 });

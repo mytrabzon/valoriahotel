@@ -4,7 +4,15 @@
  */
 import { create } from 'zustand';
 
-type BadgeKey = 'acceptancesUnassigned' | 'stockPending' | 'staffPending' | 'reportsPending' | 'unreadNotifs' | 'messagesUnread';
+type BadgeKey =
+  | 'acceptancesUnassigned'
+  | 'stockPending'
+  | 'staffPending'
+  | 'reportsPending'
+  | 'unreadNotifs'
+  | 'messagesUnread'
+  | 'expensesPending'
+  | 'approvalsTotal';
 
 type State = {
   dismissed: Partial<Record<BadgeKey, number>>;

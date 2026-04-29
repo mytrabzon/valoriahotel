@@ -98,6 +98,7 @@ export default function RoomDetail() {
   const [priceInput, setPriceInput] = useState('');
   const [nightsInput, setNightsInput] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
+  const [contractRoomPreviews, setContractRoomPreviews] = useState<{ signer_name: string; accepted_at: string }[]>([]);
 
   useEffect(() => {
     if (!id) return;
@@ -149,6 +150,33 @@ export default function RoomDetail() {
       setLoading(false);
     })();
   }, [id]);
+
+  useEffect(() => {
+    if (!id || !room || room.status !== 'available') {
+      setContractRoomPreviews([]);
+      return;
+    }
+    (async () => {
+      const { data } = await supabase
+        .from('contract_acceptances')
+        .select('accepted_at, guests(full_name, status, room_id)')
+        .eq('room_id', id)
+        .not('guest_id', 'is', null)
+        .order('accepted_at', { ascending: false })
+        .limit(20);
+      const out: { signer_name: string; accepted_at: string }[] = [];
+      for (const r of data ?? []) {
+        const g = Array.isArray(r.guests) ? r.guests[0] : r.guests;
+        if (g && g.status === 'pending' && !g.room_id) {
+          out.push({
+            signer_name: (g.full_name && String(g.full_name).trim()) || 'Misafir',
+            accepted_at: r.accepted_at,
+          });
+        }
+      }
+      setContractRoomPreviews(out);
+    })();
+  }, [id, room?.id, room?.status]);
 
   const downloadQrAsImage = useCallback(async (ref: QRCodeRef, label: string) => {
     if (!ref?.toDataURL) {
@@ -327,6 +355,19 @@ export default function RoomDetail() {
         <Text style={styles.label}>Durum</Text>
         <Text style={styles.value}>{room.status}</Text>
       </View>
+      {room.status === 'available' && contractRoomPreviews.length > 0 && (
+        <View style={styles.previewBanner}>
+          <Text style={styles.previewBannerTitle}>Sözleşme onayı — check-in bekleniyor</Text>
+          <Text style={styles.previewBannerSub}>
+            Aşağıdaki isimler bu odaya önizleme olarak bağlı; henüz odada değiller. Onaylar ekranından check-in tamamlanabilir.
+          </Text>
+          {contractRoomPreviews.map((p, i) => (
+            <Text key={`${p.accepted_at}-${i}`} style={styles.previewBannerLine}>
+              • {p.signer_name} · {new Date(p.accepted_at).toLocaleString('tr-TR')}
+            </Text>
+          ))}
+        </View>
+      )}
       {room.status === 'occupied' && currentGuest && (
         <View style={styles.section}>
           <Text style={styles.label}>Konaklayan</Text>
@@ -563,6 +604,17 @@ const styles = StyleSheet.create({
   loading: { padding: 24 },
   title: { fontSize: 22, fontWeight: '700', color: '#1a202c', marginBottom: 24 },
   section: { marginBottom: 20 },
+  previewBanner: {
+    backgroundColor: '#ebf8ff',
+    borderWidth: 1,
+    borderColor: '#bee3f8',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 20,
+  },
+  previewBannerTitle: { fontSize: 15, fontWeight: '700', color: '#2c5282', marginBottom: 6 },
+  previewBannerSub: { fontSize: 13, color: '#4a5568', lineHeight: 19, marginBottom: 8 },
+  previewBannerLine: { fontSize: 14, color: '#1a365d', fontWeight: '600', marginTop: 4 },
   label: { fontSize: 12, color: '#718096', marginBottom: 4 },
   value: { fontSize: 16, color: '#1a202c', fontWeight: '500' },
   qrWrap: { alignItems: 'center', marginTop: 12 },

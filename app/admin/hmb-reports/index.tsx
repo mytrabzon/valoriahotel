@@ -13,7 +13,6 @@ import {
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
@@ -27,7 +26,16 @@ import {
   type HmbReportData,
 } from '@/lib/hmbReport';
 import { formatDateShort } from '@/lib/date';
-import { HMB_HOTEL_INFO } from '@/constants/hmbHotel';
+import {
+  loadHmbFormBranding,
+  saveHmbFormBranding,
+  DEFAULT_HMB_FORM_BRANDING,
+  type HmbFormBranding,
+} from '@/lib/hmbFormBranding';
+import * as ImagePicker from 'expo-image-picker';
+import { format, parseISO } from 'date-fns';
+import { tr } from 'date-fns/locale';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type RoomRow = { id: string; room_number: string };
 
@@ -56,9 +64,21 @@ function fmtMoney(n: number): string {
   }).format(n);
 }
 
+function formatTrDayMonthYear(yyyyMmDd: string): string {
+  try {
+    return format(parseISO(yyyyMmDd), 'dd.MM.yyyy', { locale: tr });
+  } catch {
+    return yyyyMmDd;
+  }
+}
+
 export default function HmbReportsScreen() {
-  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { staff } = useAuthStore();
+  const [branding, setBranding] = useState<HmbFormBranding>({ ...DEFAULT_HMB_FORM_BRANDING });
+  const [formListDate, setFormListDate] = useState(() => format(new Date(), 'dd.MM.yyyy', { locale: tr }));
+  const [formSira, setFormSira] = useState('');
+  const [formBlock, setFormBlock] = useState('');
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [startDate, setStartDate] = useState(() => getDefaultDates().start);
   const [endDate, setEndDate] = useState(() => getDefaultDates().end);
@@ -80,6 +100,32 @@ export default function HmbReportsScreen() {
       .order('room_number')
       .then(({ data }) => setRooms(data ?? []));
   }, []);
+
+  useEffect(() => {
+    loadHmbFormBranding().then((b) => setBranding(b));
+  }, []);
+
+  const pickSealOrLogo = async (field: 'logoDataUrl' | 'ministrySealDataUrl') => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('İzin gerekli', 'Galeriden görsel seçmek için izin verin.');
+      return;
+    }
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 0.75,
+      base64: true,
+    });
+    if (res.canceled || !res.assets[0]?.base64) return;
+    const mime = res.assets[0].mimeType?.includes('png') ? 'image/png' : 'image/jpeg';
+    const dataUrl = `data:${mime};base64,${res.assets[0].base64}`;
+    setBranding((prev) => {
+      const next = { ...prev, [field]: dataUrl };
+      saveHmbFormBranding(next).catch(() => {});
+      return next;
+    });
+  };
 
   const loadRecentReports = useCallback(async () => {
     setLoadingRecent(true);
@@ -126,7 +172,14 @@ export default function HmbReportsScreen() {
     if (!reportData || !staff) return;
     setPdfLoading(true);
     try {
-      const html = buildHmbReportHtml(reportData, filters, staff.full_name ?? 'Admin');
+      const html = buildHmbReportHtml(reportData, filters, staff.full_name ?? 'Admin', branding, {
+        listDate: formListDate,
+        seri: branding.defaultSeri || 'A',
+        sira: formSira,
+        arrivalDate: formatTrDayMonthYear(filters.startDate),
+        departureDate: formatTrDayMonthYear(filters.endDate),
+        block: formBlock,
+      });
       const { uri } = await Print.printToFileAsync({
         html,
         width: 595,
@@ -181,6 +234,178 @@ export default function HmbReportsScreen() {
         <Text style={styles.legalNote}>
           Bu rapor, Vergi Usul Kanunu 240. madde gereğince düzenlenen Günlük Müşteri Listesi formatında hazırlanmaktadır.
         </Text>
+      </AdminCard>
+
+      <AdminCard>
+        <Text style={styles.sectionTitle}>Form ve işletme bilgileri (PDF üst kısım)</Text>
+        <Text style={[styles.legalNote, { marginBottom: 12 }]}>
+          Sol üst metinler, orta mühür (varsayılan vektör veya sizin PNG’niz), sağ üst tarih/seri/sıra alanları buradan düzenlenir. Matbaadaki
+          mühürle birebir eşleşme için orta alana resmî mühür görselinizi yükleyin.
+        </Text>
+        <View style={styles.row}>
+          <Text style={styles.label}>Ünvan / işletme adı</Text>
+          <TextInput
+            style={styles.input}
+            value={branding.legalCompanyName}
+            onChangeText={(t) => setBranding((b) => ({ ...b, legalCompanyName: t }))}
+            placeholder="Örn: SEVCAN OTELCİLİK A.Ş."
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>Faaliyet / alt satır (isteğe bağlı)</Text>
+          <TextInput
+            style={styles.input}
+            value={branding.businessActivities}
+            onChangeText={(t) => setBranding((b) => ({ ...b, businessActivities: t }))}
+            placeholder="Kısa açıklama"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>Adres</Text>
+          <TextInput
+            style={styles.input}
+            value={branding.address}
+            onChangeText={(t) => setBranding((b) => ({ ...b, address: t }))}
+            placeholder="Merkez adres"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>Telefon</Text>
+          <TextInput
+            style={styles.input}
+            value={branding.phone}
+            onChangeText={(t) => setBranding((b) => ({ ...b, phone: t }))}
+            placeholder="Tel"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>Faks</Text>
+          <TextInput
+            style={styles.input}
+            value={branding.fax}
+            onChangeText={(t) => setBranding((b) => ({ ...b, fax: t }))}
+            placeholder="İsteğe bağlı"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>İl kodu (mühür altı)</Text>
+          <TextInput
+            style={styles.input}
+            value={branding.provinceCode}
+            onChangeText={(t) => setBranding((b) => ({ ...b, provinceCode: t }))}
+            placeholder="34"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>Varsayılan SERİ</Text>
+          <TextInput
+            style={styles.input}
+            value={branding.defaultSeri}
+            onChangeText={(t) => setBranding((b) => ({ ...b, defaultSeri: t }))}
+            placeholder="A"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>Form tarihi (sağ üst)</Text>
+          <TextInput
+            style={styles.input}
+            value={formListDate}
+            onChangeText={setFormListDate}
+            placeholder="GG.AA.YYYY"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>SIRA no</Text>
+          <TextInput
+            style={styles.input}
+            value={formSira}
+            onChangeText={setFormSira}
+            placeholder="Boş bırakılabilir"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>BLOK</Text>
+          <TextInput
+            style={styles.input}
+            value={formBlock}
+            onChangeText={setFormBlock}
+            placeholder="Blok adı veya no"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.label}>Matbaa / alt not (çok küçük punto)</Text>
+          <TextInput
+            style={styles.input}
+            value={branding.footerPrinterLine}
+            onChangeText={(t) => setBranding((b) => ({ ...b, footerPrinterLine: t }))}
+            placeholder="İsteğe bağlı"
+            placeholderTextColor={adminTheme.colors.textMuted}
+          />
+        </View>
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={() => pickSealOrLogo('logoDataUrl')}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="image-outline" size={20} color={adminTheme.colors.primary} />
+            <Text style={styles.secondaryBtnText}>Sol logo yükle</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={() => pickSealOrLogo('ministrySealDataUrl')}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="ribbon-outline" size={20} color={adminTheme.colors.primary} />
+            <Text style={styles.secondaryBtnText}>Maliye mührü (PNG)</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={() => {
+              setBranding((prev) => {
+                const next = { ...prev, logoDataUrl: null };
+                saveHmbFormBranding(next).catch(() => {});
+                return next;
+              });
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.secondaryBtnText}>Logoyu kaldır</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={() => {
+              setBranding((prev) => {
+                const next = { ...prev, ministrySealDataUrl: null };
+                saveHmbFormBranding(next).catch(() => {});
+                return next;
+              });
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.secondaryBtnText}>Mühürü varsayılana dön</Text>
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity
+          style={[styles.primaryBtn, { marginTop: 12, width: '100%' }]}
+          onPress={() => saveHmbFormBranding(branding)}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="save-outline" size={20} color="#fff" />
+          <Text style={styles.primaryBtnText}>İşletme bilgilerini kaydet</Text>
+        </TouchableOpacity>
       </AdminCard>
 
       <AdminCard>
@@ -358,26 +583,48 @@ export default function HmbReportsScreen() {
 
       <Modal visible={previewVisible} animationType="slide" onRequestClose={() => setPreviewVisible(false)}>
         <View style={styles.modalWrap}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>
+          <View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 12) + 8 }]}>
+            <TouchableOpacity
+              style={styles.modalBackBtn}
+              onPress={() => setPreviewVisible(false)}
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Geri"
+            >
+              <Ionicons name="arrow-back" size={24} color={adminTheme.colors.text} />
+              <Text style={styles.modalBackText}>Geri</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitleCenter} numberOfLines={2}>
               Önizleme · {formatDateShort(filters.startDate)} – {formatDateShort(filters.endDate)}
             </Text>
-            <TouchableOpacity onPress={() => setPreviewVisible(false)} hitSlop={16}>
-              <Ionicons name="close" size={28} color={adminTheme.colors.text} />
+            <TouchableOpacity
+              style={styles.modalCloseBtn}
+              onPress={() => setPreviewVisible(false)}
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Kapat"
+            >
+              <Ionicons name="close" size={26} color={adminTheme.colors.text} />
             </TouchableOpacity>
           </View>
           <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
             {reportData && (
               <>
                 <View style={styles.previewBlock}>
-                  <Text style={styles.previewHead}>T.C. HAZİNE VE MALİYE BAKANLIĞI</Text>
-                  <Text style={styles.previewSub}>Günlük Müşteri Listesi (VUK Md. 240)</Text>
+                  <Text style={styles.previewHead}>GÜNLÜK MÜŞTERİ LİSTESİ</Text>
+                  <Text style={styles.previewSub}>VUK Md. 240 · {formListDate}</Text>
                 </View>
                 <View style={styles.previewBlock}>
-                  <Text style={styles.previewLabel}>İşletme</Text>
-                  <Text style={styles.previewText}>{HMB_HOTEL_INFO.title}</Text>
-                  <Text style={styles.previewText}>{HMB_HOTEL_INFO.address}</Text>
-                  <Text style={styles.previewText}>Vergi Dairesi: {HMB_HOTEL_INFO.taxOffice} · Vergi No: {HMB_HOTEL_INFO.taxNumber}</Text>
+                  <Text style={styles.previewLabel}>İşletme (PDF sol üst)</Text>
+                  <Text style={styles.previewText}>{branding.legalCompanyName}</Text>
+                  {!!branding.businessActivities && (
+                    <Text style={styles.previewText}>{branding.businessActivities}</Text>
+                  )}
+                  <Text style={styles.previewText}>{branding.address}</Text>
+                  <Text style={styles.previewText}>
+                    Tel: {branding.phone}
+                    {branding.fax ? ` · Faks: ${branding.fax}` : ''}
+                  </Text>
                 </View>
                 <View style={styles.previewBlock}>
                   <Text style={styles.previewLabel}>Müşteri listesi</Text>
@@ -551,12 +798,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 12,
+    paddingBottom: 14,
+    gap: 8,
     borderBottomWidth: 1,
     borderBottomColor: adminTheme.colors.border,
   },
-  modalTitle: { fontSize: 17, fontWeight: '700', color: adminTheme.colors.text },
+  modalBackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 88,
+    paddingVertical: 4,
+  },
+  modalBackText: { fontSize: 17, fontWeight: '600', color: adminTheme.colors.text },
+  modalTitleCenter: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '700',
+    color: adminTheme.colors.text,
+    textAlign: 'center',
+  },
+  modalCloseBtn: { minWidth: 44, alignItems: 'flex-end', paddingVertical: 4, justifyContent: 'center' },
   modalScroll: { flex: 1 },
   modalScrollContent: { padding: 20, paddingBottom: 40 },
   previewBlock: { marginBottom: 24 },

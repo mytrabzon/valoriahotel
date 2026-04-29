@@ -12,7 +12,6 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
-  Image,
   Modal,
   useWindowDimensions,
 } from 'react-native';
@@ -21,6 +20,7 @@ import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '@/stores/authStore';
 import { uriToArrayBuffer, getMimeAndExt } from '@/lib/uploadMedia';
+import { uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
 import { ensureCameraPermission } from '@/lib/cameraPermission';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
 import {
@@ -46,19 +46,15 @@ import {
   BUBBLE_OTHER_DIRECT,
   BUBBLE_COLOR_OPTIONS,
 } from '@/stores/messagingBubbleStore';
+import { useTranslation } from 'react-i18next';
 
 function formatMessageTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 function formatMessageDateAndTime(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleString('tr-TR', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 function MessageBubble({
@@ -76,10 +72,11 @@ function MessageBubble({
   onDelete?: (msg: Message) => void;
   bubbleColor: string;
 }) {
+  const { t } = useTranslation();
   const voiceUri = msg.message_type === 'voice' ? (msg.media_url || msg.content) : null;
   const isImage = msg.message_type === 'image' && (msg.media_url || msg.media_thumbnail);
   const imageUri = msg.media_url || msg.media_thumbnail || '';
-  const displayName = msg.sender_name?.trim() || (msg.sender_type === 'guest' ? 'Misafir' : null) || '?';
+  const displayName = msg.sender_name?.trim() || (msg.sender_type === 'guest' ? t('guestDefaultName') : null) || '?';
   const initial = displayName.charAt(0).toUpperCase();
   const timeStr = isGroup ? formatMessageDateAndTime(msg.created_at) : formatMessageTime(msg.created_at);
   const textColor = getContrastTextColor(bubbleColor);
@@ -183,7 +180,7 @@ export default function AdminChatScreen() {
   const navigation = useNavigation();
   useEffect(() => {
     loadBubbleStore();
-  }, []);
+  }, [loadBubbleStore]);
   useEffect(() => {
     if (!conversationId) return;
     supabase
@@ -199,7 +196,7 @@ export default function AdminChatScreen() {
           setConversationName(header.name);
           setConversationAvatar(header.avatar);
         } else {
-          setConversationName(row?.name ?? 'Sohbet');
+          setConversationName(row?.name ?? t('screenChat'));
           setConversationAvatar(row?.avatar ?? null);
         }
       });
@@ -216,7 +213,7 @@ export default function AdminChatScreen() {
               <Text style={styles.headerAvatarInitial}>{(conversationName || '?').charAt(0).toUpperCase()}</Text>
             </View>
           )}
-          <Text style={styles.headerTitleText} numberOfLines={1}>{conversationName || 'Sohbet'}</Text>
+          <Text style={styles.headerTitleText} numberOfLines={1}>{conversationName || t('screenChat')}</Text>
         </View>
       ),
       headerRight: () => (
@@ -255,8 +252,8 @@ export default function AdminChatScreen() {
         scrollTimeoutsRef.current.push(setTimeout(scrollToEnd, 100));
       }
     })();
-    return () => scrollTimeoutsRef.current.forEach((t) => clearTimeout(t));
-  }, [staff?.id, conversationId]);
+    return () => scrollTimeoutsRef.current.forEach((timeoutId) => clearTimeout(timeoutId));
+  }, [staff, conversationId]);
 
   useEffect(() => {
     if (!conversationId) return;
@@ -285,14 +282,14 @@ export default function AdminChatScreen() {
     if (!conversationId || !staff) return;
     typingPresenceRef.current = subscribeToTypingPresence(
       conversationId,
-      { displayName: staff.full_name || staff.email || 'Admin', userId: staff.id },
+      { displayName: staff.full_name || staff.email || t('adminTab'), userId: staff.id },
       setTypingNames
     );
     return () => {
       typingPresenceRef.current?.unsubscribe?.();
       typingPresenceRef.current = null;
     };
-  }, [conversationId, staff?.id, staff?.full_name, staff?.email]);
+  }, [conversationId, staff]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -350,7 +347,7 @@ export default function AdminChatScreen() {
     if (error) {
       setInput(text);
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
-      Alert.alert('Mesaj gönderilemedi', error);
+      Alert.alert(t('messageSendFailedTitle'), typeof error === 'string' ? error : String(error));
       return;
     }
     if (sent) {
@@ -359,7 +356,7 @@ export default function AdminChatScreen() {
       notifyConversationRecipients({
         conversationId: convId,
         excludeStaffId: staff.id,
-        title: 'Yeni mesaj',
+        title: conversationName || t('notifNewMessage'),
         body: text.slice(0, 80) + (text.length > 80 ? '…' : ''),
         data: { conversationId: convId, url: `/admin/messages/chat/${convId}` },
       }).catch(() => {});
@@ -375,16 +372,16 @@ export default function AdminChatScreen() {
     if (!staff || !conversationId || sending) return;
     if (source === 'camera') {
       const granted = await ensureCameraPermission({
-        title: 'Kamera izni',
-        message: 'Sohbette fotoğraf çekmek için kamera erişimi gerekiyor.',
-        settingsMessage: 'Kamera izni kapalı. Sohbete fotoğraf eklemek için ayarlardan izin verin.',
+        title: t('chatCameraPermissionTitle'),
+        message: t('chatCameraPermissionMessage'),
+        settingsMessage: t('chatCameraPermissionSettings'),
       });
       if (!granted) return;
     } else {
       const granted = await ensureMediaLibraryPermission({
-        title: 'Galeri izni',
-        message: 'Sohbette fotograf secmek icin galeri erisimi istiyoruz.',
-        settingsMessage: 'Galeri izni kapali. Sohbete fotograf eklemek icin ayarlardan izin verin.',
+        title: t('chatGalleryPermissionTitle'),
+        message: t('chatGalleryPermissionMessage'),
+        settingsMessage: t('chatGalleryPermissionSettings'),
       });
       if (!granted) {
         return;
@@ -409,12 +406,12 @@ export default function AdminChatScreen() {
         staff.id,
         staff.full_name || staff.email,
         staff.profile_image ?? null,
-        'Fotoğraf',
+        t('photo'),
         'image',
         mediaUrl
       );
       if (error) {
-        Alert.alert('Mesaj gönderilemedi', error);
+        Alert.alert(t('messageSendFailedTitle'), typeof error === 'string' ? error : String(error));
         return;
       }
       if (sent) {
@@ -423,8 +420,8 @@ export default function AdminChatScreen() {
         notifyConversationRecipients({
           conversationId: convId,
           excludeStaffId: staff.id,
-          title: 'Yeni mesaj',
-          body: 'Fotoğraf gönderildi.',
+          title: conversationName || t('notifNewMessage'),
+          body: t('staffChatPhotoSentBody'),
           data: { conversationId: convId, url: `/admin/messages/chat/${convId}` },
         }).catch(() => {});
         if (nextConversationId !== conversationId) {
@@ -438,7 +435,7 @@ export default function AdminChatScreen() {
     } catch (e) {
       const err = e as Error;
       console.error('[AdminChat] Resim yükleme hatası:', err?.message, err?.stack);
-      Alert.alert('Hata', err?.message ?? 'Resim gönderilemedi.');
+      Alert.alert(t('error'), err?.message ?? t('imageSendFailed'));
     } finally {
       setSending(false);
     }
@@ -446,27 +443,27 @@ export default function AdminChatScreen() {
 
   const showImageOptions = () => {
     Alert.alert(
-      'Fotoğraf gönder',
+      t('sendPhotoTitle'),
       undefined,
       [
-        { text: 'Resim çek', onPress: () => sendImageFromSource('camera') },
-        { text: 'Galeriden seç', onPress: () => sendImageFromSource('library') },
-        { text: 'İptal', style: 'cancel' },
+        { text: t('takePhoto'), onPress: () => sendImageFromSource('camera') },
+        { text: t('chooseFromGallery'), onPress: () => sendImageFromSource('library') },
+        { text: t('cancel'), style: 'cancel' },
       ]
     );
   };
 
   const handleDeleteMessage = (msg: Message) => {
     if (!conversationId) return;
-    Alert.alert('Mesajı sil', 'Bu mesajı silmek istediğinize emin misiniz?', [
-      { text: 'İptal', style: 'cancel' },
+    Alert.alert(t('deleteMessageTitle'), t('deleteMessageConfirm'), [
+      { text: t('cancel'), style: 'cancel' },
       {
-        text: 'Sil',
+        text: t('delete'),
         style: 'destructive',
         onPress: async () => {
           const { error } = await staffDeleteMessage(conversationId, msg.id);
           if (error) {
-            Alert.alert('Hata', error);
+            Alert.alert(t('error'), typeof error === 'string' ? error : String(error));
             return;
           }
           setMessages((prev) => prev.filter((m) => m.id !== msg.id));
@@ -476,24 +473,20 @@ export default function AdminChatScreen() {
   };
 
   const uploadGroupAvatar = async (uri: string): Promise<string> => {
-    const arrayBuffer = await uriToArrayBuffer(uri);
-    const ext = uri.toLowerCase().includes('.png') ? 'png' : 'jpg';
-    const contentType = ext === 'png' ? 'image/png' : 'image/jpeg';
-    const fileName = `conversations/${conversationId}.${ext}`;
-    const { error } = await supabase.storage.from('profiles').upload(fileName, arrayBuffer, {
-      contentType,
-      upsert: true,
+    if (!conversationId) throw new Error(t('conversationNotFound'));
+    const { publicUrl } = await uploadUriToPublicBucket({
+      bucketId: 'profiles',
+      uri,
+      subfolder: `conversations/${conversationId}`,
     });
-    if (error) throw error;
-    const { data: { publicUrl } } = supabase.storage.from('profiles').getPublicUrl(fileName);
     return publicUrl;
   };
 
   const pickAvatarForGroup = async () => {
     const granted = await ensureMediaLibraryPermission({
-      title: 'Galeri izni',
-      message: 'Grup avatari secmek icin galeri erisimi istiyoruz.',
-      settingsMessage: 'Galeri izni kapali. Grup avatari secmek icin ayarlardan izin verin.',
+      title: t('groupAvatarGalleryPermissionTitle'),
+      message: t('groupAvatarGalleryPermissionMessage'),
+      settingsMessage: t('groupAvatarGalleryPermissionSettings'),
     });
     if (!granted) {
       return;
@@ -510,7 +503,7 @@ export default function AdminChatScreen() {
       const url = await uploadGroupAvatar(result.assets[0].uri);
       setEditGroupAvatar(url);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Fotoğraf yüklenemedi.');
+      Alert.alert(t('error'), (e as Error)?.message ?? t('imageUploadFailedShort'));
     } finally {
       setUploadingAvatar(false);
     }
@@ -526,7 +519,7 @@ export default function AdminChatScreen() {
         .update({ name, avatar: editGroupAvatar ?? null, updated_at: new Date().toISOString() })
         .eq('id', conversationId);
       if (error) {
-        Alert.alert('Hata', error.message);
+        Alert.alert(t('error'), error.message);
         return;
       }
       setConversationName(name);
@@ -568,7 +561,7 @@ export default function AdminChatScreen() {
               activeOpacity={0.7}
             >
               <Ionicons name="settings-outline" size={20} color={MESSAGING_COLORS.primary} />
-              <Text style={styles.groupSettingsBarText}>Grup adı ve avatarı düzenle</Text>
+              <Text style={styles.groupSettingsBarText}>{t('staffChatEditGroupBar')}</Text>
               <Ionicons name="chevron-forward" size={18} color={MESSAGING_COLORS.textSecondary} />
             </TouchableOpacity>
           ) : null
@@ -589,14 +582,16 @@ export default function AdminChatScreen() {
             />
           );
         }}
-        ListEmptyComponent={<Text style={styles.empty}>Henüz mesaj yok.</Text>}
+        ListEmptyComponent={<Text style={styles.empty}>{t('chatNoMessagesYet')}</Text>}
         onContentSizeChange={() => { if (messages.length > 0) listRef.current?.scrollToEnd({ animated: false }); }}
         onLayout={Platform.OS === 'android' ? () => { if (messages.length > 0) requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false })); } : undefined}
       />
       {typingNames.length > 0 ? (
         <View style={styles.typingRow}>
           {typingNames.length === 1 ? (
-            <Text style={styles.typingText} numberOfLines={1}>{typingNames[0]} yazıyor...</Text>
+            <Text style={styles.typingText} numberOfLines={1}>
+              {t('chatTypingSingle', { name: typingNames[0] })}
+            </Text>
           ) : (
             <View style={styles.typingMultiRow}>
               {typingNames.slice(0, 4).map((name) => (
@@ -604,7 +599,7 @@ export default function AdminChatScreen() {
                   <Text style={styles.typingChipLetter}>{name.charAt(0).toUpperCase()}</Text>
                 </View>
               ))}
-              <Text style={styles.typingTextSmall}> yazıyor...</Text>
+              <Text style={styles.typingTextSmall}> {t('chatTypingMany')}</Text>
             </View>
           )}
         </View>
@@ -612,11 +607,11 @@ export default function AdminChatScreen() {
       <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
-          placeholder="Mesaj yaz..."
+          placeholder={t('messageInputPlaceholder')}
           placeholderTextColor={MESSAGING_COLORS.textSecondary}
           value={input}
-          onChangeText={(t) => {
-            setInput(t);
+          onChangeText={(text) => {
+            setInput(text);
             typingPresenceRef.current?.updateTyping(true);
             if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
             typingTimeoutRef.current = setTimeout(() => {
@@ -655,7 +650,7 @@ export default function AdminChatScreen() {
           onPress={() => setShowGroupSettings(false)}
         >
           <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Grup ayarları</Text>
+            <Text style={styles.modalTitle}>{t('chatGroupSettingsTitle')}</Text>
             <View style={styles.modalAvatarRow}>
               <TouchableOpacity
                 onPress={pickAvatarForGroup}
@@ -666,7 +661,7 @@ export default function AdminChatScreen() {
                   <CachedImage uri={editGroupAvatar} style={styles.modalAvatarImg} contentFit="cover" />
                 ) : (
                   <View style={styles.modalAvatarPlaceholder}>
-                    <Text style={styles.modalAvatarPlaceholderText}>Fotoğraf</Text>
+                    <Text style={styles.modalAvatarPlaceholderText}>{t('photo')}</Text>
                   </View>
                 )}
                 {uploadingAvatar && (
@@ -675,19 +670,19 @@ export default function AdminChatScreen() {
                   </View>
                 )}
               </TouchableOpacity>
-              <Text style={styles.modalAvatarHint}>Profil resmi</Text>
+              <Text style={styles.modalAvatarHint}>{t('chatGroupAvatarHint')}</Text>
             </View>
-            <Text style={styles.modalLabel}>Grup adı</Text>
+            <Text style={styles.modalLabel}>{t('chatGroupNameLabel')}</Text>
             <TextInput
               style={styles.modalInput}
               value={editGroupName}
               onChangeText={setEditGroupName}
-              placeholder="Örn: Tüm Çalışanlar"
+              placeholder={t('groupNameExamplePlaceholder')}
               placeholderTextColor={MESSAGING_COLORS.textSecondary}
             />
             <View style={styles.modalActions}>
               <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setShowGroupSettings(false)}>
-                <Text style={styles.modalCancelText}>İptal</Text>
+                <Text style={styles.modalCancelText}>{t('cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.modalSaveBtn, savingGroup && styles.modalSaveBtnDisabled]}
@@ -697,7 +692,7 @@ export default function AdminChatScreen() {
                 {savingGroup ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Text style={styles.modalSaveText}>Kaydet</Text>
+                  <Text style={styles.modalSaveText}>{t('save')}</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -726,7 +721,7 @@ export default function AdminChatScreen() {
               ))}
             </View>
             <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setShowBubbleColorModal(false)}>
-              <Text style={styles.modalCancelText}>Kapat</Text>
+              <Text style={styles.modalCancelText}>{t('close')}</Text>
             </TouchableOpacity>
           </TouchableOpacity>
         </TouchableOpacity>

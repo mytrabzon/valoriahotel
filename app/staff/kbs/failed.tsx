@@ -2,8 +2,10 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Ale
 import { theme } from '@/constants/theme';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet, apiPost } from '@/lib/kbsApi';
+import { useTranslation } from 'react-i18next';
 
 export default function FailedTransactionsScreen() {
+  const { t } = useTranslation();
   const q = useQuery({
     queryKey: ['kbs', 'failed_transactions'],
     queryFn: async () => {
@@ -16,17 +18,17 @@ export default function FailedTransactionsScreen() {
   const onRetry = async (transactionId: string) => {
     const res = await apiPost<{ transactionId: string }>('/submissions/retry', { transactionId });
     if (!res.ok) {
-      Alert.alert('Retry', res.error.message);
+      Alert.alert(t('kbsRetryTitle'), res.error.message);
       return;
     }
-    Alert.alert('Retry', `İşlem tekrar denendi. Tx: ${String(res.data.transactionId).slice(0, 8)}`);
+    Alert.alert(t('kbsRetryTitle'), t('kbsTxRetried', { tx: String(res.data.transactionId).slice(0, 8) }));
     q.refetch();
   };
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Hatalar & Retry</Text>
-      <Text style={styles.p}>Failed işlemler.</Text>
+      <Text style={styles.title}>{t('kbsNavFailed')}</Text>
+      <Text style={styles.p}>{t('kbsFailedIntro')}</Text>
 
       <FlatList
         data={q.data ?? []}
@@ -39,11 +41,11 @@ export default function FailedTransactionsScreen() {
             <Text style={styles.meta}>Retry: {item.retry_count}</Text>
             <Text style={styles.meta}>Err: {item.error_message ?? '-'}</Text>
             <TouchableOpacity style={styles.btn} onPress={() => onRetry(item.id)}>
-              <Text style={styles.btnText}>Retry</Text>
+              <Text style={styles.btnText}>{t('kbsRetryTitle')}</Text>
             </TouchableOpacity>
           </View>
         )}
-        ListEmptyComponent={<Text style={styles.empty}>{q.isLoading ? 'Yükleniyor…' : 'Hata yok.'}</Text>}
+        ListEmptyComponent={<Text style={styles.empty}>{q.isLoading ? t('loading') : t('kbsNoErrors')}</Text>}
       />
     </View>
   );

@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   Linking,
+  Modal,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,9 +23,23 @@ type NotifRow = {
   title: string;
   body: string | null;
   category: string | null;
+  notification_type: string | null;
   read_at: string | null;
   created_at: string;
-  data?: { postId?: string; url?: string } | null;
+  data?: { postId?: string; url?: string; missingItemId?: string; kind?: string; note?: string } | null;
+};
+
+type MissingItemDetail = {
+  id: string;
+  title: string;
+  description: string | null;
+  priority: 'low' | 'medium' | 'high';
+  status: 'open' | 'resolved';
+  created_at: string;
+  resolved_at: string | null;
+  reminder_count: number;
+  creator?: { full_name: string | null } | null;
+  resolver?: { full_name: string | null } | null;
 };
 
 export default function StaffNotificationsScreen() {
@@ -34,8 +49,25 @@ export default function StaffNotificationsScreen() {
   const [list, setList] = useState<NotifRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingAll, setDeletingAll] = useState(false);
+  const [detailVisible, setDetailVisible] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [selectedNotification, setSelectedNotification] = useState<NotifRow | null>(null);
+  const [missingItemDetail, setMissingItemDetail] = useState<MissingItemDetail | null>(null);
   const [pushPerm, setPushPerm] = useState<'granted' | 'denied' | 'undetermined' | 'unknown'>('unknown');
   const [enablingPush, setEnablingPush] = useState(false);
+
+  const markAllAsRead = useCallback(async () => {
+    if (!staff?.id) return;
+    const now = new Date().toISOString();
+    await supabase
+      .from('notifications')
+      .update({ read_at: now })
+      .eq('staff_id', staff.id)
+      .is('read_at', null);
+    setList((prev) => prev.map((n) => (n.read_at ? n : { ...n, read_at: now })));
+    setUnreadCount(0);
+    refreshBadge();
+  }, [staff?.id, refreshBadge, setUnreadCount]);
 
   const load = useCallback(async (opts?: { scrollToTop?: boolean }) => {
     if (!staff?.id) {
@@ -54,7 +86,7 @@ export default function StaffNotificationsScreen() {
     }
     const { data } = await supabase
       .from('notifications')
-      .select('id, title, body, category, read_at, created_at, data')
+      .select('id, title, body, category, notification_type, read_at, created_at, data')
       .eq('staff_id', staff.id)
       .order('created_at', { ascending: false })
       .limit(100);
@@ -95,9 +127,11 @@ export default function StaffNotificationsScreen() {
     useCallback(() => {
       setUnreadCount(0);
       setNotificationsScreenFocused(true);
-      load();
+      load().then(() => {
+        markAllAsRead();
+      });
       return () => setNotificationsScreenFocused(false);
-    }, [setUnreadCount, setNotificationsScreenFocused, load])
+    }, [setUnreadCount, setNotificationsScreenFocused, load, markAllAsRead])
   );
 
   const enablePush = useCallback(async () => {
@@ -137,7 +171,7 @@ export default function StaffNotificationsScreen() {
         }
       }
     } catch (e) {
-      Alert.alert('Hata', 'İzin alınırken bir sorun oluştu. Lütfen tekrar deneyin.');
+      Alert.alert(t('error'), t('notificationPermissionFetchFailed'));
     } finally {
       setEnablingPush(false);
     }
@@ -150,11 +184,70 @@ export default function StaffNotificationsScreen() {
     refreshBadge();
   };
 
+  const isMissingNotification = (n: NotifRow) =>
+    (n.notification_type ?? '').startsWith('missing_item_') || (n.data?.kind ?? '').startsWith('missing_item_');
+
+  const formatMissingPriority = (priority?: MissingItemDetail['priority']) => {
+    if (!priority) return '-';
+    if (priority === 'high') return 'Yuksek';
+    if (priority === 'medium') return 'Orta';
+    return 'Dusuk';
+  };
+
+  const formatMissingStatus = (status?: MissingItemDetail['status']) => {
+    if (!status) return '-';
+    return status === 'resolved' ? 'Giderildi' : 'Acik';
+  };
+
+  const fetchMissingItemDetail = async (missingItemId: string) => {
+    setDetailLoading(true);
+    const { data, error } = await supabase
+      .from('missing_items')
+      .select(
+        `
+        id,
+        title,
+        description,
+        priority,
+        status,
+        created_at,
+        resolved_at,
+        reminder_count,
+        creator:staff!missing_items_created_by_staff_id_fkey(full_name),
+        resolver:staff!missing_items_resolved_by_staff_id_fkey(full_name)
+      `
+      )
+      .eq('id', missingItemId)
+      .maybeSingle();
+    setDetailLoading(false);
+    if (error) {
+      setMissingItemDetail(null);
+      return;
+    }
+    setMissingItemDetail((data as MissingItemDetail | null) ?? null);
+  };
+
+  const openNotificationDetail = async (n: NotifRow) => {
+    setSelectedNotification(n);
+    setMissingItemDetail(null);
+    setDetailVisible(true);
+    if (n.data?.missingItemId) {
+      await fetchMissingItemDetail(n.data.missingItemId);
+    }
+  };
+
+  const displayTitle = (n: NotifRow) => {
+    if (isMissingNotification(n)) return 'Eksik Var';
+    return n.title;
+  };
+
   const onNotificationPress = (n: NotifRow) => {
     if (!n.read_at) markRead(n.id);
     if (n.data?.postId) {
       router.push({ pathname: '/staff/feed', params: { openPostId: n.data.postId } });
+      return;
     }
+    openNotificationDetail(n);
   };
 
   const deleteAllNotifications = () => {
@@ -277,12 +370,54 @@ export default function StaffNotificationsScreen() {
             {categoryLabel(n.category) ? (
               <Text style={styles.rowCategory}>{categoryLabel(n.category)}</Text>
             ) : null}
-            <Text style={styles.rowTitle}>{n.title}</Text>
+            <Text style={styles.rowTitle}>{displayTitle(n)}</Text>
             {n.body ? <Text style={styles.rowBody}>{n.body}</Text> : null}
             <Text style={styles.rowTime}>{new Date(n.created_at).toLocaleString('tr-TR')}</Text>
           </TouchableOpacity>
         ))
       )}
+      <Modal visible={detailVisible} transparent animationType="fade" onRequestClose={() => setDetailVisible(false)}>
+        <View style={styles.detailBackdrop}>
+          <View style={styles.detailCard}>
+            <View style={styles.detailHeader}>
+              <Text style={styles.detailTitle}>{selectedNotification ? displayTitle(selectedNotification) : 'Bildirim'}</Text>
+              <TouchableOpacity onPress={() => setDetailVisible(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="close" size={20} color="#718096" />
+              </TouchableOpacity>
+            </View>
+            {!!selectedNotification?.body && <Text style={styles.detailBody}>{selectedNotification.body}</Text>}
+            {!!selectedNotification && (
+              <Text style={styles.detailMeta}>Tarih: {new Date(selectedNotification.created_at).toLocaleString('tr-TR')}</Text>
+            )}
+            {!!selectedNotification && categoryLabel(selectedNotification.category) ? (
+              <Text style={styles.detailMeta}>Kategori: {categoryLabel(selectedNotification.category)}</Text>
+            ) : null}
+
+            {detailLoading ? (
+              <ActivityIndicator size="small" color="#2b6cb0" style={{ marginTop: 10 }} />
+            ) : missingItemDetail ? (
+              <View style={styles.detailBox}>
+                <Text style={styles.detailSectionTitle}>Eksik Detayi</Text>
+                <Text style={styles.detailLine}>Baslik: {missingItemDetail.title}</Text>
+                <Text style={styles.detailLine}>Durum: {formatMissingStatus(missingItemDetail.status)}</Text>
+                <Text style={styles.detailLine}>Oncelik: {formatMissingPriority(missingItemDetail.priority)}</Text>
+                <Text style={styles.detailLine}>Hatirlatma sayisi: {missingItemDetail.reminder_count}</Text>
+                <Text style={styles.detailLine}>Ekleyen: {missingItemDetail.creator?.full_name || '-'}</Text>
+                <Text style={styles.detailLine}>Eklenme: {new Date(missingItemDetail.created_at).toLocaleString('tr-TR')}</Text>
+                {missingItemDetail.status === 'resolved' ? (
+                  <Text style={styles.detailLine}>
+                    Gideren: {missingItemDetail.resolver?.full_name || '-'} / {missingItemDetail.resolved_at ? new Date(missingItemDetail.resolved_at).toLocaleString('tr-TR') : '-'}
+                  </Text>
+                ) : null}
+                <Text style={styles.detailSectionTitle}>Not</Text>
+                <Text style={styles.detailNote}>{missingItemDetail.description?.trim() || 'Not girilmemis.'}</Text>
+              </View>
+            ) : selectedNotification && isMissingNotification(selectedNotification) ? (
+              <Text style={styles.detailWarn}>Eksik kaydinin detaylari su an alinamadi.</Text>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -350,4 +485,27 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 16, fontWeight: '600', color: '#1a202c', marginBottom: 4 },
   rowBody: { fontSize: 14, color: '#4a5568', marginBottom: 8 },
   rowTime: { fontSize: 12, color: '#a0aec0' },
+  detailBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'center', padding: 20 },
+  detailCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 16,
+  },
+  detailHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 8 },
+  detailTitle: { flex: 1, fontSize: 17, fontWeight: '800', color: '#1a202c' },
+  detailBody: { fontSize: 14, lineHeight: 20, color: '#334155', marginBottom: 8 },
+  detailMeta: { fontSize: 12, color: '#64748b', marginBottom: 4 },
+  detailBox: {
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingTop: 10,
+    gap: 4,
+  },
+  detailSectionTitle: { marginTop: 6, marginBottom: 2, fontSize: 13, fontWeight: '700', color: '#1e293b' },
+  detailLine: { fontSize: 13, color: '#334155' },
+  detailNote: { fontSize: 13, color: '#1f2937', lineHeight: 20 },
+  detailWarn: { marginTop: 10, fontSize: 13, color: '#b45309' },
 });

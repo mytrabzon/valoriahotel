@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAuthStore } from '@/stores/authStore';
 import {
   sendBulkToGuests,
@@ -44,6 +44,12 @@ const CATEGORIES: { value: BulkCategory; label: string }[] = [
 
 export default function BulkNotifyScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    audience?: 'guest' | 'staff';
+    category?: BulkCategory | string;
+    title?: string;
+    body?: string;
+  }>();
   const { staff } = useAuthStore();
   const [toStaff, setToStaff] = useState(false);
   const [guestTarget, setGuestTarget] = useState<BulkGuestTarget>('all_guests');
@@ -53,6 +59,18 @@ export default function BulkNotifyScreen() {
   const [body, setBody] = useState('');
   const [roomNumbers, setRoomNumbers] = useState('');
   const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    const audience = params.audience;
+    const nextToStaff = audience === 'staff';
+    setToStaff(nextToStaff);
+    const c = params.category;
+    if (c === 'info' || c === 'warning' || c === 'campaign') setCategory(c);
+    const t = typeof params.title === 'string' ? params.title : '';
+    const b = typeof params.body === 'string' ? params.body : '';
+    if (t) setTitle(t);
+    if (b) setBody(b);
+  }, [params.audience, params.category, params.title, params.body]);
 
   const handleSend = async () => {
     if (!staff?.id) {
@@ -82,6 +100,7 @@ export default function BulkNotifyScreen() {
           title: trimmedTitle || 'Toplu Duyuru',
           body: trimmedBody,
           createdByStaffId: staff.id,
+          notificationType: 'admin_announcement',
         });
         if (result.error) {
           Alert.alert('Hata', result.error);

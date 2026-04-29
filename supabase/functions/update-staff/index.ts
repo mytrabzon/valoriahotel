@@ -45,6 +45,11 @@ type UpdateStaffBody = {
   certifications_summary?: string | null;
   kvkk_consent_at?: string | null;
   drives_vehicle?: boolean | null;
+  emergency_contact_name?: string | null;
+  emergency_contact_phone?: string | null;
+  emergency_contact2_name?: string | null;
+  emergency_contact2_phone?: string | null;
+  previous_work_experience?: string | null;
 };
 
 Deno.serve(async (req: Request) => {
@@ -215,6 +220,21 @@ Deno.serve(async (req: Request) => {
   }
   if (body.drives_vehicle !== undefined) {
     staffUpdate.drives_vehicle = body.drives_vehicle === true;
+  }
+  if (body.emergency_contact_name !== undefined) {
+    staffUpdate.emergency_contact_name = body.emergency_contact_name?.trim() ?? null;
+  }
+  if (body.emergency_contact_phone !== undefined) {
+    staffUpdate.emergency_contact_phone = body.emergency_contact_phone?.trim() ?? null;
+  }
+  if (body.emergency_contact2_name !== undefined) {
+    staffUpdate.emergency_contact2_name = body.emergency_contact2_name?.trim() ?? null;
+  }
+  if (body.emergency_contact2_phone !== undefined) {
+    staffUpdate.emergency_contact2_phone = body.emergency_contact2_phone?.trim() ?? null;
+  }
+  if (body.previous_work_experience !== undefined) {
+    staffUpdate.previous_work_experience = body.previous_work_experience?.trim() ?? null;
   }
 
   if (Object.keys(staffUpdate).length > 0) {

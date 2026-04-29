@@ -2,8 +2,9 @@
  * Yeni feed gönderisi sonrası tüm aktif personele (admin dahil) in-app + Expo push bildirimi.
  * Gönderi sahibi personel ise kendisi hariç tutulur.
  */
-import { supabase } from '@/lib/supabase';
+import { supabase, supabaseAnonKey } from '@/lib/supabase';
 import { log } from '@/lib/logger';
+import { postNotificationsReturnMinimal } from '@/lib/notificationService';
 
 export async function notifyStaffOfNewFeedPost(params: {
   postId: string;
@@ -25,7 +26,7 @@ export async function notifyStaffOfNewFeedPost(params: {
 
   try {
     const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData.session?.access_token;
+    const jwt = sessionData.session?.access_token ?? supabaseAnonKey;
 
     const { data: staffRows } = await supabase.from('staff').select('id').eq('is_active', true);
     const allStaffIds = (staffRows ?? []).map((r: { id: string }) => r.id);
@@ -34,7 +35,7 @@ export async function notifyStaffOfNewFeedPost(params: {
       : allStaffIds;
     if (staffIdsToNotify.length === 0) return;
 
-    await supabase.from('notifications').insert(
+    const ins = await postNotificationsReturnMinimal(
       staffIdsToNotify.map((staffId) => ({
         staff_id: staffId,
         title: notifTitle,
@@ -47,6 +48,7 @@ export async function notifyStaffOfNewFeedPost(params: {
         sent_at: new Date().toISOString(),
       }))
     );
+    if (ins.error) log.warn('notifyNewFeedPost', 'notifications insert', ins.error.message);
 
     const { error: pushFnError } = await supabase.functions.invoke('send-expo-push', {
       body: {
@@ -55,7 +57,7 @@ export async function notifyStaffOfNewFeedPost(params: {
         body,
         data: notifData,
       },
-      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      headers: { Authorization: `Bearer ${jwt}` },
     });
     if (pushFnError) log.warn('notifyNewFeedPost', 'send-expo-push', pushFnError);
   } catch (e) {
@@ -82,5 +84,82 @@ export async function notifyGuestsOfNewFeedPost(postId: string): Promise<void> {
     }
   } catch (e) {
     log.warn('notifyGuestsOfNewFeedPost', e);
+  }
+}
+
+export async function notifyStaffOfNewStory(params: {
+  storyId: string;
+  authorDisplayName: string;
+  excludeStaffId?: string | null;
+  createdByStaffId?: string | null;
+}): Promise<void> {
+  const { storyId, authorDisplayName, excludeStaffId, createdByStaffId } = params;
+  const name = (authorDisplayName ?? '').trim() || 'Bir kullanıcı';
+  const title = 'Yeni hikaye';
+  const body = `${name} yeni bir hikaye paylaştı`;
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const jwt = sessionData.session?.access_token ?? supabaseAnonKey;
+    const { data: staffRows } = await supabase.from('staff').select('id').eq('is_active', true);
+    const allStaffIds = (staffRows ?? []).map((r: { id: string }) => r.id);
+    const staffIdsToNotify = excludeStaffId ? allStaffIds.filter((id) => id !== excludeStaffId) : allStaffIds;
+    if (!staffIdsToNotify.length) return;
+    const ins = await postNotificationsReturnMinimal(
+      staffIdsToNotify.map((staffId) => ({
+        staff_id: staffId,
+        title,
+        body,
+        category: 'staff',
+        notification_type: 'story_post',
+        data: { storyId, url: '/staff/feed' },
+        created_by: createdByStaffId ?? null,
+        sent_via: 'both',
+        sent_at: new Date().toISOString(),
+      }))
+    );
+    if (ins.error) log.warn('notifyStaffOfNewStory', 'notifications insert', ins.error.message);
+    await supabase.functions.invoke('send-expo-push', {
+      body: { staffIds: staffIdsToNotify, title, body, data: { screen: 'staff_feed', url: '/staff/feed', storyId } },
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+  } catch (e) {
+    log.warn('notifyStaffOfNewStory', e);
+  }
+}
+
+export async function notifyGuestsOfNewStory(storyId: string, authorDisplayName: string): Promise<void> {
+  const name = (authorDisplayName ?? '').trim() || 'Bir personel';
+  const title = 'Yeni hikaye';
+  const body = `${name} yeni bir hikaye paylaştı`;
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const jwt = sessionData.session?.access_token ?? supabaseAnonKey;
+    const { data: guests } = await supabase
+      .from('guests')
+      .select('id')
+      .not('auth_user_id', 'is', null)
+      .is('deleted_at', null)
+      .in('status', ['pending', 'checked_in']);
+    const guestIds = (guests ?? []).map((g: { id: string }) => g.id);
+    if (!guestIds.length) return;
+    const ins = await postNotificationsReturnMinimal(
+      guestIds.map((guestId) => ({
+        guest_id: guestId,
+        title,
+        body,
+        category: 'guest',
+        notification_type: 'story_post',
+        data: { storyId, url: '/customer' },
+        sent_via: 'both',
+        sent_at: new Date().toISOString(),
+      }))
+    );
+    if (ins.error) log.warn('notifyGuestsOfNewStory', 'notifications insert', ins.error.message);
+    await supabase.functions.invoke('send-expo-push', {
+      body: { guestIds, title, body, data: { screen: 'customer', url: '/customer', storyId } },
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+  } catch (e) {
+    log.warn('notifyGuestsOfNewStory', e);
   }
 }

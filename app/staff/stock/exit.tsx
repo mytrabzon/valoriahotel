@@ -15,6 +15,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { theme } from '@/constants/theme';
 import { formatDateShort, formatTime } from '@/lib/date';
+import { useTranslation } from 'react-i18next';
 
 const EXIT_REASONS = [
   { value: 'room', label: 'Oda kullanımı' },
@@ -36,6 +37,7 @@ type RecentExit = {
 
 export default function StaffStockExitScreen() {
   const router = useRouter();
+  const { t } = useTranslation();
   const params = useLocalSearchParams<{ productId?: string }>();
   const { staff } = useAuthStore();
 
@@ -98,7 +100,7 @@ export default function StaffStockExitScreen() {
   const addProduct = (p: Product) => {
     const cur = p.current_stock ?? 0;
     if (cur <= 0) {
-      Alert.alert('Stok yok', 'Bu üründe stok bulunmuyor.');
+      Alert.alert(t('stockListTitle'), t('productNotFoundStockExitMessage'));
       return;
     }
     if (items.some((i) => i.productId === p.id)) return;
@@ -112,14 +114,14 @@ export default function StaffStockExitScreen() {
   const removeItem = (productId: string) => setItems((prev) => prev.filter((i) => i.productId !== productId));
 
   const submit = async () => {
-    if (!staff?.id) return Alert.alert('Hata', 'Oturum gerekli.');
-    if (!reason) return Alert.alert('Eksik', 'Çıkış nedenini seçin.');
+    if (!staff?.id) return Alert.alert(t('error'), t('loginRequiredTitle'));
+    if (!reason) return Alert.alert(t('missingInfo'), t('required'));
 
     const valid = items
       .map((i) => ({ ...i, q: parseInt(i.quantity, 10) }))
       .filter((i) => !isNaN(i.q) && i.q > 0 && i.q <= i.currentStock);
 
-    if (valid.length === 0) return Alert.alert('Eksik', 'En az bir ürün için geçerli çıkış miktarı girin.');
+    if (valid.length === 0) return Alert.alert(t('missingInfo'), t('required'));
 
     setLoading(true);
     try {
@@ -145,9 +147,9 @@ export default function StaffStockExitScreen() {
         .order('created_at', { ascending: false })
         .limit(15);
       setRecentExits((data ?? []) as RecentExit[]);
-      Alert.alert('Kaydedildi', 'Stok çıkışı admin onayından sonra işlenecek.', () => router.back());
+      Alert.alert(t('saved'), t('pendingApproval'), () => router.back());
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'İşlem başarısız.');
+      Alert.alert(t('error'), (e as Error)?.message ?? t('recordError'));
     }
     setLoading(false);
   };

@@ -12,12 +12,13 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '@/lib/supabase';
-import { uriToArrayBuffer, getMimeAndExt } from '@/lib/uploadMedia';
+import { uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
 import { ensureCameraPermission } from '@/lib/cameraPermission';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
 import { useAuthStore } from '@/stores/authStore';
 import { CachedImage } from '@/components/CachedImage';
 import { ImagePreviewModal } from '@/components/ImagePreviewModal';
+import { useTranslation } from 'react-i18next';
 
 type Product = { id: string; name: string; unit: string | null; current_stock: number | null; min_stock?: number | null };
 
@@ -30,6 +31,7 @@ function singleParam(value: string | string[] | undefined): string | undefined {
 
 export default function StaffStockEntryScreen() {
   const router = useRouter();
+  const { t } = useTranslation();
   const params = useLocalSearchParams<{ productId?: string; barcode?: string }>();
   const { staff } = useAuthStore();
 
@@ -73,15 +75,11 @@ export default function StaffStockEntryScreen() {
   }, [productIdParam, barcodeParam]);
 
   const uploadPhotoFromUri = async (uri: string): Promise<string> => {
-    const arrayBuffer = await uriToArrayBuffer(uri);
-    const { mime: contentType, ext } = getMimeAndExt(uri, 'image');
-    const fileName = `stock/${Date.now()}.${ext}`;
-    const { error } = await supabase.storage.from('stock-proofs').upload(fileName, arrayBuffer, {
-      contentType,
-      upsert: true,
+    const { publicUrl } = await uploadUriToPublicBucket({
+      bucketId: 'stock-proofs',
+      uri,
+      subfolder: 'stock',
     });
-    if (error) throw error;
-    const { data: { publicUrl } } = supabase.storage.from('stock-proofs').getPublicUrl(fileName);
     return publicUrl;
   };
 
@@ -113,7 +111,7 @@ export default function StaffStockEntryScreen() {
     if (result.canceled || !result.assets[0]) return;
     const uri = photoUriForUpload(result.assets[0]);
     if (!uri) {
-      Alert.alert('Hata', 'Fotoğraf alınamadı. Tekrar deneyin.');
+      Alert.alert(t('error'), t('feedPhotoPickFailed'));
       return;
     }
     setUploading(true);
@@ -121,7 +119,7 @@ export default function StaffStockEntryScreen() {
       const url = await uploadPhotoFromUri(uri);
       setPhoto(url);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Fotoğraf yüklenemedi.');
+      Alert.alert(t('error'), (e as Error)?.message ?? t('feedMediaUploadFailed'));
     } finally {
       setUploading(false);
     }
@@ -145,7 +143,7 @@ export default function StaffStockEntryScreen() {
     if (result.canceled || !result.assets[0]) return;
     const uri = photoUriForUpload(result.assets[0]);
     if (!uri) {
-      Alert.alert('Hata', 'Görsel alınamadı. Tekrar deneyin.');
+      Alert.alert(t('error'), t('feedImagePickFailed'));
       return;
     }
     setUploading(true);
@@ -153,7 +151,7 @@ export default function StaffStockEntryScreen() {
       const url = await uploadPhotoFromUri(uri);
       setPhoto(url);
     } catch (e) {
-      Alert.alert('Hata', (e as Error)?.message ?? 'Fotoğraf yüklenemedi.');
+      Alert.alert(t('error'), (e as Error)?.message ?? t('feedMediaUploadFailed'));
     } finally {
       setUploading(false);
     }
@@ -161,16 +159,16 @@ export default function StaffStockEntryScreen() {
 
   const saveMovement = async () => {
     if (!staff?.id) {
-      Alert.alert('Eksik', 'Oturum gerekli.');
+      Alert.alert(t('missingInfo'), t('loginRequiredTitle'));
       return;
     }
     if (!staff.organization_id) {
-      Alert.alert('Hata', 'İşletme bilgisi eksik. Yöneticinize başvurun.');
+      Alert.alert(t('error'), t('recordError'));
       return;
     }
     const q = parseInt(quantity, 10);
     if (isNaN(q) || q <= 0) {
-      Alert.alert('Hata', 'Geçerli miktar girin.');
+      Alert.alert(t('error'), t('required'));
       return;
     }
 
@@ -192,12 +190,12 @@ export default function StaffStockEntryScreen() {
         .select('id')
         .single();
       if (insertProdErr) {
-        Alert.alert('Hata', insertProdErr.message);
+        Alert.alert(t('error'), insertProdErr.message);
         return;
       }
       productId = newProduct!.id;
     } else {
-      Alert.alert('Eksik', 'Ürün seçin veya barkod için ürün adı yazın.');
+      Alert.alert(t('missingInfo'), t('productNotFoundTitle'));
       return;
     }
 
@@ -217,18 +215,19 @@ export default function StaffStockEntryScreen() {
     });
 
     if (error) {
-      Alert.alert('Hata', error.message);
+      Alert.alert(t('error'), error.message);
       return;
     }
     const { sendBulkToStaff } = await import('@/lib/notificationService');
     sendBulkToStaff({
       target: 'all_staff',
-      title: '📦 Stok onay bekliyor',
+      title: `📦 ${t('pendingApproval')}`,
       body: 'Yeni stok girişi kaydedildi; onay bekleniyor.',
       createdByStaffId: staff.id,
+      notificationType: 'stock_pending_approval',
     }).catch(() => {});
-    Alert.alert('Kaydedildi', 'Stok girişiniz admin onayından sonra işlenecek.', [
-      { text: 'Tamam', onPress: () => router.replace('/staff/stock/entry') },
+    Alert.alert(t('saved'), t('pendingApproval'), [
+      { text: t('ok'), onPress: () => router.replace('/staff/stock/entry') },
     ]);
   };
 

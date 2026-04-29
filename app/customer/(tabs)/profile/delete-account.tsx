@@ -16,9 +16,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '@/stores/authStore';
 import { invokeEdgeWithAuth } from '@/lib/invokeEdgeWithAuth';
 import { theme } from '@/constants/theme';
+import { useTranslation } from 'react-i18next';
 
 export default function CustomerDeleteAccountScreen() {
   const router = useRouter();
+  const { t } = useTranslation();
   const { user, signOut } = useAuthStore();
   const [password, setPassword] = useState('');
   const [reason, setReason] = useState('');
@@ -42,8 +44,8 @@ export default function CustomerDeleteAccountScreen() {
       await signOut();
       setTimeout(() => router.replace('/'), 1500);
     } catch (e: unknown) {
-      const msg = (e as Error)?.message ?? 'Hesap silinemedi';
-      Alert.alert('Hata', msg);
+      const msg = (e as Error)?.message ?? t('deleteAccountFailed');
+      Alert.alert(t('error'), msg);
     } finally {
       setLoading(false);
     }
@@ -51,11 +53,11 @@ export default function CustomerDeleteAccountScreen() {
 
   const confirmDelete = () => {
     Alert.alert(
-      'Hesabınızı kalıcı olarak silmek istediğinize emin misiniz?',
-      'Tüm kişisel verileriniz silinecek ve bu işlem geri alınamaz.',
+      t('deleteAccountConfirmTitle'),
+      t('deleteAccountConfirmBody'),
       [
-        { text: 'İptal', style: 'cancel' },
-        { text: 'Evet, sil', style: 'destructive', onPress: handleDelete },
+        { text: t('cancel'), style: 'cancel' },
+        { text: t('deleteAccountConfirmCta'), style: 'destructive', onPress: handleDelete },
       ]
     );
   };
@@ -66,8 +68,8 @@ export default function CustomerDeleteAccountScreen() {
         <View style={styles.successIconWrap}>
           <Ionicons name="checkmark-done" size={48} color={theme.colors.success} />
         </View>
-        <Text style={styles.successTitle}>Hesabınız silindi</Text>
-        <Text style={styles.successText}>Ana sayfaya yönlendiriliyorsunuz...</Text>
+        <Text style={styles.successTitle}>{t('deleteAccountSuccessTitle')}</Text>
+        <Text style={styles.successText}>{t('deleteAccountSuccessBody')}</Text>
       </View>
     );
   }
@@ -87,31 +89,31 @@ export default function CustomerDeleteAccountScreen() {
           <View style={styles.warningIconWrap}>
             <Ionicons name="warning-outline" size={28} color={theme.colors.error} />
           </View>
-          <Text style={styles.warningTitle}>Dikkat</Text>
-          <Text style={styles.warningText}>Hesabınızı sildiğinizde:</Text>
-          <Text style={styles.warningBullet}>• Tüm kişisel verileriniz kalıcı olarak silinir</Text>
-          <Text style={styles.warningBullet}>• Konaklama geçmişiniz kaybolur</Text>
-          <Text style={styles.warningBullet}>• Bu işlem geri alınamaz</Text>
+          <Text style={styles.warningTitle}>{t('deleteAccountWarningTitle')}</Text>
+          <Text style={styles.warningText}>{t('deleteAccountWarningIntro')}</Text>
+          <Text style={styles.warningBullet}>{`• ${t('deleteAccountWarningItem1')}`}</Text>
+          <Text style={styles.warningBullet}>{`• ${t('deleteAccountWarningItem2')}`}</Text>
+          <Text style={styles.warningBullet}>{`• ${t('deleteAccountWarningItem3')}`}</Text>
         </View>
 
-        <Text style={styles.label}>Şifre (güvenlik için, isteğe bağlı)</Text>
+        <Text style={styles.label}>{t('deleteAccountPasswordLabel')}</Text>
         <TextInput
           style={styles.input}
           value={password}
           onChangeText={setPassword}
-          placeholder="Şifrenizi girin"
+          placeholder={t('deleteAccountPasswordPlaceholder')}
           placeholderTextColor={theme.colors.textMuted}
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
         />
 
-        <Text style={styles.label}>Silme nedeniniz (isteğe bağlı)</Text>
+        <Text style={styles.label}>{t('deleteAccountReasonLabel')}</Text>
         <TextInput
           style={[styles.input, styles.textArea]}
           value={reason}
           onChangeText={setReason}
-          placeholder="Örn: Uygulamayı artık kullanmıyorum..."
+          placeholder={t('deleteAccountReasonPlaceholder')}
           placeholderTextColor={theme.colors.textMuted}
           multiline
           numberOfLines={3}
@@ -128,7 +130,7 @@ export default function CustomerDeleteAccountScreen() {
           ) : (
             <>
               <Ionicons name="trash-outline" size={22} color={theme.colors.white} style={{ marginRight: 10 }} />
-              <Text style={styles.deleteBtnText}>Hesabımı kalıcı olarak sil</Text>
+              <Text style={styles.deleteBtnText}>{t('deleteAccountPrimaryCta')}</Text>
             </>
           )}
         </TouchableOpacity>

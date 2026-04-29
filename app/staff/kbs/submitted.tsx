@@ -2,8 +2,10 @@ import { View, Text, StyleSheet, FlatList, RefreshControl, TouchableOpacity, Ale
 import { theme } from '@/constants/theme';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet, apiPost } from '@/lib/kbsApi';
+import { useTranslation } from 'react-i18next';
 
 export default function SubmittedPassportsScreen() {
+  const { t } = useTranslation();
   const q = useQuery({
     queryKey: ['kbs', 'submitted'],
     queryFn: async () => {
@@ -16,17 +18,17 @@ export default function SubmittedPassportsScreen() {
   const checkout = async (guestDocumentId: string) => {
     const res = await apiPost<{ transactionId: string; idempotent?: boolean }>('/submissions/check-out', { guestDocumentId });
     if (!res.ok) {
-      Alert.alert('Checkout', res.error.message);
+      Alert.alert(t('kbsCheckoutTitle'), res.error.message);
       return;
     }
-    Alert.alert('Checkout', `İşlem alındı. Tx: ${String(res.data.transactionId).slice(0, 8)}${res.data.idempotent ? ' (idempotent)' : ''}`);
+    Alert.alert(t('kbsCheckoutTitle'), t('kbsTxReceived', { tx: String(res.data.transactionId).slice(0, 8), idempotent: res.data.idempotent ? ' (idempotent)' : '' }));
     q.refetch();
   };
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Bildirilen Pasaportlar</Text>
-      <Text style={styles.p}>Submitted/checkout durumları.</Text>
+      <Text style={styles.title}>{t('kbsNavSubmitted')}</Text>
+      <Text style={styles.p}>{t('kbsSubmittedIntro')}</Text>
 
       <FlatList
         data={q.data ?? []}
@@ -39,12 +41,12 @@ export default function SubmittedPassportsScreen() {
             <Text style={styles.meta}>Submitted: {item.submitted_at ?? '-'}</Text>
             {String(item.scan_status) === 'submitted' || String(item.scan_status) === 'checkout_pending' ? (
               <TouchableOpacity style={styles.btn} onPress={() => checkout(item.id)}>
-                <Text style={styles.btnText}>Checkout</Text>
+                <Text style={styles.btnText}>{t('kbsCheckoutTitle')}</Text>
               </TouchableOpacity>
             ) : null}
           </View>
         )}
-        ListEmptyComponent={<Text style={styles.empty}>{q.isLoading ? 'Yükleniyor…' : 'Kayıt yok.'}</Text>}
+        ListEmptyComponent={<Text style={styles.empty}>{q.isLoading ? t('loading') : t('emptyNoRecords')}</Text>}
       />
     </View>
   );

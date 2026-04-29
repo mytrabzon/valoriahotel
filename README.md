@@ -19,7 +19,7 @@ Otel konaklama sözleşmesi ve check-in/out yönetim sistemi. Expo 54 + TypeScri
 2. `.env` dosyasını düzenleyin (`.env.example` referans):
    - `EXPO_PUBLIC_SUPABASE_URL`
    - `EXPO_PUBLIC_SUPABASE_ANON_KEY`
-   - `EXPO_PUBLIC_RAILWAY_API_URL` (KBS/OPS backend)
+   - KBS: Supabase Edge `ops-proxy` + dış KBS API — Hetzner: `deploy/HETZNER.md`, Railway: `deploy/RAILWAY.md`
 
 3. Supabase migration’larını çalıştırın:
    - Yerel Supabase CLI ile: `supabase db reset` (önerilir)
@@ -34,17 +34,20 @@ Otel konaklama sözleşmesi ve check-in/out yönetim sistemi. Expo 54 + TypeScri
    npx expo start
    ```
 
-## KBS / OPS (Railway + Gateway)
+## KBS (Supabase Edge + dış KBS API)
 
-- `railway-service/`: OPS API (service-role ile Supabase ops.* yazar, mobile JWT ile erişir)
-- `kbs-gateway-service/`: dış KBS sağlayıcı entegrasyonu (signature verify + credential decrypt + provider abstraction)
+- **Mobil asla KBS’ye doğrudan bağlanmaz.** Akış: Mobil → Supabase (auth/DB/Edge) → Edge `ops-proxy` → **dış Node gateway** (ör. Hetzner veya Railway’de `railway-service`) → iç KBS HTTP süreci (`kbs-gateway-service`) → Jandarma KBS.
+- Dış API kodu: `railway-service/` (Fastify). Hetzner’de PM2: `deploy/GATEWAY_PM2.md`. Railway: `deploy/RAILWAY.md` (iki servis + private network + statik giden IP).
+- Edge secrets: `KBS_GATEWAY_URL` (dış API’nin `https://` kökü), `KBS_GATEWAY_TOKEN` (sunucudakiyle aynı). Hetzner ayrıntı: `deploy/HETZNER.md`.
 
-Supabase OPS migrations:
+Supabase OPS / KBS migrations (seçme):
 - `137_ops_official_checkin_system.sql`: ops şeması + RLS + permissions seed
 - `138_ops_storage_passport_buckets.sql`: storage bucket/policy
 - `140_ops_jobs_queue.sql`: jobs queue + `ops.claim_next_job`
 - `141_ops_hardening.sql`: unique/index + RLS write kapama (authenticated)
 - `142_ops_demo_bootstrap.sql`: `ops.bootstrap_demo_hotel(...)` (service_role)
+- `143_kbs_logs_and_staff_access.sql`: `kbs_logs`, personel KBS erişimi
+- `150_official_submission_kbs_tracking_columns.sql`: `kbs_status`, `kbs_sent_at`, …
 
 ## Proje yapısı
 

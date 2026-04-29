@@ -45,6 +45,11 @@ type CreateStaffBody = {
   certifications_summary?: string | null;
   kvkk_consent_at?: string | null;
   drives_vehicle?: boolean | null;
+  emergency_contact_name?: string | null;
+  emergency_contact_phone?: string | null;
+  emergency_contact2_name?: string | null;
+  emergency_contact2_phone?: string | null;
+  previous_work_experience?: string | null;
 };
 
 Deno.serve(async (req: Request) => {
@@ -165,6 +170,11 @@ Deno.serve(async (req: Request) => {
       certifications_summary,
       kvkk_consent_at,
       drives_vehicle,
+      emergency_contact_name,
+      emergency_contact_phone,
+      emergency_contact2_name,
+      emergency_contact2_phone,
+      previous_work_experience,
     } = body;
 
     if (!email?.trim() || !password || !full_name?.trim()) {
@@ -249,6 +259,11 @@ Deno.serve(async (req: Request) => {
       certifications_summary: certifications_summary?.trim() || null,
       kvkk_consent_at: kvkk_consent_at && String(kvkk_consent_at).trim() ? String(kvkk_consent_at).trim().slice(0, 10) : null,
       drives_vehicle: drives_vehicle === true,
+      emergency_contact_name: emergency_contact_name?.trim() || null,
+      emergency_contact_phone: emergency_contact_phone?.trim() || null,
+      emergency_contact2_name: emergency_contact2_name?.trim() || null,
+      emergency_contact2_phone: emergency_contact2_phone?.trim() || null,
+      previous_work_experience: previous_work_experience?.trim() || null,
     });
     if (insertError) {
       const imsg = insertError.message || "";

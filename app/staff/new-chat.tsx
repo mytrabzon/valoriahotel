@@ -90,7 +90,7 @@ export default function StaffNewChatScreen() {
         const roomNumber = (g.rooms as { room_number?: string } | null)?.room_number ?? null;
         return {
           id: g.id,
-          name: g.full_name || 'Misafir',
+          name: g.full_name || t('adminGuests'),
           sub: roomNumber ? `Oda ${roomNumber}` : '—',
           type: 'guest' as const,
           avatar: g.photo_url ?? null,
@@ -103,7 +103,7 @@ export default function StaffNewChatScreen() {
     )
       .map((s) => ({
         id: s.id,
-        name: s.full_name || 'Personel',
+        name: s.full_name || t('staffTab'),
         sub: s.department || s.role || '—',
         type: 'staff' as const,
         avatar: s.profile_image ?? null,
@@ -111,10 +111,10 @@ export default function StaffNewChatScreen() {
       .filter((x) => matches(`${x.name} ${x.sub}`));
 
     const out: { title: string; data: RowItem[] }[] = [];
-    if (guestItems.length) out.push({ title: 'Misafirler', data: guestItems });
-    if (staffItems.length) out.push({ title: 'Personel', data: staffItems });
+    if (guestItems.length) out.push({ title: t('adminGuests'), data: guestItems });
+    if (staffItems.length) out.push({ title: t('staffTab'), data: staffItems });
     return out;
-  }, [guests, staffList, q]);
+  }, [guests, staffList, q, t]);
 
   const start = async (item: RowItem) => {
     if (!staff) return;

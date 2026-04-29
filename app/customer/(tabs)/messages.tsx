@@ -11,25 +11,33 @@ import {
   Alert,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  useGuestMessagingStore,
+  GUEST_CUSTOMER_MESSAGES_LIST_CACHE_KEY,
+  clearGuestMessagingLocalState,
+} from '@/stores/guestMessagingStore';
 import { guestDeleteConversation, guestListConversations } from '@/lib/messagingApi';
 import type { ConversationWithMeta } from '@/lib/messaging';
 import { MESSAGING_COLORS } from '@/lib/messaging';
 import { supabase } from '@/lib/supabase';
 import { formatRelative } from '@/lib/date';
-import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
+import { syncGuestMessagingAppToken } from '@/lib/getOrCreateGuestForCaller';
 import { CachedImage } from '@/components/CachedImage';
 import { SwipeToDelete } from '@/components/SwipeToDelete';
+import { useTranslation } from 'react-i18next';
+import { useAuthStore } from '@/stores/authStore';
 
 /** Sohbet adından avatar emoji tahmini: oda numarası → grup, aksi halde ilk harf */
-function chatAvatarChar(name: string | null | undefined): string {
-  const n = (name || 'Sohbet').trim();
+function chatAvatarChar(name: string | null | undefined, chatFallback: string): string {
+  const n = (name || chatFallback).trim();
   if (/^\d+/.test(n)) return '👨‍👩‍👧'; // Oda numarası (örn. 102 Nolu Oda)
   const first = n.charAt(0).toUpperCase();
   return first || '💬';
 }
 
 export default function CustomerMessagesScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const { appToken, setAppToken, loadStoredToken, setUnreadCount } = useGuestMessagingStore();
   const [conversations, setConversations] = useState<ConversationWithMeta[]>([]);
@@ -39,25 +47,49 @@ export default function CustomerMessagesScreen() {
   const [hasSession, setHasSession] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const sessionUserId = useAuthStore((s) => s.user?.id ?? null);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       await loadStoredToken();
       if (cancelled) return;
-      if (!useGuestMessagingStore.getState().appToken) {
-        await supabase.auth.refreshSession();
-        const { data: { session: s } } = await supabase.auth.getSession();
-        const row = await getOrCreateGuestForCaller(s?.user);
-        if (row?.app_token) await setAppToken(row.app_token);
+      const nextToken = await syncGuestMessagingAppToken();
+      const { data: { session: s } } = await supabase.auth.getSession();
+      if (!s?.user) {
+        await clearGuestMessagingLocalState();
+        setConversations([]);
+        setHasSession(false);
+        setAuthChecked(true);
+        setLoading(false);
+        return;
+      }
+      const prev = useGuestMessagingStore.getState().appToken;
+      if (!nextToken) await setAppToken(null);
+      if (prev && nextToken && prev !== nextToken) {
+        setConversations([]);
+        await AsyncStorage.removeItem(GUEST_CUSTOMER_MESSAGES_LIST_CACHE_KEY).catch(() => {});
+      }
+      if (nextToken) {
+        try {
+          const raw = await AsyncStorage.getItem(GUEST_CUSTOMER_MESSAGES_LIST_CACHE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw) as { conversations?: ConversationWithMeta[]; appToken?: string };
+            if (parsed.appToken === nextToken && Array.isArray(parsed.conversations) && parsed.conversations.length > 0) {
+              setConversations(parsed.conversations);
+            }
+          }
+        } catch {
+          /* önbellek okunamazsa sunucudan yüklenecek */
+        }
       }
       if (cancelled) return;
-      const { data: { session: s } } = await supabase.auth.getSession();
-      setHasSession(!!s);
+      setHasSession(true);
       setAuthChecked(true);
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [sessionUserId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -87,6 +119,10 @@ export default function CustomerMessagesScreen() {
       return tb - ta;
     });
     setConversations(sorted);
+    void AsyncStorage.setItem(
+      GUEST_CUSTOMER_MESSAGES_LIST_CACHE_KEY,
+      JSON.stringify({ conversations: sorted, updatedAt: Date.now(), appToken: appToken ?? '' })
+    ).catch(() => {});
     setRefreshing(false);
     setLoading(false);
   };
@@ -100,16 +136,16 @@ export default function CustomerMessagesScreen() {
 
   const handleDeleteConversation = (item: ConversationWithMeta) => {
     if (!appToken) return;
-    const name = item.name || 'Sohbet';
-    Alert.alert('Sohbeti sil', `"${name}" sohbetini listenizden kaldırmak istiyor musunuz?`, [
-      { text: 'İptal', style: 'cancel' },
+    const name = item.name || t('chatConversationFallback');
+    Alert.alert(t('customerChatDeleteTitle'), t('customerChatDeleteMessage', { name }), [
+      { text: t('cancel'), style: 'cancel' },
       {
-        text: 'Sil',
+        text: t('delete'),
         style: 'destructive',
         onPress: async () => {
           const ok = await guestDeleteConversation(appToken, item.id);
           if (!ok) {
-            Alert.alert('Hata', 'Sohbet silinemedi.');
+            Alert.alert(t('error'), t('customerChatDeleteFailed'));
             return;
           }
           setConversations((prev) => prev.filter((c) => c.id !== item.id));
@@ -123,12 +159,12 @@ export default function CustomerMessagesScreen() {
       return (
         <View style={styles.container}>
           <View style={styles.loginPrompt}>
-            <Text style={styles.loginTitle}>Mesajlaşma</Text>
+            <Text style={styles.loginTitle}>{t('customerMessagesTitle')}</Text>
             <Text style={styles.loginSubtitle}>
-              Personel ve otelle mesajlaşmak için giriş yapın. Giriş kodu gerekmez.
+              {t('customerMessagesLoginHint')}
             </Text>
             <TouchableOpacity style={styles.loginBtn} onPress={() => router.push('/auth')} activeOpacity={0.8}>
-              <Text style={styles.loginBtnText}>Giriş yap</Text>
+              <Text style={styles.loginBtnText}>{t('signInButton')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -137,21 +173,18 @@ export default function CustomerMessagesScreen() {
     return (
       <View style={styles.container}>
         <View style={styles.loginPrompt}>
-          <Text style={styles.loginTitle}>Mesajlaşma</Text>
-          <Text style={styles.loginSubtitle}>Mesajlaşma hesabınız hazırlanıyor veya tekrar deneyin.</Text>
+          <Text style={styles.loginTitle}>{t('customerMessagesTitle')}</Text>
+          <Text style={styles.loginSubtitle}>{t('customerMessagesAccountLoading')}</Text>
           <TouchableOpacity
             style={styles.loginBtn}
             onPress={async () => {
-              await supabase.auth.refreshSession();
-              const { data: { session: s } } = await supabase.auth.getSession();
-              const row = await getOrCreateGuestForCaller(s?.user);
-              if (row?.app_token) await setAppToken(row.app_token);
+              await syncGuestMessagingAppToken();
               setAuthChecked(false);
               setLoading(true);
             }}
             activeOpacity={0.8}
           >
-            <Text style={styles.loginBtnText}>Tekrar dene</Text>
+            <Text style={styles.loginBtnText}>{t('feedRetryButton')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -178,24 +211,14 @@ export default function CustomerMessagesScreen() {
             colors={[MESSAGING_COLORS.primary]}
           />
         }
-        ListHeaderComponent={
-          <TouchableOpacity
-            style={styles.newMessageBtn}
-            onPress={() => router.push('/customer/new-chat')}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.newMessageBtnIcon}>✏️</Text>
-            <Text style={styles.newMessageBtnText}>Yeni mesaj yaz</Text>
-          </TouchableOpacity>
-        }
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyText}>Henüz sohbet yok.</Text>
+            <Text style={styles.emptyText}>{t('customerMessagesNoChats')}</Text>
           </View>
         }
         contentContainerStyle={styles.listContent}
         renderItem={({ item }) => {
-          const name = item.name || 'Sohbet';
+          const name = item.name || t('chatConversationFallback');
           const unread = item.unread_count ?? 0;
           return (
             <SwipeToDelete onSwipeDelete={() => handleDeleteConversation(item)}>
@@ -213,7 +236,7 @@ export default function CustomerMessagesScreen() {
                   {item.avatar ? (
                     <CachedImage uri={item.avatar} style={styles.avatarImg} contentFit="cover" />
                   ) : (
-                    <Text style={styles.avatarText}>{chatAvatarChar(name)}</Text>
+                    <Text style={styles.avatarText}>{chatAvatarChar(name, t('chatConversationFallback'))}</Text>
                   )}
                 </View>
                 <View style={styles.cardBody}>
@@ -310,21 +333,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   badgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  newMessageBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    marginBottom: 14,
-    borderRadius: 12,
-    backgroundColor: MESSAGING_COLORS.primary,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-  },
-  newMessageBtnIcon: { fontSize: 18 },
-  newMessageBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
   empty: { padding: 32, alignItems: 'center' },
   emptyText: { fontSize: 16, color: MESSAGING_COLORS.textSecondary },
 });

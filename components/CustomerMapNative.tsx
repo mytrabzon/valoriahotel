@@ -8,7 +8,7 @@ import { View, StyleSheet, Platform, Image, Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import type { Poi } from '@/lib/map/pois';
-import type { MapUserMarker, MapPostMarker } from '@/lib/map/types';
+import type { MapUserMarker, MapPostMarker, MapDiningMarker, MapTransferTourMarker } from '@/lib/map/types';
 
 const DEFAULT_LAT = 40.6144;
 const DEFAULT_LON = 40.31188;
@@ -24,9 +24,13 @@ export type CustomerMapNativeProps = {
   hotelMarker?: { lat: number; lng: number; title: string };
   userMarkers?: MapUserMarker[];
   postMarkers?: MapPostMarker[];
+  diningMarkers?: MapDiningMarker[];
+  transferTourMarkers?: MapTransferTourMarker[];
   onPoiPress?: (poi: Poi) => void;
   onHotelPress?: () => void;
   onPostPress?: (postId: string) => void;
+  onDiningPress?: (venueId: string) => void;
+  onTransferTourPress?: (serviceId: string) => void;
   onRegionChangeComplete?: (center: { lat: number; lng: number }) => void;
   style?: object;
 };
@@ -37,6 +41,8 @@ const latLngToDelta = (zoom: number) => {
 };
 
 const POST_AVATAR_SIZE = 36;
+/** Avatar merkezinin marker koordinatında kalması için, altında etiket varken anchor Y */
+const ANCHOR_Y_WITH_LABEL = (POST_AVATAR_SIZE / 2) / (POST_AVATAR_SIZE + 3 + 34);
 
 export default function CustomerMapNative({
   initialLat = DEFAULT_LAT,
@@ -47,9 +53,13 @@ export default function CustomerMapNative({
   hotelMarker,
   userMarkers = [],
   postMarkers = [],
+  diningMarkers = [],
+  transferTourMarkers = [],
   onPoiPress,
   onHotelPress,
   onPostPress,
+  onDiningPress,
+  onTransferTourPress,
   onRegionChangeComplete,
   style,
 }: CustomerMapNativeProps) {
@@ -145,6 +155,48 @@ export default function CustomerMapNative({
             )}
           </Marker>
         ))}
+        {diningMarkers.map((d) => (
+          <Marker
+            key={`dining-${d.id}`}
+            coordinate={{ latitude: d.lat, longitude: d.lng }}
+            title={d.displayName ?? undefined}
+            identifier={`dining-${d.id}`}
+            tracksViewChanges={false}
+            anchor={{ x: 0.5, y: 0.5 }}
+            onPress={() => onDiningPress?.(d.id)}
+          >
+            {d.avatarUrl ? (
+              <View style={styles.diningAvatarWrap}>
+                <Image source={{ uri: d.avatarUrl }} style={styles.diningAvatar} />
+              </View>
+            ) : (
+              <View style={[styles.diningAvatarWrap, styles.diningAvatarPlaceholder]}>
+                <Ionicons name="restaurant-outline" size={18} color="#5c4a2a" />
+              </View>
+            )}
+          </Marker>
+        ))}
+        {transferTourMarkers.map((d) => (
+          <Marker
+            key={`tt-${d.id}`}
+            coordinate={{ latitude: d.lat, longitude: d.lng }}
+            title={d.displayName ?? undefined}
+            identifier={`tt-${d.id}`}
+            tracksViewChanges={false}
+            anchor={{ x: 0.5, y: 0.5 }}
+            onPress={() => onTransferTourPress?.(d.id)}
+          >
+            {d.avatarUrl ? (
+              <View style={styles.ttAvatarWrap}>
+                <Image source={{ uri: d.avatarUrl }} style={styles.ttAvatar} />
+              </View>
+            ) : (
+              <View style={[styles.ttAvatarWrap, styles.ttAvatarPlaceholder]}>
+                <Ionicons name="bus-outline" size={18} color="#1e3a5f" />
+              </View>
+            )}
+          </Marker>
+        ))}
         {routeCoordinates.length >= 2 && (
           <Polyline
             coordinates={routeCoordinates.map((c) => ({ latitude: c.lat, longitude: c.lng }))}
@@ -197,6 +249,58 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   postAvatarPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  postDiningLabelColumn: {
+    alignItems: 'center',
+    maxWidth: 120,
+  },
+  mapMarkerVenueLabel: {
+    marginTop: 3,
+    maxWidth: 120,
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    textAlign: 'center',
+    lineHeight: 13,
+    textShadowColor: 'rgba(255,255,255,0.95)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 3,
+  },
+  diningAvatarWrap: {
+    width: POST_AVATAR_SIZE,
+    height: POST_AVATAR_SIZE,
+    borderRadius: POST_AVATAR_SIZE / 2,
+    overflow: 'hidden',
+    borderWidth: 3,
+    borderColor: '#b8860b',
+    backgroundColor: '#f5f0e6',
+    ...Platform.select({ ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, shadowOpacity: 0.3 } }),
+  },
+  diningAvatar: {
+    width: '100%',
+    height: '100%',
+  },
+  diningAvatarPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  ttAvatarWrap: {
+    width: POST_AVATAR_SIZE,
+    height: POST_AVATAR_SIZE,
+    borderRadius: POST_AVATAR_SIZE / 2,
+    overflow: 'hidden',
+    borderWidth: 3,
+    borderColor: '#1e3a5f',
+    backgroundColor: '#e8eef5',
+    ...Platform.select({ ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, shadowOpacity: 0.3 } }),
+  },
+  ttAvatar: {
+    width: '100%',
+    height: '100%',
+  },
+  ttAvatarPlaceholder: {
     justifyContent: 'center',
     alignItems: 'center',
   },

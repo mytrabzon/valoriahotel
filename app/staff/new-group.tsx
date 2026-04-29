@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { MESSAGING_COLORS } from '@/lib/messaging';
 import { sendNotification } from '@/lib/notificationService';
 import { sortStaffAdminFirst } from '@/lib/sortStaffAdminFirst';
+import { useTranslation } from 'react-i18next';
 
 type StaffRow = {
   id: string;
@@ -17,6 +18,7 @@ type StaffRow = {
 
 export default function StaffNewGroupScreen() {
   const router = useRouter();
+  const { t } = useTranslation();
   const { staff } = useAuthStore();
   const [staffList, setStaffList] = useState<StaffRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,11 +68,11 @@ export default function StaffNewGroupScreen() {
     if (!staff) return;
     const name = groupName.trim();
     if (!name) {
-      Alert.alert('Grup adı gerekli', 'Lütfen grup adını yazın.');
+      Alert.alert(t('staffGroupNameRequiredTitle'), t('staffGroupNameRequiredMessage'));
       return;
     }
     if (selectedStaffIds.length === 0) {
-      Alert.alert('Üye seçin', 'Lütfen en az bir personel seçin.');
+      Alert.alert(t('staffGroupPickMembersTitle'), t('staffGroupPickMembersMessage'));
       return;
     }
     setCreating(true);
@@ -82,7 +84,7 @@ export default function StaffNewGroupScreen() {
     });
     setCreating(false);
     if (error || !conversationId) {
-      Alert.alert('Hata', error ?? 'Grup oluşturulamadı.');
+      Alert.alert(t('error'), error ?? t('staffGroupCreateFailed'));
       return;
     }
 
@@ -90,8 +92,8 @@ export default function StaffNewGroupScreen() {
       selectedStaffIds.map((staffId) =>
         sendNotification({
           staffId,
-          title: 'Yeni gruba eklendiniz',
-          body: `"${name}" grubuna eklendiniz.`,
+          title: t('notifAddedToGroupTitle'),
+          body: t('notifAddedToGroupBody', { groupName: name }),
           notificationType: 'group_added',
           category: 'staff',
           data: { screen: 'notifications', conversationId, url: '/staff/(tabs)/messages' },

@@ -18,10 +18,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase } from '@/lib/supabase';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
-import { uriToArrayBuffer } from '@/lib/uploadMedia';
 import { CachedImage } from '@/components/CachedImage';
 import { getOrCreateGuestForCurrentSession } from '@/lib/getOrCreateGuestForCaller';
 import { theme } from '@/constants/theme';
+import { uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
+import { useTranslation } from 'react-i18next';
+import {
+  requestEmailChangeCode,
+  confirmEmailChangeWithOtp,
+  resendEmailChangeCode,
+  syncGuestRowWithAuthUser,
+} from '@/lib/emailChangeOtp';
 
 function getInitialName(): string {
   const { user } = useAuthStore.getState();
@@ -47,26 +54,88 @@ function getInitialWhatsApp(): string {
   return '';
 }
 
+function getInitialAbout(): string {
+  const { user } = useAuthStore.getState();
+  if (!user) return '';
+  const about = user.user_metadata?.about;
+  if (about && typeof about === 'string') return about.trim();
+  return '';
+}
+
+function getInitialJobTitle(): string {
+  const { user } = useAuthStore.getState();
+  if (!user) return '';
+  const job = user.user_metadata?.job_title;
+  if (job && typeof job === 'string') return job.trim();
+  return '';
+}
+
+function getInitialContactEmail(): string {
+  const { user } = useAuthStore.getState();
+  if (!user) return '';
+  const mail = user.user_metadata?.contact_email;
+  if (mail && typeof mail === 'string') return mail.trim();
+  return '';
+}
+
+function getInitialInstagram(): string {
+  const { user } = useAuthStore.getState();
+  if (!user) return '';
+  const v = user.user_metadata?.instagram;
+  if (v && typeof v === 'string') return v.trim();
+  return '';
+}
+
+function getInitialWebsite(): string {
+  const { user } = useAuthStore.getState();
+  if (!user) return '';
+  const v = user.user_metadata?.website;
+  if (v && typeof v === 'string') return v.trim();
+  return '';
+}
+
 export default function CustomerProfileEdit() {
+  const { t } = useTranslation();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user, loadSession } = useAuthStore();
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
+  const [about, setAbout] = useState('');
+  const [jobTitle, setJobTitle] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [instagram, setInstagram] = useState('');
+  const [website, setWebsite] = useState('');
   const [saving, setSaving] = useState(false);
   const [coverUri, setCoverUri] = useState<string | null>(null);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [uploadingCover, setUploadingCover] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [loginEmailDraft, setLoginEmailDraft] = useState('');
+  const [newPass, setNewPass] = useState('');
+  const [newPass2, setNewPass2] = useState('');
+  const [emailOtpCode, setEmailOtpCode] = useState('');
+  const [emailChangeAwaitingOtp, setEmailChangeAwaitingOtp] = useState(false);
+  const [pendingEmailForOtp, setPendingEmailForOtp] = useState('');
+  const [accountBusy, setAccountBusy] = useState(false);
 
   useEffect(() => {
     setFullName(getInitialName());
     setPhone(getInitialPhone());
     setWhatsapp(getInitialWhatsApp());
+    setAbout(getInitialAbout());
+    setJobTitle(getInitialJobTitle());
+    setContactEmail(getInitialContactEmail());
+    setInstagram(getInitialInstagram());
+    setWebsite(getInitialWebsite());
     setCoverUri((user?.user_metadata?.cover_url as string) || null);
     setAvatarUri((user?.user_metadata?.avatar_url as string) || null);
-  }, [user?.id]);
+    setLoginEmailDraft((user?.email ?? '').trim());
+    setEmailChangeAwaitingOtp(false);
+    setPendingEmailForOtp('');
+    setEmailOtpCode('');
+  }, [user?.id, user?.email]);
 
   const saveUserMetadata = async (updates: Record<string, unknown>) => {
     if (!user) return;
@@ -79,9 +148,9 @@ export default function CustomerProfileEdit() {
   const pickCover = async () => {
     if (!user || uploadingCover) return;
     const granted = await ensureMediaLibraryPermission({
-      title: 'Galeri izni',
-      message: 'Kapak fotografi secmek icin galeri izni gerekiyor.',
-      settingsMessage: 'Galeri izni kapali. Ayarlardan izin verip tekrar deneyin.',
+      title: t('galleryPermission'),
+      message: t('coverPermissionMessage'),
+      settingsMessage: t('settingsPermissionMessage'),
     });
     if (!granted) return;
     try {
@@ -93,21 +162,17 @@ export default function CustomerProfileEdit() {
         quality: 0.7,
       });
       if (result.canceled || !result.assets[0]?.uri) return;
-      const arrayBuffer = await uriToArrayBuffer(result.assets[0].uri);
-      const path = `customer/${user.id}/cover_${Date.now()}.jpg`;
-      const { error } = await supabase.storage.from('profiles').upload(path, arrayBuffer, {
-        contentType: 'image/jpeg',
-        upsert: true,
+      const { publicUrl } = await uploadUriToPublicBucket({
+        bucketId: 'profiles',
+        uri: result.assets[0].uri,
+        kind: 'image',
+        subfolder: 'customer/cover',
       });
-      if (error) throw error;
-      const {
-        data: { publicUrl },
-      } = supabase.storage.from('profiles').getPublicUrl(path);
       await saveUserMetadata({ cover_url: publicUrl });
       setCoverUri(publicUrl);
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'Kapak fotografi yuklenemedi.';
-      Alert.alert('Hata', message);
+      const message = e instanceof Error ? e.message : t('coverUploadError');
+      Alert.alert(t('error'), message);
     } finally {
       setUploadingCover(false);
     }
@@ -116,9 +181,9 @@ export default function CustomerProfileEdit() {
   const pickAvatar = async () => {
     if (!user || uploadingAvatar) return;
     const granted = await ensureMediaLibraryPermission({
-      title: 'Galeri izni',
-      message: 'Avatar secmek icin galeri izni gerekiyor.',
-      settingsMessage: 'Galeri izni kapali. Ayarlardan izin verip tekrar deneyin.',
+      title: t('galleryPermission'),
+      message: t('galleryPermissionMessage'),
+      settingsMessage: t('settingsPermissionMessage'),
     });
     if (!granted) return;
     try {
@@ -130,25 +195,21 @@ export default function CustomerProfileEdit() {
         quality: 0.65,
       });
       if (result.canceled || !result.assets[0]?.uri) return;
-      const arrayBuffer = await uriToArrayBuffer(result.assets[0].uri);
-      const path = `customer/${user.id}/avatar_${Date.now()}.jpg`;
-      const { error } = await supabase.storage.from('profiles').upload(path, arrayBuffer, {
-        contentType: 'image/jpeg',
-        upsert: true,
+      const { publicUrl } = await uploadUriToPublicBucket({
+        bucketId: 'profiles',
+        uri: result.assets[0].uri,
+        kind: 'image',
+        subfolder: 'customer/avatar',
       });
-      if (error) throw error;
-      const {
-        data: { publicUrl },
-      } = supabase.storage.from('profiles').getPublicUrl(path);
       await saveUserMetadata({ avatar_url: publicUrl });
       setAvatarUri(publicUrl);
       const guest = await getOrCreateGuestForCurrentSession();
       if (guest?.guest_id) {
-        await supabase.from('guests').update({ photo_url: publicUrl }).eq('id', guest.guest_id);
+        await supabase.rpc('update_my_guest_photo_url', { p_photo_url: publicUrl });
       }
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'Avatar yuklenemedi.';
-      Alert.alert('Hata', message);
+      const message = e instanceof Error ? e.message : t('avatarUploadError');
+      Alert.alert(t('error'), message);
     } finally {
       setUploadingAvatar(false);
     }
@@ -156,12 +217,12 @@ export default function CustomerProfileEdit() {
 
   const handleSave = async () => {
     if (!user) {
-      Alert.alert('Hata', 'Giriş yapmanız gerekiyor.');
+      Alert.alert(t('error'), t('customerProfileSignInToEdit'));
       return;
     }
     const nameTrim = fullName.trim();
     if (!nameTrim) {
-      Alert.alert('Eksik bilgi', 'Ad soyad alanı zorunludur.');
+      Alert.alert(t('customerProfileNameRequiredTitle'), t('customerProfileNameRequiredBody'));
       return;
     }
 
@@ -172,18 +233,113 @@ export default function CustomerProfileEdit() {
           full_name: nameTrim,
           ...(phone.trim() ? { phone: phone.trim() } : {}),
           ...(whatsapp.trim() ? { whatsapp: whatsapp.trim() } : {}),
+          ...(about.trim() ? { about: about.trim() } : {}),
+          ...(jobTitle.trim() ? { job_title: jobTitle.trim() } : {}),
+          ...(contactEmail.trim() ? { contact_email: contactEmail.trim() } : {}),
+          ...(instagram.trim() ? { instagram: instagram.trim() } : {}),
+          ...(website.trim() ? { website: website.trim() } : {}),
         },
       });
       if (error) throw error;
       await loadSession();
-      Alert.alert('Kaydedildi', 'Profil bilgileriniz güncellendi.', [
-        { text: 'Tamam', onPress: () => router.replace('/customer/profile') },
+      Alert.alert(t('customerProfileSavedTitle'), t('customerProfileSavedBody'), [
+        { text: t('ok'), onPress: () => router.replace('/customer/profile') },
       ]);
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : 'Profil güncellenemedi.';
-      Alert.alert('Hata', message);
+      const message = e instanceof Error ? e.message : t('customerProfileUpdateFailed');
+      Alert.alert(t('error'), message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleUpdatePasswordOnly = async () => {
+    if (!user) return;
+    if (newPass.length < 6) {
+      Alert.alert(t('error'), t('passwordMinLength'));
+      return;
+    }
+    if (newPass !== newPass2) {
+      Alert.alert(t('error'), t('passwordsDontMatch'));
+      return;
+    }
+    setAccountBusy(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPass });
+      if (error) throw error;
+      setNewPass('');
+      setNewPass2('');
+      await loadSession();
+      Alert.alert(t('info'), t('profileEditPasswordUpdated'));
+    } catch (e: unknown) {
+      Alert.alert(t('error'), (e as Error)?.message ?? t('customerProfileUpdateFailed'));
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const handleRequestProfileEmailCode = async () => {
+    if (!user) return;
+    const next = loginEmailDraft.trim().toLowerCase();
+    const cur = (user.email ?? '').trim().toLowerCase();
+    if (!next) {
+      Alert.alert(t('error'), t('convertToFullAccountEmailRequired'));
+      return;
+    }
+    if (next === cur) {
+      Alert.alert(t('error'), t('profileEditEmailMustDiffer'));
+      return;
+    }
+    setAccountBusy(true);
+    try {
+      const { error } = await requestEmailChangeCode(next);
+      if (error) throw error;
+      setPendingEmailForOtp(next);
+      setEmailChangeAwaitingOtp(true);
+      setEmailOtpCode('');
+      Alert.alert(t('info'), t('convertToFullAccountCodeSent', { email: next }));
+    } catch (e: unknown) {
+      Alert.alert(t('error'), (e as Error)?.message ?? t('convertToFullAccountFailed'));
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const handleVerifyProfileEmailOtp = async () => {
+    const digits = emailOtpCode.replace(/\D/g, '');
+    if (digits.length !== 6) {
+      Alert.alert(t('error'), t('enterSixDigitCode'));
+      return;
+    }
+    setAccountBusy(true);
+    try {
+      const { error } = await confirmEmailChangeWithOtp(pendingEmailForOtp, digits);
+      if (error) throw error;
+      await loadSession();
+      await syncGuestRowWithAuthUser(useAuthStore.getState().user);
+      setEmailChangeAwaitingOtp(false);
+      setPendingEmailForOtp('');
+      setEmailOtpCode('');
+      setLoginEmailDraft((useAuthStore.getState().user?.email ?? '').trim());
+      Alert.alert(t('info'), t('convertToFullAccountVerifiedTitle'));
+    } catch (e: unknown) {
+      Alert.alert(t('error'), (e as Error)?.message ?? t('convertToFullAccountOtpFailed'));
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const handleResendProfileEmailCode = async () => {
+    if (!pendingEmailForOtp) return;
+    setAccountBusy(true);
+    try {
+      const { error } = await resendEmailChangeCode(pendingEmailForOtp);
+      if (error) throw error;
+      Alert.alert(t('info'), t('convertToFullAccountCodeSent', { email: pendingEmailForOtp }));
+    } catch (e: unknown) {
+      Alert.alert(t('error'), (e as Error)?.message ?? t('convertToFullAccountResendFailed'));
+    } finally {
+      setAccountBusy(false);
     }
   };
 
@@ -193,11 +349,11 @@ export default function CustomerProfileEdit() {
         <View style={styles.placeholderIconWrap}>
           <Ionicons name="person-circle-outline" size={64} color={theme.colors.primary} />
         </View>
-        <Text style={styles.placeholderTitle}>Profil düzenle</Text>
-        <Text style={styles.placeholderText}>Bilgilerinizi güncellemek için giriş yapmanız gerekiyor.</Text>
+        <Text style={styles.placeholderTitle}>{t('editProfileInfo')}</Text>
+        <Text style={styles.placeholderText}>{t('customerProfileSignInToEdit')}</Text>
         <TouchableOpacity style={[styles.primaryButton, { alignSelf: 'stretch' }]} onPress={() => router.replace('/auth')} activeOpacity={0.85}>
           <Ionicons name="log-in-outline" size={22} color={theme.colors.white} style={{ marginRight: 10 }} />
-          <Text style={styles.primaryButtonText}>Giriş yap</Text>
+          <Text style={styles.primaryButtonText}>{t('signIn')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -221,8 +377,8 @@ export default function CustomerProfileEdit() {
               <Ionicons name="images" size={22} color={theme.colors.primary} />
             </View>
             <View style={styles.mediaSectionText}>
-              <Text style={styles.sectionTitle}>Profil görselleri</Text>
-              <Text style={styles.sectionHint}>Kapak ve profil fotoğrafınızı buradan güncelleyebilirsiniz.</Text>
+              <Text style={styles.sectionTitle}>{t('customerEditMediaSectionTitle')}</Text>
+              <Text style={styles.sectionHint}>{t('customerEditMediaSectionHint')}</Text>
             </View>
           </View>
           <View style={styles.mediaGrid}>
@@ -245,7 +401,7 @@ export default function CustomerProfileEdit() {
                   </View>
                 )}
               </View>
-              <Text style={styles.mediaCardLabel}>Kapak fotoğrafı</Text>
+              <Text style={styles.mediaCardLabel}>{t('customerEditCoverLabel')}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.mediaCard} onPress={pickAvatar} activeOpacity={0.86} disabled={uploadingAvatar || saving}>
@@ -266,7 +422,7 @@ export default function CustomerProfileEdit() {
                   </View>
                 )}
               </View>
-              <Text style={styles.mediaCardLabel}>Profil fotoğrafı</Text>
+              <Text style={styles.mediaCardLabel}>{t('customerEditProfilePhotoLabel')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -276,52 +432,206 @@ export default function CustomerProfileEdit() {
             <View style={styles.sectionIconWrap}>
               <Ionicons name="person" size={20} color={theme.colors.primary} />
             </View>
-            <Text style={styles.sectionTitle}>Kişisel bilgiler</Text>
+            <Text style={styles.sectionTitle}>{t('personalInfo')}</Text>
           </View>
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Ad soyad</Text>
+            <Text style={styles.label}>{t('fullName')}</Text>
             <TextInput
               style={styles.input}
               value={fullName}
               onChangeText={setFullName}
-              placeholder="Adınız ve soyadınız"
+              placeholder={t('customerEditNamePlaceholder')}
               placeholderTextColor={theme.colors.textMuted}
               autoCapitalize="words"
               editable={!saving}
             />
           </View>
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Telefon <Text style={styles.optional}>(isteğe bağlı)</Text></Text>
+            <Text style={styles.label}>
+              {t('customerEditPhoneLabel')} <Text style={styles.optional}>{t('fieldOptional')}</Text>
+            </Text>
             <TextInput
               style={styles.input}
               value={phone}
               onChangeText={setPhone}
-              placeholder="+90 5XX XXX XX XX"
+              placeholder={t('customerEditPhonePlaceholder')}
               placeholderTextColor={theme.colors.textMuted}
               keyboardType="phone-pad"
               editable={!saving}
             />
           </View>
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>WhatsApp <Text style={styles.optional}>(isteğe bağlı)</Text></Text>
+            <Text style={styles.label}>
+              {t('customerEditWhatsappLabel')} <Text style={styles.optional}>{t('fieldOptional')}</Text>
+            </Text>
             <TextInput
               style={styles.input}
               value={whatsapp}
               onChangeText={setWhatsapp}
-              placeholder="05551234567"
+              placeholder={t('customerEditWhatsappPlaceholder')}
               placeholderTextColor={theme.colors.textMuted}
               keyboardType="phone-pad"
               editable={!saving}
             />
           </View>
-          <View style={styles.emailCard}>
-            <Ionicons name="mail-outline" size={20} color={theme.colors.textMuted} />
-            <View style={styles.emailCardText}>
-              <Text style={styles.emailLabel}>E-posta</Text>
-              <Text style={styles.emailValue}>{user.email ?? (user.user_metadata?.email as string) ?? '—'}</Text>
-              <Text style={styles.hint}>Güvenlik nedeniyle değiştirilemez</Text>
-            </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              {t('customerEditJobTitle')} <Text style={styles.optional}>{t('fieldOptional')}</Text>
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={jobTitle}
+              onChangeText={setJobTitle}
+              placeholder={t('customerEditJobPlaceholder')}
+              placeholderTextColor={theme.colors.textMuted}
+              autoCapitalize="words"
+              editable={!saving}
+            />
           </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              {t('customerEditAboutLabel')} <Text style={styles.optional}>{t('fieldOptional')}</Text>
+            </Text>
+            <TextInput
+              style={[styles.input, { minHeight: 96, textAlignVertical: 'top' }]}
+              value={about}
+              onChangeText={setAbout}
+              placeholder={t('customerEditAboutPlaceholder')}
+              placeholderTextColor={theme.colors.textMuted}
+              multiline
+              editable={!saving}
+            />
+          </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              {t('customerEditContactEmailLabel')} <Text style={styles.optional}>{t('fieldOptional')}</Text>
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={contactEmail}
+              onChangeText={setContactEmail}
+              placeholder={t('customerEditContactEmailPlaceholder')}
+              placeholderTextColor={theme.colors.textMuted}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              editable={!saving}
+            />
+          </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              {t('customerEditInstagramLabel')} <Text style={styles.optional}>{t('fieldOptional')}</Text>
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={instagram}
+              onChangeText={setInstagram}
+              placeholder={t('customerEditInstagramPlaceholder')}
+              placeholderTextColor={theme.colors.textMuted}
+              autoCapitalize="none"
+              editable={!saving}
+            />
+          </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              {t('customerEditWebsiteLabel')} <Text style={styles.optional}>{t('fieldOptional')}</Text>
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={website}
+              onChangeText={setWebsite}
+              placeholder={t('customerEditWebsitePlaceholder')}
+              placeholderTextColor={theme.colors.textMuted}
+              autoCapitalize="none"
+              editable={!saving}
+            />
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionIconWrap}>
+              <Ionicons name="key-outline" size={20} color={theme.colors.primary} />
+            </View>
+            <Text style={styles.sectionTitle}>{t('profileEditAccountSecurityTitle')}</Text>
+          </View>
+          {(user as { new_email?: string | null }).new_email ? (
+            <Text style={styles.pendingEmailBanner}>
+              {t('profileEditPendingNewEmail', { email: (user as { new_email?: string }).new_email ?? '' })}
+            </Text>
+          ) : null}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>{t('profileEditLoginEmailLabel')}</Text>
+            <TextInput
+              style={styles.input}
+              value={loginEmailDraft}
+              onChangeText={setLoginEmailDraft}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              editable={!saving && !accountBusy}
+            />
+          </View>
+          {!emailChangeAwaitingOtp ? (
+            <TouchableOpacity
+              style={[styles.secondaryButton, accountBusy && styles.primaryButtonDisabled]}
+              onPress={handleRequestProfileEmailCode}
+              disabled={saving || accountBusy}
+            >
+              <Text style={styles.secondaryButtonText}>{t('profileEditRequestEmailCode')}</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>{t('convertToFullAccountOtpLabel')}</Text>
+                <TextInput
+                  style={[styles.input, { letterSpacing: 4, textAlign: 'center', fontSize: 18 }]}
+                  value={emailOtpCode}
+                  onChangeText={(v) => setEmailOtpCode(v.replace(/\D/g, '').slice(0, 6))}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  editable={!accountBusy}
+                />
+              </View>
+              <TouchableOpacity
+                style={[styles.secondaryButton, accountBusy && styles.primaryButtonDisabled]}
+                onPress={handleVerifyProfileEmailOtp}
+                disabled={accountBusy}
+              >
+                <Text style={styles.secondaryButtonText}>{t('profileEditVerifyEmailButton')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.textLinkWrap} onPress={handleResendProfileEmailCode} disabled={accountBusy}>
+                <Text style={styles.textLink}>{t('convertToFullAccountResendCode')}</Text>
+              </TouchableOpacity>
+            </>
+          )}
+          <View style={[styles.inputGroup, { marginTop: theme.spacing.xl }]}>
+            <Text style={styles.label}>{t('profileEditNewPasswordLabel')}</Text>
+            <TextInput
+              style={styles.input}
+              value={newPass}
+              onChangeText={setNewPass}
+              secureTextEntry
+              autoCapitalize="none"
+              editable={!saving && !accountBusy}
+            />
+          </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>{t('profileEditNewPasswordConfirmLabel')}</Text>
+            <TextInput
+              style={styles.input}
+              value={newPass2}
+              onChangeText={setNewPass2}
+              secureTextEntry
+              autoCapitalize="none"
+              editable={!saving && !accountBusy}
+            />
+          </View>
+          <TouchableOpacity
+            style={[styles.secondaryButton, accountBusy && styles.primaryButtonDisabled]}
+            onPress={handleUpdatePasswordOnly}
+            disabled={saving || accountBusy}
+          >
+            <Text style={styles.secondaryButtonText}>{t('profileEditUpdatePasswordButton')}</Text>
+          </TouchableOpacity>
         </View>
 
         <TouchableOpacity
@@ -335,7 +645,7 @@ export default function CustomerProfileEdit() {
           ) : (
             <>
               <Ionicons name="checkmark-circle" size={24} color={theme.colors.white} style={{ marginRight: 10 }} />
-              <Text style={styles.primaryButtonText}>Değişiklikleri kaydet</Text>
+              <Text style={styles.primaryButtonText}>{t('saveChanges')}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -565,6 +875,24 @@ const styles = StyleSheet.create({
   },
   primaryButtonDisabled: { opacity: 0.7 },
   primaryButtonText: { fontSize: 17, fontWeight: '700', color: theme.colors.white },
+  secondaryButton: {
+    backgroundColor: theme.colors.primary + '18',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: theme.spacing.sm,
+  },
+  secondaryButtonText: { fontSize: 15, fontWeight: '700', color: theme.colors.primary },
+  pendingEmailBanner: {
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.md,
+    padding: 12,
+    backgroundColor: theme.colors.backgroundSecondary,
+    borderRadius: 10,
+  },
+  textLinkWrap: { alignItems: 'center', paddingVertical: 8, marginBottom: theme.spacing.sm },
+  textLink: { fontSize: 14, fontWeight: '600', color: theme.colors.primary },
   placeholderContainer: {
     flex: 1,
     backgroundColor: theme.colors.backgroundSecondary,

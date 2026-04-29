@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -15,12 +15,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { getOrCreateGuestForCaller } from '@/lib/getOrCreateGuestForCaller';
 import { getGuestNotificationToken, setGuestNotificationToken } from '@/lib/guestNotificationToken';
-import { GUEST_PREF_KEYS } from '@/lib/notifications';
 import { getExpoPushTokenAsync, savePushTokenForGuest, isExpoGo } from '@/lib/notificationsPush';
 import { useGuestNotificationStore } from '@/stores/guestNotificationStore';
 import { useGuestMessagingStore } from '@/stores/guestMessagingStore';
 import { useAuthStore } from '@/stores/authStore';
 import { theme } from '@/constants/theme';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 
 type NotifRow = {
   id: string;
@@ -32,37 +33,30 @@ type NotifRow = {
   category?: string | null;
 };
 
-const PREF_LABELS: Record<string, string> = {
-  [GUEST_PREF_KEYS.service_updates]: 'Hizmet bildirimleri (taleplerim)',
-  [GUEST_PREF_KEYS.checkin_checkout_reminders]: 'Check-in/out hatırlatmaları',
-  [GUEST_PREF_KEYS.hotel_announcements]: 'Otel duyuruları',
-  [GUEST_PREF_KEYS.campaigns]: 'Kampanya ve fırsatlar',
-  [GUEST_PREF_KEYS.marketing]: 'Pazarlama mesajları',
-};
+type LoadOpts = { force?: boolean };
 
 export default function CustomerNotificationsScreen() {
+  const { t } = useTranslation();
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
   const [list, setList] = useState<NotifRow[]>([]);
-  const [prefs, setPrefs] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
-  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [pushPerm, setPushPerm] = useState<'granted' | 'denied' | 'undetermined' | 'unknown'>('unknown');
   const [enablingPush, setEnablingPush] = useState(false);
 
+  const listRef = useRef<NotifRow[]>([]);
+  const listMaxCreatedRef = useRef<string | null>(null);
+  const lastNotifTokenRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    listRef.current = list;
+  }, [list]);
+
   const { refresh: refreshNotificationCount, setUnreadCount, setNotificationsScreenFocused } = useGuestNotificationStore();
 
-  useFocusEffect(
-    useCallback(() => {
-      setUnreadCount(0);
-      setNotificationsScreenFocused(true);
-      load();
-      return () => setNotificationsScreenFocused(false);
-    }, [setUnreadCount, setNotificationsScreenFocused, load])
-  );
-
-  const load = useCallback(async () => {
-    // Push iznini burada otomatik isteme: sadece durum kontrol et.
+  const load = useCallback(async (opts?: LoadOpts) => {
+    const force = opts?.force === true;
     if (!isExpoGo) {
       try {
         const Notifications = await import('expo-notifications').then((m) => m.default);
@@ -72,61 +66,114 @@ export default function CustomerNotificationsScreen() {
         setPushPerm('unknown');
       }
     }
-    let t = await getGuestNotificationToken();
-    if (!t) {
-      const { data: { session: s } } = await supabase.auth.getSession();
+
+    let notifToken = await getGuestNotificationToken();
+    if (!notifToken) {
+      const {
+        data: { session: s },
+      } = await supabase.auth.getSession();
       if (s?.user) {
         const row = await getOrCreateGuestForCaller(s.user);
-        t = row?.app_token ?? null;
-        if (t) {
-          await setGuestNotificationToken(t);
-          await useGuestMessagingStore.getState().setAppToken(t);
+        notifToken = row?.app_token ?? null;
+        if (notifToken) {
+          await setGuestNotificationToken(notifToken);
+          await useGuestMessagingStore.getState().setAppToken(notifToken);
         }
       }
     }
-    setToken(t);
-    if (!t) {
+
+    if (lastNotifTokenRef.current !== notifToken) {
+      listMaxCreatedRef.current = null;
+      lastNotifTokenRef.current = notifToken;
+    }
+
+    setToken(notifToken);
+    if (!notifToken) {
       setList([]);
       useGuestNotificationStore.getState().setUnreadCount(0);
       setLoading(false);
+      setRefreshing(false);
       return;
     }
-    // Push token kaydı kullanıcı izni verdikten sonra yapılır (kart aksiyonu ile).
-    const { data } = await supabase.rpc('get_guest_notifications', { p_app_token: t });
-    const rows = (data as NotifRow[]) ?? [];
-    const unreadIds = rows.filter((n) => !n.read_at).map((n) => n.id);
-    await Promise.all(
-      unreadIds.map((id) => supabase.rpc('mark_guest_notification_read', { p_app_token: t, p_notification_id: id }))
-    );
-    const now = new Date().toISOString();
-    setList(rows.map((n) => (unreadIds.includes(n.id) ? { ...n, read_at: now } : n)));
-    useGuestNotificationStore.getState().setUnreadCount(0);
-    const { data: prefsData } = await supabase.rpc('get_guest_notification_preferences', { p_app_token: t });
-    const map: Record<string, boolean> = {};
-    (prefsData as { pref_key: string; enabled: boolean }[] ?? []).forEach((p) => {
-      map[p.pref_key] = p.enabled;
-    });
-    setPrefs(map);
-    setPrefsLoaded(true);
-    setLoading(false);
-  }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+    const cached = listRef.current;
+    const hadList = cached.length > 0;
+
+    if (force) {
+      setRefreshing(true);
+    } else if (!hadList) {
+      setLoading(true);
+    }
+
+    if (!force && hadList) {
+      const { data: sumData, error: sumErr } = await supabase.rpc('get_guest_notification_summary', {
+        p_app_token: notifToken,
+      });
+      if (!sumErr && sumData && (Array.isArray(sumData) ? sumData.length : 1)) {
+        const row = (Array.isArray(sumData) ? sumData[0] : sumData) as {
+          latest_created_at?: string | null;
+          unread_count?: number | string | null;
+        };
+        const latest = row?.latest_created_at ?? null;
+        const maxLocal = listMaxCreatedRef.current;
+        const serverUnread = Number(row?.unread_count ?? 0) || 0;
+        if (serverUnread === 0 && latest && maxLocal && new Date(latest) <= new Date(maxLocal)) {
+          setUnreadCount(0);
+          setLoading(false);
+          setRefreshing(false);
+          return;
+        }
+      }
+    }
+
+    const { data, error } = await supabase.rpc('get_guest_notifications', { p_app_token: notifToken });
+    if (error) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+    const rows = (data as NotifRow[]) ?? [];
+
+    const { error: markAllErr } = await supabase.rpc('mark_all_guest_notifications_read', { p_app_token: notifToken });
+    if (markAllErr) {
+      const unreadIds = rows.filter((n) => !n.read_at).map((n) => n.id);
+      await Promise.all(
+        unreadIds.map((id) =>
+          supabase.rpc('mark_guest_notification_read', { p_app_token: notifToken, p_notification_id: id })
+        )
+      );
+    }
+
+    const now = new Date().toISOString();
+    setList(rows.map((n) => ({ ...n, read_at: n.read_at ?? now })));
+    if (rows.length) {
+      const maxAt = rows.reduce((a, b) => (a > b.created_at ? a : b.created_at), rows[0].created_at);
+      listMaxCreatedRef.current = maxAt;
+    } else {
+      listMaxCreatedRef.current = null;
+    }
+    useGuestNotificationStore.getState().setUnreadCount(0);
+    setLoading(false);
+    setRefreshing(false);
+  }, [setUnreadCount]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setUnreadCount(0);
+      setNotificationsScreenFocused(true);
+      void load();
+      return () => setNotificationsScreenFocused(false);
+    }, [setUnreadCount, setNotificationsScreenFocused, load])
+  );
 
   const enablePush = useCallback(async () => {
     if (enablingPush) return;
     if (isExpoGo) {
-      Alert.alert(
-        'Push bildirimleri desteklenmiyor',
-        'Push bildirimleri Expo Go içinde çalışmaz. Lütfen development build veya yüklenmiş uygulama (App Store / Play Store) ile deneyin.',
-        [{ text: 'Tamam' }]
-      );
+      Alert.alert(t('guestNotifExpoGoTitle'), t('guestNotifExpoGoBody'), [{ text: t('ok') }]);
       return;
     }
     if (!token) {
-      Alert.alert('Bekleyin', 'Bildirim hesabı hazırlanıyor, lütfen sayfayı yenileyip tekrar deneyin.');
+      Alert.alert(t('error'), t('guestNotifAccountPreparing'));
       return;
     }
     setEnablingPush(true);
@@ -140,22 +187,18 @@ export default function CustomerNotificationsScreen() {
         const { status } = await Notifications.getPermissionsAsync();
         setPushPerm(status === 'granted' ? 'granted' : status === 'denied' ? 'denied' : 'undetermined');
         if (status === 'denied') {
-          Alert.alert(
-            'Bildirim izni reddedildi',
-            'Bildirim almak için lütfen ayarlardan izin verin.',
-            [
-              { text: 'İptal', style: 'cancel' },
-              { text: 'Ayarları aç', onPress: () => Linking.openSettings() },
-            ]
-          );
+          Alert.alert(t('guestNotifPermDeniedTitle'), t('guestNotifPermDeniedBody'), [
+            { text: t('cancelAction'), style: 'cancel' },
+            { text: t('openAppSettings'), onPress: () => Linking.openSettings() },
+          ]);
         }
       }
     } catch (e) {
-      Alert.alert('Hata', 'İzin alınırken bir sorun oluştu. Lütfen tekrar deneyin.');
+      Alert.alert(t('error'), t('guestNotifPermError'));
     } finally {
       setEnablingPush(false);
     }
-  }, [token, enablingPush]);
+  }, [token, enablingPush, t]);
 
   const handleNotificationPress = useCallback(
     async (n: NotifRow) => {
@@ -164,16 +207,13 @@ export default function CustomerNotificationsScreen() {
         p_app_token: token,
         p_notification_id: n.id,
       });
-      setList((prev) =>
-        prev.map((item) => (item.id === n.id ? { ...item, read_at: new Date().toISOString() } : item))
-      );
+      setList((prev) => prev.map((item) => (item.id === n.id ? { ...item, read_at: new Date().toISOString() } : item)));
       refreshNotificationCount();
 
       const data = n.data ?? {};
       const url = data.url as string | undefined;
       const postId = data.postId as string | undefined;
 
-      // Sadece uygulama içi path kullan (valoria:/// gibi scheme URL'leri yok say)
       const isInternalPath = url && typeof url === 'string' && url.startsWith('/');
       if (isInternalPath) {
         if (postId) {
@@ -192,40 +232,32 @@ export default function CustomerNotificationsScreen() {
     [token, refreshNotificationCount, router]
   );
 
-  const togglePref = async (key: string, enabled: boolean) => {
-    if (!token) return;
-    await supabase.rpc('set_guest_notification_preference', {
-      p_app_token: token,
-      p_pref_key: key,
-      p_enabled: enabled,
-    });
-    setPrefs((p) => ({ ...p, [key]: enabled }));
-  };
-
   const user = useAuthStore((s) => s.user);
   if (!token && !loading) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>Bildirimler</Text>
+        <Text style={styles.title}>{t('guestNotifScreenTitle')}</Text>
         <View style={styles.emptyCard}>
           {!user ? (
             <>
-              <Text style={styles.emptyTitle}>Bildirimleri görmek için giriş yapın</Text>
-              <Text style={styles.emptyDesc}>
-                Hesap oluşturup giriş yaptığınızda bildirimleriniz burada listelenir. Oda veya sözleşme adımı zorunlu değildir.
-              </Text>
+              <Text style={styles.emptyTitle}>{t('guestNotifEmptyLoginTitle')}</Text>
+              <Text style={styles.emptyDesc}>{t('guestNotifEmptyLoginBody')}</Text>
               <TouchableOpacity style={styles.btn} onPress={() => router.push('/auth')}>
-                <Text style={styles.btnText}>Giriş yap</Text>
+                <Text style={styles.btnText}>{t('signIn')}</Text>
               </TouchableOpacity>
             </>
           ) : (
             <>
-              <Text style={styles.emptyTitle}>Bildirim hesabı hazırlanamadı</Text>
-              <Text style={styles.emptyDesc}>
-                E-posta ile giriş yapıyorsanız tekrar deneyebilirsiniz.
-              </Text>
-              <TouchableOpacity style={styles.btn} onPress={() => { setLoading(true); load(); }}>
-                <Text style={styles.btnText}>Tekrar dene</Text>
+              <Text style={styles.emptyTitle}>{t('guestNotifAccountFailedTitle')}</Text>
+              <Text style={styles.emptyDesc}>{t('guestNotifAccountFailedBody')}</Text>
+              <TouchableOpacity
+                style={styles.btn}
+                onPress={() => {
+                  setLoading(true);
+                  void load({ force: true });
+                }}
+              >
+                <Text style={styles.btnText}>{t('retry')}</Text>
               </TouchableOpacity>
             </>
           )}
@@ -242,23 +274,30 @@ export default function CustomerNotificationsScreen() {
     );
   }
 
+  const listLoading = loading && list.length === 0 && !refreshing;
+
   return (
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            void load({ force: true });
+          }}
+        />
+      }
     >
-      <Text style={styles.title}>Bildirimler</Text>
+      <Text style={styles.title}>{t('guestNotifScreenTitle')}</Text>
       {!isExpoGo && (pushPerm === 'denied' || pushPerm === 'undetermined') && (
         <View style={styles.pushCard}>
           <View style={styles.pushCardRow}>
             <Ionicons name="notifications-outline" size={20} color={theme.colors.primary} />
-            <Text style={styles.pushCardTitle}>Bildirim izni gerekli</Text>
+            <Text style={styles.pushCardTitle}>{t('guestNotifPermCardTitle')}</Text>
           </View>
           <Text style={styles.pushCardDesc}>
-            {pushPerm === 'denied'
-              ? 'Bildirim izni daha önce reddedildi. Ayarlardan izin verebilirsiniz.'
-              : 'Duyurular ve hatırlatmalar için bildirim izni verin. İzni istemek için butona dokunun.'}
+            {pushPerm === 'denied' ? t('guestNotifPermDeniedLong') : t('guestNotifPermUndetermined')}
           </Text>
           <View style={styles.pushCardBtnRow}>
             <TouchableOpacity
@@ -271,7 +310,7 @@ export default function CustomerNotificationsScreen() {
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <Text style={styles.pushCardBtnText}>
-                  {pushPerm === 'denied' ? 'Tekrar iste' : 'Bildirim izni ver'}
+                  {pushPerm === 'denied' ? t('guestNotifBtnRequestAgain') : t('guestNotifBtnGrant')}
                 </Text>
               )}
             </TouchableOpacity>
@@ -281,14 +320,16 @@ export default function CustomerNotificationsScreen() {
                 onPress={() => Linking.openSettings()}
                 activeOpacity={0.8}
               >
-                <Text style={styles.pushCardBtnSecondaryText}>Ayarları aç</Text>
+                <Text style={styles.pushCardBtnSecondaryText}>{t('openAppSettings')}</Text>
               </TouchableOpacity>
             )}
           </View>
         </View>
       )}
-      {list.length === 0 && !loading ? (
-        <Text style={styles.noList}>Henüz bildirim yok.</Text>
+      {listLoading ? (
+        <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginVertical: 24 }} />
+      ) : list.length === 0 ? (
+        <Text style={styles.noList}>{t('guestNotifListEmpty')}</Text>
       ) : (
         list.map((n) => (
           <TouchableOpacity
@@ -298,32 +339,23 @@ export default function CustomerNotificationsScreen() {
             activeOpacity={0.8}
           >
             <View style={styles.rowContent}>
-              {!n.read_at ? (
-                <View style={styles.unreadDot} />
-              ) : null}
+              {!n.read_at ? <View style={styles.unreadDot} /> : null}
               <View style={styles.rowTextWrap}>
                 <Text style={styles.rowTitle}>{n.title}</Text>
-                {n.body ? <Text style={styles.rowBody} numberOfLines={2}>{n.body}</Text> : null}
-                <Text style={styles.rowTime}>{new Date(n.created_at).toLocaleString('tr-TR')}</Text>
+                {n.body ? (
+                  <Text style={styles.rowBody} numberOfLines={2}>
+                    {n.body}
+                  </Text>
+                ) : null}
+                <Text style={styles.rowTime}>
+                  {new Date(n.created_at).toLocaleString(i18n.language === 'tr' ? 'tr-TR' : i18n.language)}
+                </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
             </View>
           </TouchableOpacity>
         ))
       )}
-      <Text style={styles.sectionTitle}>Bildirim ayarlarım</Text>
-      {prefsLoaded &&
-        Object.entries(GUEST_PREF_KEYS).map(([k, key]) => (
-          <View key={key} style={styles.prefRow}>
-            <Text style={styles.prefLabel}>{PREF_LABELS[key] ?? key}</Text>
-            <TouchableOpacity
-              style={[styles.toggle, prefs[key] !== false && styles.toggleOn]}
-              onPress={() => togglePref(key, prefs[key] === false)}
-            >
-              <Text style={styles.toggleText}>{prefs[key] !== false ? 'Açık' : 'Kapalı'}</Text>
-            </TouchableOpacity>
-          </View>
-        ))}
     </ScrollView>
   );
 }
@@ -395,17 +427,4 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 16, fontWeight: '600', color: theme.colors.text, marginBottom: 4 },
   rowBody: { fontSize: 14, color: theme.colors.textSecondary, marginBottom: 8 },
   rowTime: { fontSize: 12, color: theme.colors.textMuted },
-  sectionTitle: { fontSize: 18, fontWeight: '600', color: theme.colors.text, marginTop: 28, marginBottom: 12 },
-  prefRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderLight,
-  },
-  prefLabel: { fontSize: 15, color: theme.colors.text },
-  toggle: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: theme.colors.borderLight },
-  toggleOn: { backgroundColor: theme.colors.success + '30' },
-  toggleText: { fontSize: 13, color: theme.colors.text, fontWeight: '500' },
 });

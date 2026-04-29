@@ -30,7 +30,7 @@ export const adminPermissionsRoutes: FastifyPluginAsync = async (app) => {
     const { data: users, error: uErr } = await app.supabase
       .schema('ops')
       .from('app_users')
-      .select('id, full_name, role, is_active, created_at')
+      .select('id, full_name, role, is_active, created_at, kbs_access_enabled')
       .eq('hotel_id', auth.hotelId);
     if (uErr) throw Errors.internal('Failed to load users');
 
@@ -55,9 +55,52 @@ export const adminPermissionsRoutes: FastifyPluginAsync = async (app) => {
         fullName: u.full_name,
         role: u.role,
         isActive: u.is_active,
+        kbsAccessEnabled: (u as { kbs_access_enabled?: boolean }).kbs_access_enabled !== false,
         permissions: byUser[u.id] ?? {}
       }))
     };
+  });
+
+  app.post('/admin/users/:userId/kbs-access', async (req) => {
+    const auth = req.auth;
+    if (!auth) throw Errors.unauthorized();
+    if (auth.role !== 'admin') throw Errors.forbidden('Admin only');
+
+    const userId = z.string().uuid().parse((req.params as any).userId);
+    const body = z.object({ enabled: z.boolean() }).parse(req.body);
+
+    if (userId === auth.authUserId) {
+      throw Errors.badRequest('Cannot modify own KBS access');
+    }
+
+    const { data: target, error: findErr } = await app.supabase
+      .schema('ops')
+      .from('app_users')
+      .select('id')
+      .eq('id', userId)
+      .eq('hotel_id', auth.hotelId)
+      .maybeSingle();
+    if (findErr || !target) throw Errors.notFound('User not found');
+
+    const { error: upErr } = await app.supabase
+      .schema('ops')
+      .from('app_users')
+      .update({ kbs_access_enabled: body.enabled })
+      .eq('id', userId)
+      .eq('hotel_id', auth.hotelId);
+    if (upErr) throw Errors.internal('Failed to update KBS access');
+
+    await writeAudit({
+      supabase: app.supabase,
+      hotelId: auth.hotelId,
+      actorUserId: auth.authUserId,
+      action: 'kbs.access.toggle',
+      entityType: 'app_users',
+      entityId: userId,
+      metadata: { enabled: body.enabled }
+    });
+
+    return { ok: true, data: { saved: true } };
   });
 
   app.post('/admin/users/:userId/permissions', async (req) => {

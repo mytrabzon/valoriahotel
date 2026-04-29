@@ -11,6 +11,7 @@ export interface Conversation {
   type: ConversationType;
   name: string | null;
   avatar: string | null;
+  group_theme_color?: string | null;
   created_by: string | null;
   created_by_type: ParticipantType | null;
   created_at: string;

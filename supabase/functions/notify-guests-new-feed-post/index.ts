@@ -1,9 +1,12 @@
 // Yeni feed gönderisi: müşteri görünürlüğündeki paylaşımlarda tüm aktif misafirlere in-app + Expo push.
 // JWT ile gönderi sahibi doğrulanır (personel veya misafir); service role ile toplu bildirim.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { fetchAppIconBadgeForGuest, iconBadgeForPush } from "../_shared/appBadgeFromRpc.ts";
+import { getExpoPushHeaders } from "../_shared/expoPushHeaders.ts";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const BATCH_SIZE = 100;
+const ANDROID_CHANNEL_ID = "valoria_urgent";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -183,38 +186,60 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    type TokenRow = { token: string; guest_id: string | null };
+    const byToken = new Map<string, TokenRow>();
     const { data: tokenRows } = await supabase
       .from("push_tokens")
-      .select("token")
+      .select("token, guest_id")
       .in("guest_id", guestIds)
       .not("token", "is", null);
 
-    const tokens: string[] = [];
     for (const r of tokenRows ?? []) {
-      const t = (r as { token: string }).token?.trim();
-      if (t && t.startsWith("ExponentPushToken")) tokens.push(t);
+      const row = r as TokenRow;
+      const t = row.token?.trim();
+      if (t && t.startsWith("ExponentPushToken") && !byToken.has(t)) {
+        byToken.set(t, { token: t, guest_id: row.guest_id });
+      }
     }
-    const uniqueTokens = [...new Set(tokens)];
+    const uGuest = new Set<string>();
+    for (const r of byToken.values()) {
+      if (r.guest_id) uGuest.add(r.guest_id);
+    }
+    const badgeByGuest = new Map<string, number>();
+    await Promise.all(
+      [...uGuest].map(async (gid) => {
+        badgeByGuest.set(gid, await fetchAppIconBadgeForGuest(supabase, gid));
+      })
+    );
+    function badgeForRow(r: TokenRow): number {
+      if (r.guest_id) return iconBadgeForPush(badgeByGuest.get(r.guest_id) ?? 1);
+      return 1;
+    }
     const displayBody = expoDisplayBody(body);
 
     let sent = 0;
     let failed = 0;
-    if (uniqueTokens.length > 0) {
-      const messages = uniqueTokens.map((to) => ({
-        to,
-        title: notifTitle.trim(),
-        body: displayBody,
-        priority: "high" as const,
-        sound: "default" as const,
-        interruptionLevel: "active" as const,
-        data: { ...pushData, screen: "notifications" },
-      }));
+    if (byToken.size > 0) {
+      const messages = [...byToken.values()].map((row) => {
+        const b = badgeForRow(row);
+        return {
+          to: row.token,
+          title: notifTitle.trim(),
+          body: displayBody,
+          channelId: ANDROID_CHANNEL_ID,
+          priority: "high" as const,
+          sound: "default" as const,
+          badge: b,
+          interruptionLevel: "active" as const,
+          data: { ...pushData, screen: "notifications", app_badge: b },
+        };
+      });
 
       for (let i = 0; i < messages.length; i += BATCH_SIZE) {
         const chunk = messages.slice(i, i + BATCH_SIZE);
         const res = await fetch(EXPO_PUSH_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          headers: getExpoPushHeaders(),
           body: JSON.stringify(chunk),
         });
         if (!res.ok) {
@@ -236,7 +261,7 @@ Deno.serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         inserted: guestIds.length,
-        pushTargets: uniqueTokens.length,
+        pushTargets: byToken.size,
         pushSent: sent,
         pushFailed: failed,
       }),

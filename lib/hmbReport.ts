@@ -4,6 +4,8 @@
  */
 import { supabase } from '@/lib/supabase';
 import { HMB_HOTEL_INFO, VAT_RATE, ACCOMMODATION_TAX_RATE } from '@/constants/hmbHotel';
+import type { HmbFormBranding, HmbFormMeta } from '@/lib/hmbFormBranding';
+import { buildHmbOfficialDailyListHtml } from '@/lib/hmbOfficialDailyListHtml';
 import { format, parseISO, isValid } from 'date-fns';
 import { tr } from 'date-fns/locale';
 
@@ -27,6 +29,7 @@ export type GuestRow = {
   full_name: string;
   id_number: string | null;
   id_type: string | null;
+  nationality: string | null;
   check_in_at: string | null;
   check_out_at: string | null;
   status: string;
@@ -44,7 +47,12 @@ export type StayRow = {
   check_in_at: string;
   check_out_at: string | null;
   nights: number;
-  guests: { full_name: string; id_number: string | null; id_type: string | null }[];
+  guests: {
+    full_name: string;
+    id_number: string | null;
+    id_type: string | null;
+    nationality: string | null;
+  }[];
   total_net: number;
   vat: number;
   accommodation_tax: number;
@@ -85,7 +93,7 @@ export async function fetchHmbReportData(filters: HmbReportFilters): Promise<Hmb
   let query = supabase
     .from('guests')
     .select(
-      'id, full_name, id_number, id_type, check_in_at, check_out_at, status, room_id, total_amount_net, vat_amount, accommodation_tax_amount, rooms(room_number, price_per_night)'
+      'id, full_name, id_number, id_type, nationality, check_in_at, check_out_at, status, room_id, total_amount_net, vat_amount, accommodation_tax_amount, rooms(room_number, price_per_night)'
     )
     .not('room_id', 'is', null)
     .not('check_in_at', 'is', null);
@@ -174,6 +182,7 @@ export async function fetchHmbReportData(filters: HmbReportFilters): Promise<Hmb
         full_name: x.full_name,
         id_number: x.id_number,
         id_type: x.id_type,
+        nationality: x.nationality,
       })),
       total_net,
       vat,
@@ -197,139 +206,13 @@ export async function fetchHmbReportData(filters: HmbReportFilters): Promise<Hmb
   };
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function fmtMoney(n: number): string {
-  return new Intl.NumberFormat('tr-TR', {
-    style: 'decimal',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(n);
-}
-
-/** PDF için HTML üret (expo-print ile kullanılır) */
+/** PDF için HTML — matbaa tarzı günlük liste şablonu (işletme bilgisi + form meta ile). */
 export function buildHmbReportHtml(
   data: HmbReportData,
   filters: HmbReportFilters,
-  authorizedName: string
+  authorizedName: string,
+  branding: HmbFormBranding,
+  formMeta: HmbFormMeta
 ): string {
-  const reportDate = format(parseISO(data.generatedAt), 'd MMMM yyyy', { locale: tr });
-  const reportTime = format(parseISO(data.generatedAt), 'HH:mm', { locale: tr });
-  const period = `${shortDate(filters.startDate)} - ${shortDate(filters.endDate)}`;
-  const totalAll =
-    data.totalRevenueNet + data.totalVat + data.totalAccommodationTax;
-
-  const rows = data.stays
-    .map(
-      (s) => `
-    <tr>
-      <td>${escapeHtml(s.room_number)}</td>
-      <td>${s.guests.map((g) => escapeHtml(g.full_name)).join('<br/>')}</td>
-      <td>${s.guests.map((g) => escapeHtml(g.id_number ?? '—')).join('<br/>')}</td>
-      <td>${shortDate(s.check_in_at)}</td>
-      <td>${s.check_out_at ? shortDate(s.check_out_at) : '—'}</td>
-      <td>${fmtMoney(s.total_net)} TL (${s.nights} gece)<br/>KDV: ${fmtMoney(s.vat)} TL · KV: ${fmtMoney(s.accommodation_tax)} TL</td>
-    </tr>`
-    )
-    .join('');
-
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: 'Segoe UI', system-ui, sans-serif; padding: 24px; color: #1a202c; font-size: 11px; line-height: 1.4; }
-    .header { text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 2px solid #1e293b; }
-    .header h1 { font-size: 14px; margin: 0 0 4px 0; color: #0f172a; }
-    .header h2 { font-size: 12px; font-weight: 600; color: #334155; margin: 0; }
-    .header p { font-size: 10px; color: #64748b; margin: 4px 0 0 0; }
-    .block { margin-bottom: 16px; }
-    .block h3 { font-size: 11px; font-weight: 700; color: #1e293b; margin: 0 0 8px 0; }
-    .block p { margin: 2px 0; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; vertical-align: top; }
-    th { background: #f1f5f9; font-weight: 600; font-size: 10px; }
-    .summary { background: #f8fafc; padding: 12px; border-radius: 8px; margin-top: 16px; }
-    .summary p { margin: 4px 0; }
-    .footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 10px; color: #64748b; text-align: center; }
-    .signature { margin-top: 24px; }
-    .signature-line { border-bottom: 1px solid #1a202c; width: 200px; margin-top: 32px; padding-bottom: 4px; font-size: 10px; color: #64748b; }
-    .signature-name { font-weight: 600; margin-top: 4px; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>T.C.<br/>HAZİNE VE MALİYE BAKANLIĞI</h1>
-    <h2>GÜNLÜK MÜŞTERİ LİSTESİ</h2>
-    <p>(Vergi Usul Kanunu Md. 240 gereğince düzenlenmiştir)</p>
-  </div>
-
-  <div class="block">
-    <h3>İŞLETME BİLGİLERİ</h3>
-    <p><strong>Ünvan</strong>: ${escapeHtml(HMB_HOTEL_INFO.title)}</p>
-    <p><strong>Adres</strong>: ${escapeHtml(HMB_HOTEL_INFO.address)}</p>
-    <p><strong>Vergi Dairesi</strong>: ${escapeHtml(HMB_HOTEL_INFO.taxOffice)}</p>
-    <p><strong>Vergi Numarası</strong>: ${escapeHtml(HMB_HOTEL_INFO.taxNumber)}</p>
-    <p><strong>Ticaret Sicil No</strong>: ${escapeHtml(HMB_HOTEL_INFO.tradeRegister)}</p>
-    <p><strong>Telefon</strong>: ${escapeHtml(HMB_HOTEL_INFO.phone)}</p>
-    <p><strong>E-posta</strong>: ${escapeHtml(HMB_HOTEL_INFO.email)}</p>
-  </div>
-
-  <div class="block">
-    <h3>RAPOR DETAYLARI</h3>
-    <p><strong>Rapor Tarihi</strong>: ${reportDate}</p>
-    <p><strong>Rapor Saati</strong>: ${reportTime}</p>
-    <p><strong>Dönem</strong>: ${period}</p>
-    <p><strong>Rapor No</strong>: ${escapeHtml(data.reportNumber)}</p>
-    <p><strong>Düzenleyen</strong>: ${escapeHtml(authorizedName)}</p>
-  </div>
-
-  <div class="block">
-    <h3>MÜŞTERİ KONAKLAMA LİSTESİ</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>ODA</th>
-          <th>MÜŞTERİ ADI</th>
-          <th>TC/PASAPORT</th>
-          <th>GİRİŞ</th>
-          <th>ÇIKIŞ</th>
-          <th>ÜCRET / KDV / KV</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows || '<tr><td colspan="6">Kayıt yok.</td></tr>'}
-      </tbody>
-    </table>
-  </div>
-
-  <div class="summary">
-    <h3>ÖZET</h3>
-    <p>Toplam Konaklama Sayısı: ${data.totalStays}</p>
-    <p>Toplam Müşteri Sayısı: ${data.totalGuests}</p>
-    <p>Toplam Gece Sayısı: ${data.totalNights}</p>
-    <p>Toplam Konaklama Bedeli: ${fmtMoney(data.totalRevenueNet)} TL</p>
-    <p>Toplam KDV (%10): ${fmtMoney(data.totalVat)} TL</p>
-    <p>Toplam Konaklama Vergisi (%2): ${fmtMoney(data.totalAccommodationTax)} TL</p>
-    <p><strong>GENEL TOPLAM: ${fmtMoney(totalAll)} TL</strong></p>
-  </div>
-
-  <div class="signature">
-    <div class="signature-line">(Kaşe ve İmza)</div>
-    <div class="signature-name">${escapeHtml(authorizedName)}</div>
-    <div style="font-size: 10px; color: #64748b;">${escapeHtml(HMB_HOTEL_INFO.authorizedTitle)}</div>
-  </div>
-
-  <div class="footer">
-    Bu belge, Vergi Usul Kanunu'nun 240. maddesi gereğince düzenlenmiş resmî bir evraktır. İbrazı zorunludur.
-  </div>
-</body>
-</html>`;
+  return buildHmbOfficialDailyListHtml(data, filters, authorizedName, branding, formMeta);
 }

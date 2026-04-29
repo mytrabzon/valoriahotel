@@ -21,6 +21,8 @@ const DEPARTMENTS = [
   { value: 'receptionist', label: 'Resepsiyon' },
   { value: 'security', label: 'Güvenlik' },
   { value: 'reception_chief', label: 'Resepsiyon Şefi' },
+  { value: 'kitchen', label: 'Mutfak' },
+  { value: 'restaurant', label: 'Restoran' },
 ];
 
 const ROLES = [
@@ -41,13 +43,24 @@ const SHIFT_TYPES = [
 const APP_PERMISSIONS = [
   { key: 'stok_giris', label: 'Stok girişi yapabilir' },
   { key: 'mesajlasma', label: 'Müşterilerle mesajlaşabilir' },
+  { key: 'misafir_mesaj_alabilir', label: 'Müşteriden direkt mesaj alabilir' },
   { key: 'video_paylasim', label: 'Video/resim paylaşabilir' },
   { key: 'ekip_sohbet', label: 'Ekip sohbetini görebilir' },
+  { key: 'dokuman_yukle', label: 'Doküman yükleyebilir / yönetebilir' },
   { key: 'gorev_ata', label: 'Görev atayabilir' },
   { key: 'personel_ekle', label: 'Personel ekleyebilir (sadece yönetici)' },
   { key: 'raporlar', label: 'Raporları görebilir' },
   { key: 'satis_komisyon', label: 'Satış / komisyon modülüne erişebilir' },
   { key: 'tum_sozlesmeler', label: 'Tüm sözleşmeleri görüntüleyebilir' },
+  { key: 'kahvalti_teyit_olustur', label: 'Kahvaltı teyidi oluşturabilir' },
+  { key: 'kahvalti_teyit_departman', label: 'Kahvaltı teyitlerini (mutfak) görüntüleyebilir / düzenleyebilir' },
+  { key: 'kahvalti_teyit_onayla', label: 'Kahvaltı teyitlerini onaylayabilir' },
+  { key: 'kahvalti_rapor', label: 'Kahvaltı raporlarını görebilir' },
+  { key: 'transfer_tour_services', label: 'Transfer & Tur: hizmetleri yönet (ekle, düzenle, sil)' },
+  { key: 'transfer_tour_requests', label: 'Transfer & Tur: talepleri yönet (onay, red, fiyat)' },
+  { key: 'dining_venues', label: 'Yemek & Mekanlar: rehberi yönet (ekle, düzenle, sil)' },
+  { key: 'yarin_oda_temizlik_listesi', label: 'Yarın temizlenecek odalar listesini yönetebilir' },
+  { key: 'kbs_mrz_scan', label: 'Pasaport / MRZ tarama (KBS)' },
 ];
 
 const CONTRACT_TYPES: { value: string; label: string }[] = [
@@ -101,15 +114,31 @@ export default function AddStaffScreen() {
   const [app_permissions, setAppPermissions] = useState<Record<string, boolean>>({
     stok_giris: true,
     mesajlasma: true,
+    misafir_mesaj_alabilir: true,
     video_paylasim: true,
     ekip_sohbet: true,
+    dokuman_yukle: false,
     gorev_ata: false,
     personel_ekle: false,
     raporlar: false,
     satis_komisyon: false,
     tum_sozlesmeler: false,
+    kahvalti_teyit_olustur: false,
+    kahvalti_teyit_departman: false,
+    kahvalti_teyit_onayla: false,
+    kahvalti_rapor: false,
+    transfer_tour_services: false,
+    transfer_tour_requests: false,
+    dining_venues: false,
+    yarin_oda_temizlik_listesi: false,
+    kbs_mrz_scan: false,
   });
   const [notes, setNotes] = useState('');
+  const [emergency_contact_name, setEmergencyContactName] = useState('');
+  const [emergency_contact_phone, setEmergencyContactPhone] = useState('');
+  const [emergency_contact2_name, setEmergencyContact2Name] = useState('');
+  const [emergency_contact2_phone, setEmergencyContact2Phone] = useState('');
+  const [previous_work_experience, setPreviousWorkExperience] = useState('');
   const [contract_type, setContractType] = useState('');
   const [termination_date, setTerminationDate] = useState('');
   const [internal_extension, setInternalExtension] = useState('');
@@ -204,6 +233,11 @@ export default function AddStaffScreen() {
           work_days,
           shift_type: shift_type || null,
           notes: notes.trim() || null,
+          emergency_contact_name: emergency_contact_name.trim() || null,
+          emergency_contact_phone: emergency_contact_phone.trim() || null,
+          emergency_contact2_name: emergency_contact2_name.trim() || null,
+          emergency_contact2_phone: emergency_contact2_phone.trim() || null,
+          previous_work_experience: previous_work_experience.trim() || null,
           organization_id: organizationId,
           contract_type: contract_type.trim() || null,
           termination_date: termination_date.trim() || null,
@@ -298,6 +332,49 @@ export default function AddStaffScreen() {
         onChangeText={setAddress}
         placeholder="Adres"
         placeholderTextColor="#9ca3af"
+      />
+      <Text style={styles.label}>1. Yakın Ad Soyad</Text>
+      <TextInput
+        style={styles.input}
+        value={emergency_contact_name}
+        onChangeText={setEmergencyContactName}
+        placeholder="Örn: Ayşe Yılmaz"
+        placeholderTextColor="#9ca3af"
+      />
+      <Text style={styles.label}>1. Yakın Telefon</Text>
+      <TextInput
+        style={styles.input}
+        value={emergency_contact_phone}
+        onChangeText={setEmergencyContactPhone}
+        placeholder="05xx xxx xx xx"
+        keyboardType="phone-pad"
+        placeholderTextColor="#9ca3af"
+      />
+      <Text style={styles.label}>2. Yakın Ad Soyad</Text>
+      <TextInput
+        style={styles.input}
+        value={emergency_contact2_name}
+        onChangeText={setEmergencyContact2Name}
+        placeholder="Örn: Mehmet Yılmaz"
+        placeholderTextColor="#9ca3af"
+      />
+      <Text style={styles.label}>2. Yakın Telefon</Text>
+      <TextInput
+        style={styles.input}
+        value={emergency_contact2_phone}
+        onChangeText={setEmergencyContact2Phone}
+        placeholder="05xx xxx xx xx"
+        keyboardType="phone-pad"
+        placeholderTextColor="#9ca3af"
+      />
+      <Text style={styles.label}>Geçmişte Çalıştığı İşler / Deneyim</Text>
+      <TextInput
+        style={[styles.input, styles.textArea]}
+        value={previous_work_experience}
+        onChangeText={setPreviousWorkExperience}
+        placeholder={'Örn:\n- 2021-2023 Resepsiyon Görevlisi\n- 2023-2025 Ön Büro Sorumlusu'}
+        placeholderTextColor="#9ca3af"
+        multiline
       />
 
       <Text style={styles.sectionTitle}>🏢 İşletme</Text>

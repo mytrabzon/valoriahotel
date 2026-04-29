@@ -14,11 +14,13 @@ import {
 import { useRouter } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { log } from '@/lib/logger';
+import { useTranslation } from 'react-i18next';
 
 const CODE_LENGTH = 6;
 
 export default function AuthResetScreen() {
   const router = useRouter();
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -36,7 +38,7 @@ export default function AuthResetScreen() {
   const sendReset = async () => {
     const e = email.trim().toLowerCase();
     if (!e) {
-      Alert.alert('Hata', 'E-posta adresinizi girin.');
+      Alert.alert(t('error'), t('errorEnterEmail'));
       return;
     }
     setLoading(true);
@@ -51,11 +53,11 @@ export default function AuthResetScreen() {
       if (error) throw error;
       setSent(true);
       log.info('AuthReset', 'Şifre sıfırlama e-postası gönderildi', { email: e.slice(0, 5) + '...' });
-      Alert.alert('E-posta gönderildi', `${e} adresine şifre sıfırlama mesajı gönderildi. E-postayı (ve gerekiyorsa spam klasörünü) kontrol edin. Linke tıklayabilir veya 6 haneli kodu aşağıya girebilirsiniz.`);
+      Alert.alert(t('resetEmailSentTitle'), t('resetEmailSentMessage', { email: e }));
     } catch (err: unknown) {
-      const msg = (err as Error)?.message ?? 'Şifre sıfırlama e-postası gönderilemedi.';
+      const msg = (err as Error)?.message ?? t('resetEmailSendFailed');
       log.error('AuthReset', 'resetPasswordForEmail', err, msg);
-      Alert.alert('Hata', msg);
+      Alert.alert(t('error'), msg);
     }
     setLoading(false);
   };
@@ -70,15 +72,15 @@ export default function AuthResetScreen() {
     const e = email.trim().toLowerCase();
     const trimmedCode = code.replace(/\D/g, '');
     if (trimmedCode.length !== CODE_LENGTH) {
-      Alert.alert('Hata', '6 haneli kodu girin.');
+      Alert.alert(t('error'), t('enterSixDigitCode'));
       return;
     }
     if (!newPassword || newPassword.length < 6) {
-      Alert.alert('Hata', 'Yeni şifre en az 6 karakter olmalı.');
+      Alert.alert(t('error'), t('passwordMinLength'));
       return;
     }
     if (newPassword !== confirmPassword) {
-      Alert.alert('Hata', 'Şifreler eşleşmiyor.');
+      Alert.alert(t('error'), t('passwordsDontMatch'));
       return;
     }
     setLoading(true);
@@ -102,19 +104,19 @@ export default function AuthResetScreen() {
       const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
       if (updateError) throw updateError;
       log.info('AuthReset', 'Şifre güncellendi');
-      Alert.alert('Şifre güncellendi', 'Yeni şifrenizle giriş yapabilirsiniz.', [
-        { text: 'Tamam', onPress: () => router.replace('/auth') },
+      Alert.alert(t('resetPasswordUpdatedTitle'), t('resetPasswordUpdatedMessage'), [
+        { text: t('ok'), onPress: () => router.replace('/auth') },
       ]);
     } catch (err: unknown) {
       const msg = (err as Error)?.message ?? '';
       const userMsg =
         msg.includes('expired') || msg.includes('süresi')
-          ? 'Kodun süresi dolmuş. "Kod gönder" ile tekrar isteyin.'
+          ? t('resetCodeExpired')
           : msg.includes('invalid') || msg.includes('geçersiz')
-            ? 'Kod hatalı. E-postanızdaki kodu kontrol edin veya e-postadaki linke tıklayın.'
-            : msg || 'Kod kabul edilmedi. E-postanızdaki linke tıklayabilir veya tekrar kod isteyin.';
+            ? t('resetCodeInvalid')
+            : msg || t('resetCodeRejected');
       log.error('AuthReset', 'verifyOtp/updateUser', err, msg);
-      Alert.alert('Hata', userMsg);
+      Alert.alert(t('error'), userMsg);
     }
     setLoading(false);
   };
@@ -130,12 +132,12 @@ export default function AuthResetScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.title}>Şifremi unuttum</Text>
+        <Text style={styles.title}>{t('resetTitle')}</Text>
         <Text style={styles.subtitle}>
-          E-posta adresinize şifre sıfırlama linki veya 6 haneli kod gider. Link geldiyse linke tıklayın; kod geldiyse aşağıya girin.
+          {t('resetSubtitle')}
         </Text>
 
-        <Text style={styles.label}>E-posta</Text>
+        <Text style={styles.label}>{t('email')}</Text>
         <TextInput
           style={styles.input}
           placeholder="ornek@email.com"
@@ -149,14 +151,14 @@ export default function AuthResetScreen() {
 
         {!sent ? (
           <TouchableOpacity style={styles.button} onPress={sendReset} disabled={loading}>
-            <Text style={styles.buttonText}>{loading ? 'Gönderiliyor...' : 'Kod gönder'}</Text>
+            <Text style={styles.buttonText}>{loading ? t('sending') : t('sendCodeBtn')}</Text>
           </TouchableOpacity>
         ) : (
           <>
             <View style={styles.codeSection}>
-              <Text style={styles.codeSectionTitle}>Kod</Text>
-              <Text style={styles.codeSectionHint}>E-postanıza gelen 6 haneli kodu girin.</Text>
-              <Text style={styles.helpText}>Kod gelmiyor mu? Spam klasörüne bakın. E-postadaki “Şifreyi sıfırla” linkine tıklayın; uygulama açılır ve yeni şifre ekranı gelir. Kodun e-postada çıkması için Supabase Dashboard → Auth → Email Templates → “Change Password” şablonuna şunu ekleyin: {'{{ .Token }}'}</Text>
+              <Text style={styles.codeSectionTitle}>{t('resetCodeSectionTitle')}</Text>
+              <Text style={styles.codeSectionHint}>{t('resetCodeSectionHint')}</Text>
+              <Text style={styles.helpText}>{t('resetHelpText', { tokenTemplate: '{{ .Token }}' })}</Text>
               <TextInput
                 ref={codeInputRef}
                 style={[styles.input, styles.codeInput]}
@@ -171,7 +173,7 @@ export default function AuthResetScreen() {
               />
             </View>
 
-            <Text style={styles.label}>Yeni şifre (en az 6 karakter)</Text>
+            <Text style={styles.label}>{t('resetNewPasswordLabel')}</Text>
             <TextInput
               style={styles.input}
               placeholder="••••••••"
@@ -182,7 +184,7 @@ export default function AuthResetScreen() {
               editable={!loading}
             />
 
-            <Text style={styles.label}>Yeni şifre (tekrar)</Text>
+            <Text style={styles.label}>{t('resetConfirmPasswordLabel')}</Text>
             <TextInput
               style={styles.input}
               placeholder="••••••••"
@@ -198,13 +200,13 @@ export default function AuthResetScreen() {
               onPress={submitNewPassword}
               disabled={code.length !== CODE_LENGTH || !newPassword || newPassword !== confirmPassword || loading}
             >
-              <Text style={styles.buttonText}>{loading ? 'Güncelleniyor...' : 'Şifreyi güncelle'}</Text>
+              <Text style={styles.buttonText}>{loading ? t('processing') : t('resetUpdatePasswordBtn')}</Text>
             </TouchableOpacity>
           </>
         )}
 
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Text style={styles.backBtnText}>← Geri</Text>
+          <Text style={styles.backBtnText}>← {t('back')}</Text>
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>

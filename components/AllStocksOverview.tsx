@@ -84,33 +84,42 @@ export function AllStocksOverview({ productPathPrefix }: Props) {
   const [pdfExporting, setPdfExporting] = useState(false);
 
   const load = async () => {
-    const [prodRes, movRes, photoRes] = await Promise.all([
-      supabase
+    try {
+      // Önce ürünler: grid hemen görünsün (Instagram benzeri stale-while-revalidate)
+      const prodRes = await supabase
         .from('stock_products')
         .select('id, name, unit, current_stock, min_stock, image_url, created_at, category:stock_categories(name)')
-        .order('name'),
-      supabase
-        .from('stock_movements')
-        .select('id, product_id, movement_type, quantity, created_at, status, photo_proof, staff:staff_id(full_name)')
-        .order('created_at', { ascending: false })
-        .limit(300),
-      supabase
-        .from('stock_movements')
-        .select('product_id, photo_proof')
-        .not('photo_proof', 'is', null)
-        .order('created_at', { ascending: false }),
-    ]);
-    setProducts((prodRes.data ?? []) as Product[]);
-    setMovements((movRes.data ?? []) as MovementRow[]);
-    const byProduct: Record<string, string> = {};
-    for (const m of photoRes.data ?? []) {
-      const pid = (m as { product_id: string }).product_id;
-      const url = (m as { photo_proof: string }).photo_proof;
-      if (pid && url && !(pid in byProduct)) byProduct[pid] = url;
+        .order('name');
+      setProducts((prodRes.data ?? []) as Product[]);
+      setLoading(false);
+      setRefreshing(false);
+
+      /** Limit yoktu: tüm fotoğraflı hareketler çekiliyordu → büyük otelde timeout / "girilmiyor" hissi */
+      const [movRes, photoRes] = await Promise.all([
+        supabase
+          .from('stock_movements')
+          .select('id, product_id, movement_type, quantity, created_at, status, photo_proof, staff:staff_id(full_name)')
+          .order('created_at', { ascending: false })
+          .limit(400),
+        supabase
+          .from('stock_movements')
+          .select('product_id, photo_proof')
+          .not('photo_proof', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(2500),
+      ]);
+      setMovements((movRes.data ?? []) as MovementRow[]);
+      const byProduct: Record<string, string> = {};
+      for (const m of photoRes.data ?? []) {
+        const pid = (m as { product_id: string }).product_id;
+        const url = (m as { photo_proof: string }).photo_proof;
+        if (pid && url && !(pid in byProduct)) byProduct[pid] = url;
+      }
+      setLastPhotoByProductId(byProduct);
+    } catch {
+      setLoading(false);
+      setRefreshing(false);
     }
-    setLastPhotoByProductId(byProduct);
-    setLoading(false);
-    setRefreshing(false);
   };
 
   useEffect(() => {

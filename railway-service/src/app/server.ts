@@ -7,7 +7,7 @@ async function main() {
   const host = '0.0.0.0';
   await app.listen({ port, host });
   // eslint-disable-next-line no-console
-  console.log(`[railway-service] listening on ${host}:${port} (pid ${process.pid})`);
+  console.log(`[kbs-gateway] listening on ${host}:${port} (pid ${process.pid})`);
 }
 
 main().catch((err) => {

@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { View, ScrollView, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, ScrollView, ActivityIndicator, StyleSheet, Alert } from 'react-native';
 import { Stack, useFocusEffect } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/stores/authStore';
@@ -10,7 +10,9 @@ import {
   StaffReviewsFullModal,
   type HubReview,
 } from '@/components/StaffEvaluationHub';
+import { StaffManagementEvaluationCards } from '@/components/StaffManagementEvaluationCards';
 import { resolveStaffEvaluation } from '@/lib/staffEvaluation';
+import type { StaffManagementEvaluationRow } from '@/lib/managementEvaluation';
 import { formatDateShort } from '@/lib/date';
 import { theme } from '@/constants/theme';
 
@@ -36,6 +38,52 @@ export default function StaffEvaluationScreen() {
   const [profile, setProfile] = useState<EvalProfile | null>(null);
   const [reviews, setReviews] = useState<ReviewRow[]>([]);
   const [reviewsModalVisible, setReviewsModalVisible] = useState(false);
+  const [mgmtRows, setMgmtRows] = useState<StaffManagementEvaluationRow[]>([]);
+  const [evaluatorNames, setEvaluatorNames] = useState<Record<string, string | null>>({});
+  const [ackId, setAckId] = useState<string | null>(null);
+
+  const loadMgmt = useCallback(
+    async (sid: string) => {
+      const { data: evs, error } = await supabase
+        .from('staff_management_evaluations')
+        .select('*')
+        .eq('staff_id', sid)
+        .order('created_at', { ascending: false });
+      if (error) return;
+      const list = (evs ?? []) as StaffManagementEvaluationRow[];
+      setMgmtRows(list);
+      const eids = [...new Set(list.map((r) => r.evaluator_staff_id))];
+      if (eids.length) {
+        const { data: names } = await supabase.from('staff').select('id, full_name').in('id', eids);
+        const map: Record<string, string | null> = {};
+        for (const row of names ?? []) {
+          const r = row as { id: string; full_name: string | null };
+          map[r.id] = r.full_name;
+        }
+        setEvaluatorNames(map);
+      } else {
+        setEvaluatorNames({});
+      }
+    },
+    []
+  );
+
+  const onAcknowledge = useCallback(
+    async (evalId: string) => {
+      setAckId(evalId);
+      try {
+        const { error } = await supabase.rpc('acknowledge_staff_management_evaluation', {
+          p_eval_id: evalId,
+        });
+        if (error) throw error;
+        if (staffId) await loadMgmt(staffId);
+      } catch (e) {
+        Alert.alert(t('error'), (e as Error)?.message ?? '');
+      }
+      setAckId(null);
+    },
+    [staffId, loadMgmt, t]
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -49,6 +97,7 @@ export default function StaffEvaluationScreen() {
           .select('id, rating, comment, created_at')
           .eq('staff_id', staffId)
           .order('created_at', { ascending: false });
+        await loadMgmt(staffId);
         if (cancelled) return;
         setProfile((res.data as EvalProfile) ?? null);
         setReviews((r ?? []) as ReviewRow[]);
@@ -57,7 +106,7 @@ export default function StaffEvaluationScreen() {
       return () => {
         cancelled = true;
       };
-    }, [staffId])
+    }, [staffId, loadMgmt])
   );
 
   if (!staffId) {
@@ -106,6 +155,15 @@ export default function StaffEvaluationScreen() {
           onOpenAllReviews={() => setReviewsModalVisible(true)}
           formatReviewDate={(iso) => formatDateShort(iso)}
         />
+        <View style={styles.mgmtBlock}>
+          <StaffManagementEvaluationCards
+            rows={mgmtRows}
+            evaluatorNames={evaluatorNames}
+            showAcknowledge
+            onAcknowledge={onAcknowledge}
+            acknowledgingId={ackId}
+          />
+        </View>
       </ScrollView>
       <StaffReviewsFullModal
         visible={reviewsModalVisible}
@@ -129,5 +187,8 @@ const styles = StyleSheet.create({
     padding: theme.spacing.lg,
     paddingBottom: theme.spacing.xxl,
     backgroundColor: theme.colors.backgroundSecondary,
+  },
+  mgmtBlock: {
+    marginTop: theme.spacing.xl,
   },
 });

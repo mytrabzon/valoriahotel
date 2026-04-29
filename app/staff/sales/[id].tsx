@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { theme } from '@/constants/theme';
 import { useAuthStore } from '@/stores/authStore';
 import { canAccessReservationSales } from '@/lib/staffPermissions';
+import { useTranslation } from 'react-i18next';
 
 type SaleDetail = {
   id: string;
@@ -66,6 +67,7 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 export default function SaleDetailScreen() {
+  const { t } = useTranslation();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const staff = useAuthStore((s) => s.staff);
@@ -101,7 +103,7 @@ export default function SaleDetailScreen() {
   useEffect(() => {
     setLoading(true);
     load()
-      .catch((e) => Alert.alert('Hata', (e as Error)?.message ?? 'Kayıt yüklenemedi.'))
+      .catch((e) => Alert.alert(t('error'), (e as Error)?.message ?? t('recordError')))
       .finally(() => setLoading(false));
   }, [load]);
 
@@ -127,7 +129,7 @@ export default function SaleDetailScreen() {
         if (error) throw error;
         await load();
       } catch (e) {
-        Alert.alert('Hata', (e as Error)?.message ?? 'Güncellenemedi.');
+        Alert.alert(t('error'), (e as Error)?.message ?? t('recordError'));
       } finally {
         setSaving(false);
       }
@@ -235,12 +237,12 @@ export default function SaleDetailScreen() {
           <TouchableOpacity
             style={[styles.actionBtn, styles.actionBtnPrimary]}
             onPress={() =>
-              Alert.alert('Komisyon durumu', 'Seçiniz', [
-                { text: 'Beklemede', onPress: () => setCommissionStatus('pending') },
-                { text: 'Onaylandı', onPress: () => setCommissionStatus('approved') },
-                { text: 'Ödendi', onPress: () => setCommissionStatus('paid') },
-                { text: 'Reddedildi', style: 'destructive', onPress: () => setCommissionStatus('rejected') },
-                { text: 'Vazgeç', style: 'cancel' },
+              Alert.alert(t('status'), t('required'), [
+                { text: t('pendingApproval'), onPress: () => setCommissionStatus('pending') },
+                { text: t('approved'), onPress: () => setCommissionStatus('approved') },
+                { text: t('save'), onPress: () => setCommissionStatus('paid') },
+                { text: t('rejected'), style: 'destructive', onPress: () => setCommissionStatus('rejected') },
+                { text: t('cancel'), style: 'cancel' },
               ])
             }
             activeOpacity={0.9}

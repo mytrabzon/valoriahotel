@@ -10,7 +10,11 @@ import {
   Modal,
   Pressable,
   Dimensions,
+  useWindowDimensions,
   ActivityIndicator,
+  RefreshControl,
+  Animated,
+  Easing,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -22,7 +26,7 @@ import { useTranslation } from 'react-i18next';
 import { LANGUAGES, LANG_STORAGE_KEY, type LangCode } from '@/i18n';
 import { applyRTLAndReloadIfNeeded } from '@/lib/reloadForRTL';
 import { supabase } from '@/lib/supabase';
-import { uriToArrayBuffer } from '@/lib/uploadMedia';
+import { uploadUriToPublicBucket } from '@/lib/storagePublicUpload';
 import { theme } from '@/constants/theme';
 import { CachedImage } from '@/components/CachedImage';
 import { AvatarWithBadge, StaffNameWithBadge } from '@/components/VerifiedBadge';
@@ -30,17 +34,27 @@ import { formatDateShort } from '@/lib/date';
 import { notifyAdmins } from '@/lib/notificationService';
 import { ensureMediaLibraryPermission } from '@/lib/mediaLibraryPermission';
 import { listBlockedUsersForStaff } from '@/lib/userBlocks';
-import { SharedAppLinks } from '@/components/SharedAppLinks';
 import { StaffEvaluationProfileTeaser } from '@/components/StaffEvaluationHub';
 import { resolveStaffEvaluation } from '@/lib/staffEvaluation';
 import { loadStaffProfileSelf } from '@/lib/loadStaffProfileForViewer';
-import { canAccessReservationSales } from '@/lib/staffPermissions';
+import { canAccessDocumentManagement, canAccessIncidentReports, canAccessReservationSales } from '@/lib/staffPermissions';
+import { canStaffUseMrzScan } from '@/lib/kbsMrzAccess';
+import { canSeeBreakfastModule } from '@/lib/breakfastConfirm';
+import { fetchMyStaffProfileVisits, type StaffProfileVisitRow } from '@/lib/staffProfileVisits';
+import { LinkifiedText } from '@/components/LinkifiedText';
+import { LinearGradient } from 'expo-linear-gradient';
+import { profileScreenTheme as P } from '@/constants/profileScreenTheme';
+import { ProfileStatsCard } from '@/components/ProfileStatsCard';
+import { ProfileCover } from '@/components/ProfileCover';
+import { loadStaffEngagementStats, type StaffEngagementStats } from '@/lib/staffEngagementStats';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const STAFF_COVER_BLOCK_HEIGHT = 228;
+const STAFF_HERO_HEIGHT = P.hero.height;
 
 type StaffProfile = {
   id: string;
+  created_at?: string | null;
+  tenure_note?: string | null;
   full_name: string | null;
   department: string | null;
   profile_image: string | null;
@@ -99,24 +113,182 @@ const LANGUAGE_FLAGS: Record<string, string> = {
   es: '🇪🇸',
 };
 
-type ActionBtn = { key: string; label: string; icon: keyof typeof Ionicons.glyphMap; route: string };
+type ActionBtn = {
+  key: string;
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  route: string;
+  accent: string;
+};
 
-const actionButtons = (t: (k: string) => string, authStaff: { role?: string; app_permissions?: Record<string, boolean> | null } | null): ActionBtn[] => {
-  const base: ActionBtn[] = [
+type QuickAccessActionCardProps = {
+  btn: ActionBtn;
+  openTaskCount: number;
+  onPress: () => void;
+};
+
+function QuickAccessActionCard({ btn, openTaskCount, onPress }: QuickAccessActionCardProps) {
+  const cardScale = useRef(new Animated.Value(1)).current;
+  const iconFloat = useRef(new Animated.Value(0)).current;
+  const acc = btn.accent;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(iconFloat, {
+          toValue: 1,
+          duration: 1200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(iconFloat, {
+          toValue: 0,
+          duration: 1200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [iconFloat]);
+
+  const handlePressIn = () => {
+    Animated.spring(cardScale, {
+      toValue: 0.97,
+      friction: 8,
+      tension: 180,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(cardScale, {
+      toValue: 1,
+      friction: 8,
+      tension: 180,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.9} onPressIn={handlePressIn} onPressOut={handlePressOut}>
+      <Animated.View
+        style={[
+          styles.quickAccessCard,
+          { borderColor: acc + '40', backgroundColor: acc + '12', borderLeftColor: acc, transform: [{ scale: cardScale }] },
+        ]}
+      >
+        {btn.key === 'gorevlerim' && openTaskCount > 0 ? (
+          <View style={styles.actionTaskBadge}>
+            <Text style={styles.actionTaskBadgeText}>{openTaskCount > 9 ? '9+' : openTaskCount}</Text>
+          </View>
+        ) : null}
+        <Animated.View
+          style={[
+            styles.quickAccessIcon,
+            {
+              backgroundColor: acc + '26',
+              transform: [{ translateY: iconFloat.interpolate({ inputRange: [0, 1], outputRange: [0, -2] }) }],
+            },
+          ]}
+        >
+          <Ionicons name={btn.icon} size={18} color={acc} />
+        </Animated.View>
+        <Text style={styles.quickAccessLabel} numberOfLines={2}>
+          {btn.label}
+        </Text>
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
+
+/** Hızlı erişim kartları — okunaklı, canlı tonlar */
+const ACTION_ACCENTS: Record<string, string> = {
+  gorevlerim: '#2563eb',
+  acil_durum: '#dc2626',
+  gorev_ata_panel: '#db2777',
+  kahvalti_teyit: '#ea580c',
+  satis_komisyon: '#10b981',
+  dokuman_yonetimi: '#4f46e5',
+  tutanak_olustur: '#7c3aed',
+  yarin_temizlik_listesi: '#0f766e',
+  demirbaslar: '#7c3aed',
+  stok: '#059669',
+  stoklarim: '#0d9488',
+  harcamalar: '#d97706',
+  pasaportlar_mrz: '#ca8a04',
+  personel_sikayet: '#b45309',
+};
+
+const actionButtons = (
+  t: (k: string) => string,
+  ui: ReturnType<typeof getStaffProfileUiCopy>,
+  staffLike: {
+    role?: string | null;
+    kbs_access_enabled?: boolean;
+    app_permissions?: Record<string, boolean> | null;
+  } | null
+): ActionBtn[] => {
+  const defAccent = String(theme.colors.primary);
+  const base: Omit<ActionBtn, 'accent'>[] = [
+    { key: 'acil_durum', label: t('screenEmergencyButton'), icon: 'warning-outline', route: '/staff/emergency' },
     { key: 'gorevlerim', label: t('tasks'), icon: 'checkbox', route: '/staff/tasks' },
+    { key: 'personel_sikayet', label: ui.staffComplaint, icon: 'alert-circle-outline', route: '/staff/internal-complaints/new' },
+    { key: 'demirbaslar', label: ui.fixedAssets, icon: 'library-outline', route: '/staff/demirbaslar' },
     { key: 'stok', label: t('stockTab'), icon: 'cube', route: '/staff/stock' },
     { key: 'stoklarim', label: t('myStocks'), icon: 'list', route: '/staff/stock/my-movements' },
     { key: 'harcamalar', label: t('expenses'), icon: 'wallet-outline', route: '/staff/expenses' },
   ];
-  if (canAccessReservationSales(authStaff)) {
+  if (canAccessDocumentManagement(staffLike)) {
+    base.splice(1, 0, {
+      key: 'dokuman_yonetimi',
+      label: ui.documentManagement,
+      icon: 'folder-open-outline',
+      route: '/staff/documents',
+    });
+  }
+  if (canAccessIncidentReports(staffLike)) {
+    base.splice(1, 0, {
+      key: 'tutanak_olustur',
+      label: ui.incidentCreate,
+      icon: 'document-text-outline',
+      route: '/staff/incident-reports/new',
+    });
+  }
+  if (canAccessReservationSales(staffLike)) {
     base.splice(1, 0, {
       key: 'satis_komisyon',
-      label: 'Satış & Komisyon',
+      label: ui.salesCommission,
       icon: 'cash-outline',
       route: '/staff/sales',
     });
   }
-  if (authStaff?.app_permissions?.gorev_ata && authStaff.role !== 'admin') {
+  if (canSeeBreakfastModule(staffLike)) {
+    base.splice(1, 0, {
+      key: 'kahvalti_teyit',
+      label: ui.breakfastUpload,
+      icon: 'cafe-outline',
+      route: '/staff/breakfast-confirm',
+    });
+  }
+  if (staffLike?.app_permissions?.yarin_oda_temizlik_listesi || staffLike?.role === 'admin') {
+    base.splice(1, 0, {
+      key: 'yarin_temizlik_listesi',
+      label: ui.cleaningPlan,
+      icon: 'checkbox-outline',
+      route: '/admin/rooms/cleaning-plan',
+    });
+  }
+  if (canStaffUseMrzScan(staffLike)) {
+    base.splice(1, 0, {
+      key: 'pasaportlar_mrz',
+      label: t('staffPassportsTitle'),
+      icon: 'id-card-outline',
+      route: '/staff/profile/passports',
+    });
+  }
+  if (staffLike?.app_permissions?.gorev_ata && staffLike.role !== 'admin') {
     base.splice(1, 0, {
       key: 'gorev_ata_panel',
       label: t('taskAssignmentPanel'),
@@ -124,14 +296,20 @@ const actionButtons = (t: (k: string) => string, authStaff: { role?: string; app
       route: '/admin/tasks',
     });
   }
-  return base;
+  return base.map((b) => ({ ...b, accent: ACTION_ACCENTS[b.key] ?? defAccent }));
 };
+
+function staffSelfTabCacheKey(staffId: string) {
+  return `staff_tab_self_v1_${staffId}`;
+}
 
 export default function StaffProfileScreen() {
   const router = useRouter();
+  const { width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { t, i18n } = useTranslation();
-  const { staff: authStaff, signOut } = useAuthStore();
+  const ui = getStaffProfileUiCopy(i18n.language);
+  const { staff: authStaff, signOut, loadSession } = useAuthStore();
   const [profile, setProfile] = useState<StaffProfile | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadingCover, setUploadingCover] = useState(false);
@@ -143,7 +321,19 @@ export default function StaffProfileScreen() {
   const [blockedCount, setBlockedCount] = useState(0);
   const [languageModalVisible, setLanguageModalVisible] = useState(false);
   const [openTaskCount, setOpenTaskCount] = useState(0);
+  const [engagement, setEngagement] = useState<StaffEngagementStats>({ posts: 0, likes: 0, comments: 0, visits: 0 });
+  const [profileSectionTab, setProfileSectionTab] = useState<'main' | 'visitors'>('main');
+  const [profileVisits, setProfileVisits] = useState<StaffProfileVisitRow[]>([]);
+  const [profileVisitsLoading, setProfileVisitsLoading] = useState(false);
+  const [profileVisitsRefreshing, setProfileVisitsRefreshing] = useState(false);
+  const [tenureModalVisible, setTenureModalVisible] = useState(false);
+  const [todayAnchor, setTodayAnchor] = useState(() => Date.now());
   const profileRef = useRef<StaffProfile | null>(null);
+  const profileSectionTabRef = useRef(profileSectionTab);
+  /** İlk yükleme ile useFocusEffect çift fetch yapmasın */
+  const lastInitialLoadAtRef = useRef(0);
+  const lastProfileFocusSyncRef = useRef(0);
+  const lastVisitorsFocusLoadRef = useRef(0);
 
   const handleLanguageSelect = async (code: LangCode) => {
     i18n.changeLanguage(code);
@@ -157,26 +347,78 @@ export default function StaffProfileScreen() {
   }, [profile]);
 
   useEffect(() => {
-    if (!authStaff?.id) return;
-    const load = async () => {
-      const res = await loadStaffProfileSelf(authStaff.id);
-      if (res.data) {
-        const data = res.data;
-        setProfile({ ...data, shift: null } as StaffProfile);
-        if (data.shift_id) {
-          const { data: shift } = await supabase.from('shifts').select('start_time, end_time').eq('id', data.shift_id).single();
-          setProfile((p) => (p ? { ...p, shift } : null));
-        }
-      }
-      const { data: sal } = await supabase
-        .from('salary_payments')
-        .select('id, period_month, period_year, amount, payment_date, status, staff_approved_at, staff_rejected_at, rejection_reason')
-        .eq('staff_id', authStaff.id)
-        .order('period_year', { ascending: false })
-        .order('period_month', { ascending: false });
-      setSalaryPayments((sal ?? []) as SalaryPaymentRow[]);
+    profileSectionTabRef.current = profileSectionTab;
+  }, [profileSectionTab]);
+
+  useEffect(() => {
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setHours(24, 0, 0, 0);
+    const delay = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const timeout = setTimeout(() => {
+      setTodayAnchor(Date.now());
+      interval = setInterval(() => setTodayAnchor(Date.now()), 24 * 60 * 60 * 1000);
+    }, delay);
+    return () => {
+      clearTimeout(timeout);
+      if (interval) clearInterval(interval);
     };
-    load();
+  }, []);
+
+  useEffect(() => {
+    if (!authStaff?.id) return;
+    lastProfileFocusSyncRef.current = Date.now();
+    let cancelled = false;
+    const key = staffSelfTabCacheKey(authStaff.id);
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(key);
+        if (raw && !cancelled) {
+          const parsed = JSON.parse(raw) as { profile?: StaffProfile; salaryPayments?: SalaryPaymentRow[] };
+          if (parsed.profile && typeof parsed.profile === 'object') {
+            setProfile(parsed.profile);
+          }
+          if (Array.isArray(parsed.salaryPayments)) {
+            setSalaryPayments(parsed.salaryPayments);
+          }
+        }
+      } catch (_) {}
+
+      const load = async () => {
+        const res = await loadStaffProfileSelf(authStaff.id);
+        let nextProfile: StaffProfile | null = null;
+        if (res.data) {
+          const data = res.data;
+          nextProfile = { ...data, shift: null } as StaffProfile;
+          if (!cancelled) setProfile(nextProfile);
+          if (data.shift_id) {
+            const { data: shift } = await supabase.from('shifts').select('start_time, end_time').eq('id', data.shift_id).single();
+            nextProfile = nextProfile ? { ...nextProfile, shift } : null;
+            if (!cancelled && nextProfile) setProfile(nextProfile);
+          }
+        }
+        const { data: sal } = await supabase
+          .from('salary_payments')
+          .select('id, period_month, period_year, amount, payment_date, status, staff_approved_at, staff_rejected_at, rejection_reason')
+          .eq('staff_id', authStaff.id)
+          .order('period_year', { ascending: false })
+          .order('period_month', { ascending: false });
+        const salRows = (sal ?? []) as SalaryPaymentRow[];
+        if (!cancelled) setSalaryPayments(salRows);
+        if (!cancelled && nextProfile) {
+          AsyncStorage.setItem(key, JSON.stringify({ profile: nextProfile, salaryPayments: salRows })).catch(() => {});
+        }
+        if (!cancelled) {
+          lastInitialLoadAtRef.current = Date.now();
+          lastProfileFocusSyncRef.current = lastInitialLoadAtRef.current;
+        }
+      };
+      await load();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [authStaff?.id]);
 
   const pickImage = async () => {
@@ -198,14 +440,11 @@ export default function StaffProfileScreen() {
       });
       if (result.canceled || !result.assets[0]?.uri) return;
       setUploading(true);
-      const arrayBuffer = await uriToArrayBuffer(result.assets[0].uri);
-      const fileName = `staff/${profile.id}/${Date.now()}.jpg`;
-      const { error } = await supabase.storage.from('profiles').upload(fileName, arrayBuffer, {
-        contentType: 'image/jpeg',
-        upsert: true,
+      const { publicUrl } = await uploadUriToPublicBucket({
+        bucketId: 'profiles',
+        uri: result.assets[0].uri,
+        subfolder: `staff/${profile.id}`,
       });
-      if (error) throw error;
-      const { data: { publicUrl } } = supabase.storage.from('profiles').getPublicUrl(fileName);
       await supabase.from('staff').update({ profile_image: publicUrl }).eq('id', profile.id);
       setProfile((p) => (p ? { ...p, profile_image: publicUrl } : null));
     } catch (e) {
@@ -222,6 +461,14 @@ export default function StaffProfileScreen() {
     } else {
       pickImage();
     }
+  };
+
+  const onCoverPress = () => {
+    if (profile?.cover_image) {
+      setCoverImageViewVisible(true);
+      return;
+    }
+    pickCoverImage();
   };
 
   const pickCoverImage = async () => {
@@ -243,14 +490,11 @@ export default function StaffProfileScreen() {
       });
       if (result.canceled || !result.assets[0]?.uri) return;
       setUploadingCover(true);
-      const arrayBuffer = await uriToArrayBuffer(result.assets[0].uri);
-      const fileName = `staff/${profile.id}/cover_${Date.now()}.jpg`;
-      const { error } = await supabase.storage.from('profiles').upload(fileName, arrayBuffer, {
-        contentType: 'image/jpeg',
-        upsert: true,
+      const { publicUrl } = await uploadUriToPublicBucket({
+        bucketId: 'profiles',
+        uri: result.assets[0].uri,
+        subfolder: `staff/${profile.id}/cover`,
       });
-      if (error) throw error;
-      const { data: { publicUrl } } = supabase.storage.from('profiles').getPublicUrl(fileName);
       await supabase.from('staff').update({ cover_image: publicUrl }).eq('id', profile.id);
       setProfile((p) => (p ? { ...p, cover_image: publicUrl } : null));
     } catch (e) {
@@ -264,13 +508,22 @@ export default function StaffProfileScreen() {
     if (!profile) return;
     const { error } = await supabase
       .from('staff')
-      .update({ is_online: value, last_active: new Date().toISOString() })
+      .update({ is_online: value, work_status: value ? 'online' : 'offline', last_active: new Date().toISOString() })
       .eq('id', profile.id);
     if (error) {
-      Alert.alert(t('error'), 'Durum güncellenemedi. Lütfen tekrar deneyin.');
+      Alert.alert(t('error'), t('recordError'));
       return;
     }
     setProfile((p) => (p ? { ...p, is_online: value } : null));
+    try {
+      const key = staffSelfTabCacheKey(profile.id);
+      const raw = await AsyncStorage.getItem(key);
+      const parsed = raw ? (JSON.parse(raw) as { profile?: StaffProfile; salaryPayments?: SalaryPaymentRow[] }) : {};
+      const nextProfile = parsed.profile ? { ...parsed.profile, is_online: value } : { ...profile, is_online: value };
+      await AsyncStorage.setItem(key, JSON.stringify({ profile: nextProfile, salaryPayments: parsed.salaryPayments ?? salaryPayments }));
+    } catch {
+      // cache yazımı başarısız olsa da akış bozulmasın
+    }
   };
 
   const approveSalary = async (paymentId: string) => {
@@ -291,7 +544,7 @@ export default function StaffProfileScreen() {
     const paid = salaryPayments.find((x) => x.id === paymentId);
     if (paid) {
       notifyAdmins({
-        title: 'Maaş onayı',
+        title: t('approved'),
         body: `${profile?.full_name ?? 'Personel'} maaşını onayladı. Dönem: ${MONTH_NAMES[paid.period_month - 1]} ${paid.period_year} – ${fmtMoney(Number(paid.amount))}`,
         data: { screen: '/admin/salary' },
       }).catch(() => {});
@@ -300,12 +553,12 @@ export default function StaffProfileScreen() {
 
   const rejectSalary = (paymentId: string) => {
     Alert.alert(
-      'Reddet (İtiraz)',
-      'Maaş ödemesini reddedeceksiniz. Admin bilgilendirilecek.',
+      t('rejectAppeal'),
+      t('pendingSalaryNotice'),
       [
-        { text: 'İptal', style: 'cancel' },
+        { text: t('cancel'), style: 'cancel' },
         {
-          text: 'Reddet',
+          text: t('rejectAppeal'),
           style: 'destructive',
           onPress: async () => {
             setSalaryActingId(paymentId);
@@ -325,7 +578,7 @@ export default function StaffProfileScreen() {
             const paid = salaryPayments.find((x) => x.id === paymentId);
             if (paid) {
               notifyAdmins({
-                title: 'Maaş reddedildi',
+                title: t('rejected'),
                 body: `${profile?.full_name ?? 'Personel'} maaşını reddetti. Dönem: ${MONTH_NAMES[paid.period_month - 1]} ${paid.period_year} – ${fmtMoney(Number(paid.amount))}`,
                 data: { screen: '/admin/salary' },
               }).catch(() => {});
@@ -356,14 +609,22 @@ export default function StaffProfileScreen() {
 
   const reloadProfile = useCallback(async () => {
     if (!authStaff?.id) return;
+    const key = staffSelfTabCacheKey(authStaff.id);
     const res = await loadStaffProfileSelf(authStaff.id);
     if (res.data) {
       const data = res.data;
-      setProfile({ ...data, shift: null } as StaffProfile);
+      let next: StaffProfile = { ...data, shift: null } as StaffProfile;
+      setProfile(next);
       if (data.shift_id) {
         const { data: shift } = await supabase.from('shifts').select('start_time, end_time').eq('id', data.shift_id).single();
+        next = { ...next, shift };
         setProfile((p) => (p ? { ...p, shift } : null));
       }
+      try {
+        const raw = await AsyncStorage.getItem(key);
+        const sp = (raw ? JSON.parse(raw) : {}) as { salaryPayments?: SalaryPaymentRow[] };
+        await AsyncStorage.setItem(key, JSON.stringify({ profile: next, salaryPayments: sp.salaryPayments ?? [] }));
+      } catch (_) {}
     }
   }, [authStaff?.id]);
 
@@ -384,15 +645,59 @@ export default function StaffProfileScreen() {
     }
   }, [authStaff?.id]);
 
+  const refreshEngagement = useCallback(async () => {
+    if (!authStaff?.id) {
+      setEngagement({ posts: 0, likes: 0, comments: 0, visits: 0 });
+      return;
+    }
+    const stats = await loadStaffEngagementStats(authStaff.id);
+    setEngagement(stats);
+  }, [authStaff?.id]);
+
+  const loadProfileVisits = useCallback(
+    async (mode: 'initial' | 'refresh' = 'initial') => {
+      if (!authStaff?.id) return;
+      if (mode === 'refresh') setProfileVisitsRefreshing(true);
+      else setProfileVisitsLoading(true);
+      try {
+        const { rows, error } = await fetchMyStaffProfileVisits(200);
+        if (!error) setProfileVisits(rows);
+      } finally {
+        setProfileVisitsLoading(false);
+        setProfileVisitsRefreshing(false);
+      }
+    },
+    [authStaff?.id]
+  );
+
   useFocusEffect(
     useCallback(() => {
-      reloadProfile();
-      refreshOpenTaskCount();
-      if (authStaff?.id) {
-        listBlockedUsersForStaff(authStaff.id).then((rows) => setBlockedCount(rows.length));
+      const now = Date.now();
+      const stale = now - lastProfileFocusSyncRef.current > 60_000;
+      if (stale) {
+        lastProfileFocusSyncRef.current = now;
+        void loadSession();
+        reloadProfile();
+        if (authStaff?.id) {
+          listBlockedUsersForStaff(authStaff.id).then((rows) => setBlockedCount(rows.length));
+        }
       }
-    }, [reloadProfile, refreshOpenTaskCount, authStaff?.id])
+      void refreshOpenTaskCount();
+      void refreshEngagement();
+      if (profileSectionTabRef.current === 'visitors') {
+        if (now - lastVisitorsFocusLoadRef.current > 30_000) {
+          lastVisitorsFocusLoadRef.current = now;
+          loadProfileVisits('initial');
+        }
+      }
+    }, [reloadProfile, refreshOpenTaskCount, refreshEngagement, authStaff?.id, loadProfileVisits, loadSession])
   );
+
+  useEffect(() => {
+    if (profileSectionTab === 'visitors' && authStaff?.id) {
+      loadProfileVisits('initial');
+    }
+  }, [profileSectionTab, authStaff?.id, loadProfileVisits]);
 
   if (!profile) {
     return (
@@ -400,7 +705,40 @@ export default function StaffProfileScreen() {
     );
   }
 
+  /** Profil cache'te `{}` veya eksik yetki olabiliyor; oturumdaki app_permissions ile birleştir. */
+  const mergedAppPermissions = (() => {
+    const a =
+      authStaff?.app_permissions && typeof authStaff.app_permissions === 'object' && !Array.isArray(authStaff.app_permissions)
+        ? (authStaff.app_permissions as Record<string, boolean>)
+        : {};
+    const b =
+      profile.app_permissions && typeof profile.app_permissions === 'object' && !Array.isArray(profile.app_permissions)
+        ? (profile.app_permissions as Record<string, boolean>)
+        : {};
+    const merged = { ...a, ...b };
+    return Object.keys(merged).length ? merged : null;
+  })();
+
+  const staffForButtons = {
+    role: authStaff?.role ?? null,
+    kbs_access_enabled: authStaff?.kbs_access_enabled,
+    department: profile.department ?? authStaff?.department ?? null,
+    app_permissions: mergedAppPermissions,
+  };
+
   const avatarUri = profile.profile_image || 'https://via.placeholder.com/120';
+  const joinDateIso = profile.hire_date ?? profile.created_at;
+  const daysWithUs = joinDateIso ? calculateDaysWithUs(joinDateIso, todayAnchor) : null;
+  const tenureCopy = getTenureCopy(i18n.language, daysWithUs ?? 0);
+  const tenureSubtitle = profile.tenure_note?.trim() || tenureCopy.subtitle;
+  const tenureTimeline = joinDateIso ? buildTenureTimeline(joinDateIso, todayAnchor) : [];
+
+  const statItems = [
+    { value: engagement.posts, label: ui.statsPosts },
+    { value: engagement.likes, label: ui.statsLikes },
+    { value: engagement.comments, label: ui.statsComments },
+    { value: engagement.visits, label: ui.statsVisits },
+  ];
 
   return (
     <View style={styles.container}>
@@ -408,124 +746,248 @@ export default function StaffProfileScreen() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 28 }}
+        contentContainerStyle={{
+          paddingBottom: insets.bottom + 28,
+          width: windowWidth,
+          minWidth: windowWidth,
+          alignItems: 'stretch',
+        }}
+        refreshControl={
+          profileSectionTab === 'visitors' ? (
+            <RefreshControl
+              refreshing={profileVisitsRefreshing}
+              onRefresh={() => loadProfileVisits('refresh')}
+              tintColor={theme.colors.primary}
+            />
+          ) : undefined
+        }
       >
-        <View style={[styles.coverBlock, styles.coverBlockFixed]}>
-          <View style={styles.coverImageClip}>
-            <TouchableOpacity
-              style={StyleSheet.absoluteFill}
-              onPress={() => {
-                if (uploadingCover) return;
-                if (profile.cover_image) setCoverImageViewVisible(true);
-                else pickCoverImage();
-              }}
-              activeOpacity={1}
-            >
-              {profile.cover_image ? (
-                <CachedImage uri={profile.cover_image} style={StyleSheet.absoluteFill} contentFit="cover" />
-              ) : (
-                <View style={styles.coverPlaceholder}>
-                  <Ionicons name="image-outline" size={40} color={theme.colors.textMuted} />
-                  <Text style={styles.coverPlaceholderText}>{t('uploadCoverPhoto')}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-            {uploadingCover && (
+        <View style={styles.coverBlock}>
+          <ProfileCover
+            imageUri={profile.cover_image}
+            height={STAFF_HERO_HEIGHT + 16}
+            onPress={onCoverPress}
+            disabled={uploadingCover}
+          >
+            <View style={styles.heroBackdropOrbA} />
+            <View style={styles.heroBackdropOrbB} />
+            <View style={styles.heroBackdropOrbC} />
+            {uploadingCover ? (
               <View style={styles.coverUploadOverlay}>
-                <Text style={styles.uploadText}>{t('loading')}</Text>
+                <ActivityIndicator color={theme.colors.white} size="small" />
               </View>
-            )}
-          </View>
-          {!uploadingCover && (
-            <TouchableOpacity
-              style={styles.coverEditBtn}
-              onPress={pickCoverImage}
-              activeOpacity={0.9}
-            >
-              <Ionicons name="camera" size={20} color={theme.colors.white} />
-            </TouchableOpacity>
-          )}
+            ) : null}
+          </ProfileCover>
+          <TouchableOpacity style={styles.coverEditBtn} onPress={pickCoverImage} activeOpacity={0.85}>
+            <Ionicons name="camera-outline" size={20} color={theme.colors.white} />
+          </TouchableOpacity>
         </View>
 
         <View style={styles.heroOverlap}>
-          <View style={styles.heroCard}>
-            <TouchableOpacity onPress={onAvatarPress} disabled={uploading} activeOpacity={0.92} style={styles.heroAvatarWrap}>
-              <AvatarWithBadge badge={profile.verification_badge ?? null} avatarSize={88} badgeSize={18} showBadge={false}>
+
+          <TouchableOpacity onPress={onAvatarPress} disabled={uploading} activeOpacity={0.92} style={styles.heroAvatarWrap}>
+            <View style={styles.heroAvatarShadow}>
+              <AvatarWithBadge badge={profile.verification_badge ?? null} avatarSize={P.avatar.size} badgeSize={18} showBadge={false}>
                 <CachedImage uri={avatarUri} style={styles.heroAvatarImg} contentFit="cover" />
               </AvatarWithBadge>
-              {uploading ? (
-                <View style={styles.heroAvatarOverlay}>
-                  <ActivityIndicator color={theme.colors.white} size="small" />
-                </View>
-              ) : null}
-              <TouchableOpacity style={styles.heroAvatarCam} onPress={(e) => { e.stopPropagation(); pickImage(); }} disabled={uploading}>
-                <Ionicons name="camera" size={16} color={theme.colors.white} />
-              </TouchableOpacity>
-            </TouchableOpacity>
-            <StaffNameWithBadge name={profile.full_name || '—'} badge={profile.verification_badge ?? null} badgeSize={20} textStyle={styles.heroName} center />
-            {authStaff?.organization?.name ? (
-              <Text style={styles.heroOrgTag} numberOfLines={1}>
-                {authStaff.organization.name}
-              </Text>
+            </View>
+            {uploading ? (
+              <View style={styles.heroAvatarOverlay}>
+                <ActivityIndicator color={theme.colors.white} size="small" />
+              </View>
             ) : null}
-            <Text style={styles.heroSubtitle} numberOfLines={2}>
-              {[profile.position?.trim(), profile.department?.trim()].filter(Boolean).join(' · ') || t('unspecified')}
-            </Text>
-            <TouchableOpacity style={styles.heroEditCta} onPress={() => router.push('/staff/profile/edit')} activeOpacity={0.88}>
-              <Ionicons name="create-outline" size={20} color={theme.colors.white} />
-              <Text style={styles.heroEditCtaText}>{t('editProfileInfo')}</Text>
+            <TouchableOpacity style={styles.heroAvatarCam} onPress={(e) => { e.stopPropagation(); pickImage(); }} disabled={uploading}>
+              <Ionicons name="camera" size={16} color={theme.colors.white} />
             </TouchableOpacity>
-            <Text style={styles.heroEditHint}>{t('editProfileHint')}</Text>
+          </TouchableOpacity>
+          <StaffNameWithBadge
+            name={profile.full_name || '—'}
+            badge={profile.verification_badge ?? null}
+            badgeSize={20}
+            textStyle={styles.heroName}
+            center
+          />
+          {authStaff?.organization?.name ? (
+            <Text style={styles.heroOrgTag} numberOfLines={1}>
+              {authStaff.organization.name}
+            </Text>
+          ) : null}
+          <Text style={styles.heroSubtitle} numberOfLines={2}>
+            {[profile.position?.trim(), profile.department?.trim()].filter(Boolean).join(' · ') || t('unspecified')}
+          </Text>
+          {daysWithUs != null ? (
+            <TouchableOpacity activeOpacity={0.9} style={styles.tenureButtonWrap} onPress={() => setTenureModalVisible(true)}>
+              <LinearGradient
+                colors={['#0f766e', '#0ea5e9']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.tenureButton}
+              >
+                <View style={styles.tenureBadge}>
+                  <Ionicons name="ribbon-outline" size={14} color="#fff" />
+                  <Text style={styles.tenureBadgeText}>{tenureCopy.badge}</Text>
+                </View>
+                <Text style={styles.tenureButtonText}>{tenureCopy.headline}</Text>
+                <Text style={styles.tenureButtonSubText}>{tenureSubtitle}</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          ) : null}
+          <View style={styles.heroOnlineRow}>
+            <View style={[styles.heroOnlineDot, profile.is_online && styles.heroOnlineDotOn]} />
+            <Text style={styles.heroOnlineText}>{profile.is_online ? t('online') : t('offlineStatus')}</Text>
           </View>
+          <View style={styles.statsWrap}>
+            <ProfileStatsCard items={statItems} />
+          </View>
+          <TouchableOpacity
+            onPress={() => router.push('/staff/profile/edit')}
+            activeOpacity={0.88}
+            style={styles.heroEditCtaOuter}
+          >
+            <LinearGradient
+              colors={[P.gradient.start, P.gradient.end]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.heroEditCtaGrad}
+            >
+              <Ionicons name="create-outline" size={20} color="#fff" />
+              <Text style={styles.heroEditCtaText}>{t('editProfileInfo')}</Text>
+            </LinearGradient>
+          </TouchableOpacity>
+          <Text style={styles.heroEditHint}>{t('editProfileHint')}</Text>
         </View>
 
-        <View style={styles.body}>
-          <Text style={styles.pageSectionLabel}>{t('quickAccess')}</Text>
-          <View style={styles.menuCard}>
-            {actionButtons(t, authStaff).map((btn, i, arr) => (
-              <TouchableOpacity
-                key={btn.key}
-                style={[styles.menuRow, i === arr.length - 1 && styles.menuRowLast]}
-                onPress={() => router.push(btn.route as never)}
-                activeOpacity={0.75}
-              >
-                <View style={styles.menuIconCircle}>
-                  <Ionicons name={btn.icon} size={22} color={theme.colors.primary} />
-                </View>
-                <Text style={styles.menuRowTitle}>{btn.label}</Text>
-                {btn.key === 'gorevlerim' && openTaskCount > 0 ? (
-                  <View style={styles.menuBadge}>
-                    <Text style={styles.menuBadgeText}>{openTaskCount > 9 ? '9+' : openTaskCount}</Text>
+        <View style={styles.profileTabRow}>
+          <TouchableOpacity
+            style={[styles.profileTabBtn, profileSectionTab === 'main' && styles.profileTabBtnActive]}
+            onPress={() => setProfileSectionTab('main')}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.profileTabLabel, profileSectionTab === 'main' && styles.profileTabLabelActive]} numberOfLines={1}>
+              {t('profileMainTab')}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.profileTabBtn, profileSectionTab === 'visitors' && styles.profileTabBtnActive]}
+            onPress={() => setProfileSectionTab('visitors')}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.profileTabLabel, profileSectionTab === 'visitors' && styles.profileTabLabelActive]} numberOfLines={1}>
+              {t('profileVisitorsTab')}
+            </Text>
+          </TouchableOpacity>
+          {authStaff?.id ? (
+            <TouchableOpacity
+              style={styles.profileTabBtn}
+              onPress={() => router.push({ pathname: '/staff/staff-posts/[id]', params: { id: authStaff.id } } as never)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.profileTabLabel} numberOfLines={1}>
+                {t('profileFeedPostsSection')}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+
+        {salaryPayments.some((p) => p.status === 'pending_approval') ? (
+          <View style={styles.pendingSalaryTabArea}>
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>⏳ {t('pendingSalaryNotice')}</Text>
+              {salaryPayments
+                .filter((p) => p.status === 'pending_approval')
+                .map((p) => (
+                  <View key={p.id} style={styles.pendingSalaryBlock}>
+                    <Text style={styles.pendingSalaryText}>🔔 {t('salaryDeposited')}: {fmtMoney(Number(p.amount))} ({formatDateShort(p.payment_date)})</Text>
+                    <Text style={styles.pendingSalaryHint}>{t('pleaseReview')}</Text>
+                    <View style={styles.pendingSalaryActions}>
+                      <TouchableOpacity
+                        style={[styles.pendingSalaryBtn, styles.pendingSalaryBtnApprove]}
+                        onPress={() => approveSalary(p.id)}
+                        disabled={salaryActingId === p.id}
+                      >
+                        {salaryActingId === p.id ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="checkmark" size={18} color="#fff" />
+                            <Text style={styles.pendingSalaryBtnText}>{t('approve')}</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.pendingSalaryBtn, styles.pendingSalaryBtnReject]}
+                        onPress={() => rejectSalary(p.id)}
+                        disabled={salaryActingId === p.id}
+                      >
+                        <Ionicons name="close" size={18} color="#fff" />
+                        <Text style={styles.pendingSalaryBtnText}>{t('rejectAppeal')}</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                ) : null}
-                <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
-              </TouchableOpacity>
+                ))}
+            </View>
+          </View>
+        ) : null}
+
+        {profileSectionTab === 'main' ? (
+        <View style={styles.body}>
+          {profile.bio?.trim() ? (
+            <>
+              <Text style={styles.pageSectionLabel}>{ui.aboutSection}</Text>
+              <View style={styles.menuCard}>
+                <View style={styles.aboutBlock}>
+                  <LinkifiedText text={profile.bio} textStyle={styles.aboutText} linkStyle={styles.aboutLink} />
+                </View>
+              </View>
+            </>
+          ) : null}
+
+          <Text style={styles.pageSectionLabel}>{t('quickAccess')}</Text>
+          <View style={styles.quickAccessGrid}>
+            {actionButtons(t, ui, staffForButtons).map((btn) => (
+              <QuickAccessActionCard key={btn.key} btn={btn} openTaskCount={openTaskCount} onPress={() => router.push(btn.route as never)} />
             ))}
           </View>
 
           {authStaff?.role === 'admin' ? (
             <>
               <Text style={styles.pageSectionLabel}>{t('adminShortcuts')}</Text>
-              <View style={styles.menuCard}>
+              <View style={styles.quickAccessGrid}>
                 {(
                   [
-                    { route: '/admin/expenses/all', icon: 'list-outline' as const, label: 'Tüm Harcamalar' },
-                    { route: '/admin/salary/all', icon: 'cash-outline' as const, label: 'Tüm Ödemeler' },
-                    { route: '/admin/contracts/all', icon: 'document-text-outline' as const, label: 'Tüm Sözleşmeler' },
-                    { route: '/admin/stock/all', icon: 'layers-outline' as const, label: 'Tüm Stoklar' },
+                    { route: '/staff/transfer-tour', icon: 'car-outline' as const, label: t('transferTourNavTitle'), accent: '#0ea5e9' },
+                    { route: '/staff/dining-venues', icon: 'restaurant-outline' as const, label: t('diningVenuesNavTitle'), accent: '#f59e0b' },
+                    { route: '/admin/local-area-guide', icon: 'map-outline' as const, label: ui.adminAreaGuide, accent: '#14b8a6' },
+                    { route: '/staff/breakfast-confirm', icon: 'camera-outline' as const, label: ui.breakfastUpload, accent: '#ea580c' },
+                    { route: '/admin/breakfast-confirm', icon: 'cafe-outline' as const, label: ui.breakfastRecords, accent: '#c2410c' },
+                    { route: '/admin/expenses/all', icon: 'list-outline' as const, label: ui.allExpenses, accent: '#d97706' },
+                    { route: '/admin/salary/all', icon: 'cash-outline' as const, label: ui.allPayments, accent: '#16a34a' },
+                    { route: '/admin/contracts/all', icon: 'document-text-outline' as const, label: ui.allContracts, accent: '#6366f1' },
+                    { route: '/admin/stock/all', icon: 'layers-outline' as const, label: ui.allStocks, accent: '#64748b' },
                   ] as const
-                ).map((item, i, arr) => (
+                ).map((item) => (
                   <TouchableOpacity
                     key={item.route}
-                    style={[styles.menuRow, i === arr.length - 1 && styles.menuRowLast]}
                     onPress={() => router.push(item.route as never)}
-                    activeOpacity={0.75}
+                    activeOpacity={0.9}
                   >
-                    <View style={styles.menuIconCircle}>
-                      <Ionicons name={item.icon} size={22} color={theme.colors.primary} />
+                    <View
+                      style={[
+                        styles.quickAccessCard,
+                        {
+                          borderColor: item.accent + '40',
+                          backgroundColor: item.accent + '12',
+                          borderLeftColor: item.accent,
+                        },
+                      ]}
+                    >
+                      <View style={[styles.quickAccessIcon, { backgroundColor: item.accent + '26' }]}>
+                        <Ionicons name={item.icon} size={18} color={item.accent} />
+                      </View>
+                      <Text style={styles.quickAccessLabel} numberOfLines={2}>
+                        {item.label}
+                      </Text>
                     </View>
-                    <Text style={styles.menuRowTitle}>{item.label}</Text>
-                    <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
                   </TouchableOpacity>
                 ))}
               </View>
@@ -538,7 +1000,7 @@ export default function StaffProfileScreen() {
               <View style={styles.menuCard}>
                 <TouchableOpacity style={[styles.menuRow, styles.menuRowLast]} onPress={() => router.push('/staff/contracts/all')} activeOpacity={0.75}>
                   <View style={styles.menuIconCircle}>
-                    <Ionicons name="document-text-outline" size={22} color={theme.colors.primary} />
+                    <Ionicons name="document-text-outline" size={22} color={P.accent.blue} />
                   </View>
                   <Text style={styles.menuRowTitle}>{t('contractsShortcut')}</Text>
                   <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
@@ -551,7 +1013,7 @@ export default function StaffProfileScreen() {
           <View style={styles.jobInfoCard}>
             <View style={styles.jobInfoRow}>
               <Text style={styles.jobInfoItem}>📌 {profile.department?.trim() || t('unspecified')}</Text>
-              <Text style={styles.jobInfoItem}>📅 {profile.hire_date ? new Date(profile.hire_date).toLocaleDateString('tr-TR') : t('unspecified')}</Text>
+              <Text style={styles.jobInfoItem}>📅 {profile.hire_date ? new Date(profile.hire_date).toLocaleDateString(i18n.language || 'en') : t('unspecified')}</Text>
             </View>
             <View style={[styles.jobInfoRow, styles.jobInfoRowLast]}>
               <Text style={styles.jobInfoItem}>📍 {profile.office_location?.trim() || t('unspecified')}</Text>
@@ -561,7 +1023,7 @@ export default function StaffProfileScreen() {
                 <Switch
                   value={profile.is_online ?? false}
                   onValueChange={updateOnline}
-                  trackColor={{ false: theme.colors.borderLight, true: theme.colors.primary }}
+                  trackColor={{ false: theme.colors.borderLight, true: P.gradient.start }}
                   thumbColor={theme.colors.surface}
                 />
               </View>
@@ -616,53 +1078,29 @@ export default function StaffProfileScreen() {
               </>
             )}
           </View>
-          {salaryPayments.some((p) => p.status === 'pending_approval') && (
-            <View style={styles.card}>
-              <Text style={styles.sectionTitle}>⏳ {t('pendingSalaryNotice')}</Text>
-              {salaryPayments
-                .filter((p) => p.status === 'pending_approval')
-                .map((p) => (
-                  <View key={p.id} style={styles.pendingSalaryBlock}>
-                    <Text style={styles.pendingSalaryText}>🔔 {t('salaryDeposited')}: {fmtMoney(Number(p.amount))} ({formatDateShort(p.payment_date)})</Text>
-                    <Text style={styles.pendingSalaryHint}>{t('pleaseReview')}</Text>
-                    <View style={styles.pendingSalaryActions}>
-                      <TouchableOpacity
-                        style={[styles.pendingSalaryBtn, styles.pendingSalaryBtnApprove]}
-                        onPress={() => approveSalary(p.id)}
-                        disabled={salaryActingId === p.id}
-                      >
-                        {salaryActingId === p.id ? (
-                          <ActivityIndicator size="small" color="#fff" />
-                        ) : (
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <Ionicons name="checkmark" size={18} color="#fff" />
-                            <Text style={styles.pendingSalaryBtnText}>{t('approve')}</Text>
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.pendingSalaryBtn, styles.pendingSalaryBtnReject]}
-                        onPress={() => rejectSalary(p.id)}
-                        disabled={salaryActingId === p.id}
-                      >
-                        <Ionicons name="close" size={18} color="#fff" />
-                        <Text style={styles.pendingSalaryBtnText}>{t('rejectAppeal')}</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                ))}
-            </View>
-          )}
-
           <Text style={styles.pageSectionLabel}>{t('account')}</Text>
           <View style={styles.menuCard}>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => router.push('/staff/missing-items')}
+              activeOpacity={0.75}
+            >
+              <View style={styles.menuIconCircle}>
+                <Ionicons name="alert-circle-outline" size={22} color={P.accent.blue} />
+              </View>
+              <View style={styles.menuRowTextCol}>
+                <Text style={styles.menuDetailTitle}>{t('screenMissingItems')}</Text>
+                <Text style={styles.menuDetailSub}>{ui.missingItemsSub}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
+            </TouchableOpacity>
             <TouchableOpacity
               style={styles.menuRow}
               onPress={() => setLanguageModalVisible(true)}
               activeOpacity={0.75}
             >
               <View style={styles.menuIconCircle}>
-                <Ionicons name="language-outline" size={22} color={theme.colors.primary} />
+                <Ionicons name="language-outline" size={22} color={P.accent.blue} />
               </View>
               <View style={styles.menuRowTextCol}>
                 <Text style={styles.menuDetailTitle}>{t('language')}</Text>
@@ -678,7 +1116,7 @@ export default function StaffProfileScreen() {
               activeOpacity={0.75}
             >
               <View style={styles.menuIconCircle}>
-                <Ionicons name="notifications-outline" size={22} color={theme.colors.primary} />
+                <Ionicons name="notifications-outline" size={22} color={P.accent.blue} />
               </View>
               <View style={styles.menuRowTextCol}>
                 <Text style={styles.menuDetailTitle}>{t('notificationPrefsShort')}</Text>
@@ -692,7 +1130,7 @@ export default function StaffProfileScreen() {
               activeOpacity={0.75}
             >
               <View style={styles.menuIconCircle}>
-                <Ionicons name="ban-outline" size={22} color={theme.colors.primary} />
+                <Ionicons name="ban-outline" size={22} color={P.accent.blue} />
               </View>
               <View style={styles.menuRowTextCol}>
                 <Text style={styles.menuDetailTitle}>{t('blockedUsersTitle')}</Text>
@@ -704,7 +1142,45 @@ export default function StaffProfileScreen() {
             </TouchableOpacity>
           </View>
 
-          <SharedAppLinks compact />
+          <Text style={styles.pageSectionLabel}>{ui.appsWebSection}</Text>
+          <View style={styles.menuCard}>
+            <TouchableOpacity
+              style={[styles.menuRow, styles.menuRowLast]}
+              onPress={() => router.push('/staff/profile/app-links' as never)}
+              activeOpacity={0.75}
+            >
+              <View style={styles.menuIconCircle}>
+                <Ionicons name="apps-outline" size={20} color={P.accent.blue} />
+              </View>
+              <View style={styles.menuRowTextCol}>
+                <Text style={styles.menuDetailTitle}>{ui.appsWebTitle}</Text>
+                <Text style={styles.menuDetailSub} numberOfLines={2}>
+                  {ui.appsWebSub}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.pageSectionLabel}>{t('localAreaGuideSectionTitle')}</Text>
+          <View style={styles.menuCard}>
+            <TouchableOpacity
+              style={[styles.menuRow, styles.menuRowLast]}
+              onPress={() => router.push('/staff/local-area-guide' as never)}
+              activeOpacity={0.75}
+            >
+              <View style={styles.menuIconCircle}>
+                <Ionicons name="trail-sign-outline" size={22} color={P.accent.blue} />
+              </View>
+              <View style={styles.menuRowTextCol}>
+                <Text style={styles.menuDetailTitle}>{t('localAreaGuideMenuTitle')}</Text>
+                <Text style={styles.menuDetailSub} numberOfLines={2}>
+                  {t('localAreaGuideMenuSub')}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
+            </TouchableOpacity>
+          </View>
 
           {profile.shift && (
             <View style={styles.shiftBox}>
@@ -721,7 +1197,7 @@ export default function StaffProfileScreen() {
               activeOpacity={0.75}
             >
               <View style={styles.menuIconCircle}>
-                <Ionicons name="shield-checkmark-outline" size={22} color={theme.colors.primary} />
+                <Ionicons name="shield-checkmark-outline" size={22} color={P.accent.blue} />
               </View>
               <View style={styles.menuRowTextCol}>
                 <Text style={styles.menuDetailTitle}>{t('permissionsLegal')}</Text>
@@ -734,11 +1210,8 @@ export default function StaffProfileScreen() {
           </View>
 
           <Text style={styles.pageSectionLabel}>{t('accountManagement')}</Text>
-          <TouchableOpacity
-            style={[styles.card, styles.signOutButton]}
-            onPress={handleSignOut}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity style={styles.signOutRow} onPress={handleSignOut} activeOpacity={0.75}>
+            <Ionicons name="log-out-outline" size={18} color={theme.colors.textSecondary} />
             <Text style={styles.signOutButtonText}>{t('signOut')}</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -751,6 +1224,57 @@ export default function StaffProfileScreen() {
           </TouchableOpacity>
 
         </View>
+        ) : (
+          <View style={styles.body}>
+            <Text style={styles.pageSectionLabel}>{t('profileVisitorsTab')}</Text>
+            <View style={styles.menuCard}>
+            {profileVisitsLoading && profileVisits.length === 0 ? (
+              <View style={styles.visitorsLoading}>
+                <ActivityIndicator color={theme.colors.primary} size="large" />
+              </View>
+            ) : profileVisits.length === 0 && !profileVisitsLoading ? (
+              <View style={styles.visitorsEmpty}>
+                <Ionicons name="eye-off-outline" size={44} color={theme.colors.textMuted} />
+                <Text style={styles.visitorsEmptyTitle}>{t('profileVisitorsEmpty')}</Text>
+                <Text style={styles.visitorsEmptyHint}>{t('profileVisitorsHint')}</Text>
+              </View>
+            ) : (
+              profileVisits.map((item, idx) => (
+                <View key={item.id} style={[styles.visitRow, idx === profileVisits.length - 1 && styles.visitRowLast]}>
+                  <CachedImage
+                    uri={item.visitor_photo || 'https://via.placeholder.com/48'}
+                    style={styles.visitAvatar}
+                    contentFit="cover"
+                  />
+                  <View style={styles.visitRowText}>
+                    <Text style={styles.visitName} numberOfLines={1}>{item.visitor_name || '—'}</Text>
+                    <Text style={styles.visitMeta} numberOfLines={2}>
+                      {(item.visitor_kind === 'staff' ? t('visitorTypeStaff') : t('visitorTypeGuest'))}
+                      {' · '}
+                      {new Date(item.visited_at).toLocaleString((i18n.language || 'tr').split('-')[0], {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </Text>
+                    {item.visitor_kind === 'staff' && (item.visitor_about ?? '').trim() ? (
+                      <View style={styles.visitAbout}>
+                        <LinkifiedText
+                          text={(item.visitor_about ?? '').trim()}
+                          textStyle={styles.visitAboutText}
+                          linkStyle={styles.visitAboutLink}
+                        />
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+              ))
+            )}
+            </View>
+          </View>
+        )}
       </ScrollView>
 
       {/* Tam ekran profil resmi – boşluğa tıklayınca kapanır */}
@@ -779,6 +1303,33 @@ export default function StaffProfileScreen() {
             {profile.cover_image ? (
               <CachedImage uri={profile.cover_image} style={styles.imageModalImage} contentFit="contain" />
             ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={tenureModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTenureModalVisible(false)}
+      >
+        <Pressable style={styles.langModalOverlay} onPress={() => setTenureModalVisible(false)}>
+          <Pressable style={styles.tenureModalBox} onPress={() => {}}>
+            <Text style={styles.tenureModalTitle}>{tenureCopy.title}</Text>
+            <Text style={styles.tenureModalSubtitle}>{tenureCopy.timelineTitle}</Text>
+            <View style={styles.tenureModalList}>
+              {tenureTimeline.map((d, idx) => (
+                <View key={`${d.toISOString()}-${idx}`} style={styles.tenureModalRow}>
+                  <Text style={styles.tenureModalRowLeft}>
+                    {idx === 0 ? tenureCopy.startLabel : idx === tenureTimeline.length - 1 ? tenureCopy.todayLabel : `${idx}. ${tenureCopy.monthLabel}`}
+                  </Text>
+                  <Text style={styles.tenureModalRowRight}>{formatTenureDate(d, i18n.language)}</Text>
+                </View>
+              ))}
+            </View>
+            <TouchableOpacity style={styles.tenureModalCloseBtn} onPress={() => setTenureModalVisible(false)} activeOpacity={0.85}>
+              <Text style={styles.tenureModalCloseText}>{tenureCopy.close}</Text>
+            </TouchableOpacity>
           </Pressable>
         </Pressable>
       </Modal>
@@ -847,25 +1398,185 @@ export default function StaffProfileScreen() {
   );
 }
 
+function calculateDaysWithUs(isoDate: string, anchorMs: number) {
+  const joinedAt = new Date(isoDate);
+  if (Number.isNaN(joinedAt.getTime())) return null;
+  const anchor = new Date(anchorMs);
+  const joinedDay = Date.UTC(joinedAt.getFullYear(), joinedAt.getMonth(), joinedAt.getDate());
+  const anchorDay = Date.UTC(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+  return Math.max(1, Math.floor((anchorDay - joinedDay) / (24 * 60 * 60 * 1000)) + 1);
+}
+
+function resolveLocale(lang: string) {
+  const code = (lang || 'en').toLowerCase();
+  if (code.startsWith('tr')) return 'tr-TR';
+  if (code.startsWith('de')) return 'de-DE';
+  if (code.startsWith('fr')) return 'fr-FR';
+  if (code.startsWith('es')) return 'es-ES';
+  if (code.startsWith('ru')) return 'ru-RU';
+  if (code.startsWith('ar')) return 'ar-SA';
+  return 'en-US';
+}
+
+function formatTenureDate(d: Date, lang: string) {
+  return d.toLocaleDateString(resolveLocale(lang), { day: '2-digit', month: 'long', year: 'numeric' });
+}
+
+function buildTenureTimeline(isoDate: string, anchorMs: number) {
+  const start = new Date(isoDate);
+  if (Number.isNaN(start.getTime())) return [];
+  const anchor = new Date(anchorMs);
+  const rows: Date[] = [start];
+  const cursor = new Date(start);
+  let safety = 0;
+  while (cursor.getTime() < anchor.getTime() && safety < 360) {
+    cursor.setMonth(cursor.getMonth() + 1);
+    if (cursor.getTime() <= anchor.getTime()) rows.push(new Date(cursor));
+    safety += 1;
+  }
+  if (rows[rows.length - 1]?.toDateString() !== anchor.toDateString()) rows.push(anchor);
+  return rows;
+}
+
+function getStaffProfileUiCopy(lang: string) {
+  const code = (lang || 'en').toLowerCase();
+  if (code.startsWith('ar')) {
+    return {
+      staffComplaint: 'شكوى الموظف',
+      fixedAssets: 'الأصول الثابتة',
+      documentManagement: 'إدارة الوثائق',
+      incidentCreate: 'إنشاء محضر',
+      salesCommission: 'المبيعات والعمولات',
+      breakfastUpload: 'رفع صورة الإفطار',
+      cleaningPlan: 'خطة تنظيف الغرف',
+      statsPosts: 'المنشورات',
+      statsLikes: 'الإعجابات',
+      statsComments: 'التعليقات',
+      statsVisits: 'الزيارات',
+      adminAreaGuide: 'دليل الأماكن (الإدارة)',
+      breakfastRecords: 'سجلات تأكيد الإفطار',
+      allExpenses: 'جميع المصروفات',
+      allPayments: 'جميع المدفوعات',
+      allContracts: 'جميع العقود',
+      allStocks: 'جميع المخزون',
+      missingItemsSub: 'اكتب النقص بوضوح ليعرف الفريق المطلوب بسرعة',
+      appsWebSection: 'التطبيقات والويب',
+      appsWebTitle: 'التطبيقات ومواقع الويب',
+      appsWebSub: 'اعرض روابط المتاجر والمواقع المشتركة',
+      aboutSection: 'حول',
+    };
+  }
+  if (code.startsWith('tr')) {
+    return {
+      staffComplaint: 'Personel Şikayet',
+      fixedAssets: 'Demirbaşlar',
+      documentManagement: 'Doküman Yönetimi',
+      incidentCreate: 'Tutanak Oluştur',
+      salesCommission: 'Satış & Komisyon',
+      breakfastUpload: 'Kahvaltı Fotoğrafı Yükle',
+      cleaningPlan: 'Temizlenecek odaları gönderebilir',
+      statsPosts: 'Paylaşım',
+      statsLikes: 'Beğeni',
+      statsComments: 'Yorum',
+      statsVisits: 'Ziyaret',
+      adminAreaGuide: 'Gezilecek yerler (yönetim)',
+      breakfastRecords: 'Kahvaltı Teyit Kayıtları',
+      allExpenses: 'Tüm Harcamalar',
+      allPayments: 'Tüm Ödemeler',
+      allContracts: 'Tüm Sözleşmeler',
+      allStocks: 'Tüm Stoklar',
+      missingItemsSub: 'Eksigi acikca yaz, ekip hemen ne lazim anlasin',
+      appsWebSection: 'Uygulamalar & web',
+      appsWebTitle: 'Uygulamalar & web siteleri',
+      appsWebSub: 'Paylaşılan mağaza ve site linklerini listele',
+      aboutSection: 'Hakkında',
+    };
+  }
+  return {
+    staffComplaint: 'Staff complaint',
+    fixedAssets: 'Fixed assets',
+    documentManagement: 'Document management',
+    incidentCreate: 'Create incident report',
+    salesCommission: 'Sales & commission',
+    breakfastUpload: 'Upload breakfast photo',
+    cleaningPlan: 'Room cleaning plan',
+    statsPosts: 'Posts',
+    statsLikes: 'Likes',
+    statsComments: 'Comments',
+    statsVisits: 'Visits',
+    adminAreaGuide: 'Area guide (admin)',
+    breakfastRecords: 'Breakfast confirmation records',
+    allExpenses: 'All expenses',
+    allPayments: 'All payments',
+    allContracts: 'All contracts',
+    allStocks: 'All stocks',
+    missingItemsSub: 'Write the missing item clearly so the team can respond quickly',
+    appsWebSection: 'Apps & web',
+    appsWebTitle: 'Apps & websites',
+    appsWebSub: 'List shared store and website links',
+    aboutSection: 'About',
+  };
+}
+
+function getTenureCopy(lang: string, days: number) {
+  const code = (lang || 'en').toLowerCase();
+  if (code.startsWith('tr')) {
+    return {
+      title: 'Çalışma Kıdem Bilgisi',
+      badge: 'Kıdem',
+      headline: `${days}. gündeyiz`,
+      subtitle: 'Valoria ekibindeki aktif çalışma süresi',
+      timelineTitle: 'Başlangıç tarihinden bugüne aylık zaman çizelgesi',
+      startLabel: 'Başlangıç',
+      todayLabel: 'Bugün',
+      monthLabel: 'ay',
+      close: 'Kapat',
+    };
+  }
+  if (code.startsWith('de')) return { title: 'Betriebszugehörigkeit', badge: 'Dauer', headline: `Tag ${days}`, subtitle: 'Aktive Betriebszugehörigkeit bei Valoria', timelineTitle: 'Monatliche Zeitleiste seit dem Startdatum', startLabel: 'Start', todayLabel: 'Heute', monthLabel: 'Monat', close: 'Schließen' };
+  if (code.startsWith('fr')) return { title: "Ancienneté de l'équipe", badge: 'Ancienneté', headline: `Jour ${days}`, subtitle: "Durée active au sein de Valoria", timelineTitle: 'Chronologie mensuelle depuis la date de début', startLabel: 'Début', todayLabel: "Aujourd'hui", monthLabel: 'mois', close: 'Fermer' };
+  if (code.startsWith('es')) return { title: 'Antigüedad laboral', badge: 'Antigüedad', headline: `Día ${days}`, subtitle: 'Tiempo activo en Valoria', timelineTitle: 'Cronología mensual desde la fecha de inicio', startLabel: 'Inicio', todayLabel: 'Hoy', monthLabel: 'mes', close: 'Cerrar' };
+  if (code.startsWith('ru')) return { title: 'Стаж работы', badge: 'Стаж', headline: `${days}-й день`, subtitle: 'Активный срок работы в Valoria', timelineTitle: 'Помесячная шкала с даты начала', startLabel: 'Начало', todayLabel: 'Сегодня', monthLabel: 'месяц', close: 'Закрыть' };
+  if (code.startsWith('ar')) return { title: 'مدة الخدمة', badge: 'الخبرة', headline: `اليوم ${days}`, subtitle: 'مدة العمل الفعلي ضمن Valoria', timelineTitle: 'جدول زمني شهري منذ تاريخ البداية', startLabel: 'البداية', todayLabel: 'اليوم', monthLabel: 'شهر', close: 'إغلاق' };
+  return {
+    title: 'Employment Tenure',
+    badge: 'Tenure',
+    headline: `Day ${days}`,
+    subtitle: 'Active employment period in Valoria',
+    timelineTitle: 'Monthly timeline since start date',
+    startLabel: 'Start',
+    todayLabel: 'Today',
+    monthLabel: 'month',
+    close: 'Close',
+  };
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.colors.backgroundSecondary },
+  container: { flex: 1, backgroundColor: P.bg },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  coverBlock: {
-    width: SCREEN_WIDTH,
-    position: 'relative',
-    overflow: 'visible',
+  coverBlock: { position: 'relative', overflow: 'visible' },
+  coverBlockInner: {
     alignSelf: 'stretch',
-  },
-  coverBlockFixed: {
-    height: STAFF_COVER_BLOCK_HEIGHT,
+    width: '100%',
+    minWidth: '100%',
+    height: STAFF_HERO_HEIGHT + 16,
+    overflow: 'hidden',
   },
   coverImageClip: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+  },
+  /** Kapak yokken gradient: soldan sağa tam dolgu (absoluteFill tek başına bazen %100 çözülmez) */
+  heroGrad: {
     position: 'absolute',
-    top: 0,
     left: 0,
     right: 0,
-    height: STAFF_COVER_BLOCK_HEIGHT,
-    overflow: 'hidden',
+    top: 0,
+    bottom: 0,
+    width: '100%',
+    minWidth: '100%',
+    height: '100%',
+    minHeight: '100%',
   },
   coverPlaceholder: {
     ...StyleSheet.absoluteFillObject,
@@ -894,30 +1605,132 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 20,
   },
+  heroBackdropOrbA: {
+    position: 'absolute',
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    top: -65,
+    left: -30,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  heroBackdropOrbB: {
+    position: 'absolute',
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    bottom: -52,
+    right: -20,
+    backgroundColor: 'rgba(16,185,129,0.22)',
+  },
+  heroBackdropOrbC: {
+    position: 'absolute',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    top: 42,
+    right: 54,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
   heroOverlap: {
-    marginTop: -18,
-    marginBottom: 6,
+    marginTop: -(P.avatar.size / 2),
+    marginBottom: 8,
     paddingHorizontal: theme.spacing.lg,
+    paddingTop: 0,
     zIndex: 5,
-  },
-  heroCard: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: 20,
-    paddingTop: theme.spacing.lg,
-    paddingBottom: theme.spacing.lg,
-    paddingHorizontal: theme.spacing.lg,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    ...theme.shadows.md,
   },
-  heroAvatarWrap: { position: 'relative', marginTop: -32, marginBottom: 12 },
+  statsWrap: {
+    width: '100%',
+    marginTop: 14,
+  },
+  tenureButtonWrap: { width: '100%', marginTop: 10, borderRadius: 16, overflow: 'hidden' },
+  tenureButton: {
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    shadowColor: '#0f766e',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  tenureBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginBottom: 6,
+  },
+  tenureBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
+  tenureButtonText: { color: '#fff', fontSize: 17, fontWeight: '900' },
+  tenureButtonSubText: { marginTop: 2, color: 'rgba(255,255,255,0.92)', fontSize: 12, fontWeight: '600' },
+  tenureModalBox: {
+    width: '90%',
+    maxWidth: 420,
+    maxHeight: '78%',
+    backgroundColor: theme.colors.surface,
+    borderRadius: 16,
+    padding: 16,
+  },
+  tenureModalTitle: { fontSize: 18, fontWeight: '800', color: theme.colors.text },
+  tenureModalSubtitle: { marginTop: 4, fontSize: 12, color: theme.colors.textMuted, marginBottom: 12 },
+  tenureModalList: { borderWidth: 1, borderColor: theme.colors.borderLight, borderRadius: 12, overflow: 'hidden' },
+  tenureModalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.borderLight,
+  },
+  tenureModalRowLeft: { fontSize: 13, fontWeight: '700', color: theme.colors.text },
+  tenureModalRowRight: { fontSize: 13, color: theme.colors.textSecondary },
+  tenureModalCloseBtn: {
+    marginTop: 12,
+    borderRadius: 12,
+    backgroundColor: theme.colors.primary,
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  tenureModalCloseText: { color: theme.colors.white, fontSize: 14, fontWeight: '700' },
+  heroOnlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  heroOnlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: P.subtext,
+  },
+  heroOnlineDotOn: {
+    backgroundColor: P.accent.green,
+  },
+  heroOnlineText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: P.subtext,
+  },
+  heroAvatarShadow: {
+    borderRadius: P.avatar.size / 2,
+    ...P.avatarShadow,
+  },
+  heroAvatarWrap: { position: 'relative', marginBottom: 8 },
   heroAvatarImg: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    borderWidth: 3,
-    borderColor: theme.colors.surface,
+    width: P.avatar.size,
+    height: P.avatar.size,
+    borderRadius: P.avatar.size / 2,
+    borderWidth: P.avatar.border,
+    borderColor: '#fff',
     backgroundColor: theme.colors.borderLight,
   },
   heroAvatarOverlay: {
@@ -934,43 +1747,45 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: P.accent.purple,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: theme.colors.surface,
+    borderColor: '#fff',
   },
-  heroName: { ...theme.typography.titleSmall, color: theme.colors.text, textAlign: 'center' },
+  heroName: { ...theme.typography.titleSmall, color: P.text, textAlign: 'center' },
   heroOrgTag: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
-    color: theme.colors.primary,
+    color: P.subtext,
     textAlign: 'center',
-    marginTop: 6,
+    marginTop: 4,
   },
   heroSubtitle: {
     fontSize: 14,
-    color: theme.colors.textSecondary,
+    color: P.subtext,
     textAlign: 'center',
     marginTop: 4,
     lineHeight: 20,
     paddingHorizontal: 8,
   },
-  heroEditCta: {
+  heroEditCtaOuter: {
+    marginTop: 16,
+    alignSelf: 'stretch',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  heroEditCtaGrad: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    marginTop: 16,
-    alignSelf: 'stretch',
-    backgroundColor: theme.colors.primary,
     paddingVertical: 14,
-    borderRadius: 14,
   },
-  heroEditCtaText: { fontSize: 16, fontWeight: '800', color: theme.colors.white },
+  heroEditCtaText: { fontSize: 16, fontWeight: '600', color: '#fff' },
   heroEditHint: {
     fontSize: 12,
-    color: theme.colors.textMuted,
+    color: P.subtext,
     textAlign: 'center',
     marginTop: 10,
     lineHeight: 16,
@@ -979,42 +1794,43 @@ const styles = StyleSheet.create({
   pageSectionLabel: {
     fontSize: 12,
     fontWeight: '800',
-    color: theme.colors.textMuted,
+    color: P.subtext,
     letterSpacing: 0.8,
     textTransform: 'uppercase',
     marginTop: theme.spacing.xl,
     marginBottom: 10,
   },
   menuCard: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
+    backgroundColor: P.card,
+    borderRadius: 18,
+    borderWidth: 0,
     overflow: 'hidden',
     ...theme.shadows.sm,
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
   },
   menuRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.colors.borderLight,
-    gap: 12,
+    gap: 10,
   },
   menuRowLast: { borderBottomWidth: 0 },
   menuIconCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: theme.colors.primary + '16',
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: P.iconBg,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  menuRowTitle: { fontSize: 16, fontWeight: '700', color: theme.colors.text, flex: 1 },
+  menuRowTitle: { fontSize: 15, fontWeight: '700', color: P.text, flex: 1 },
   menuRowTextCol: { flex: 1, minWidth: 0 },
-  menuDetailTitle: { fontSize: 16, fontWeight: '700', color: theme.colors.text },
-  menuDetailSub: { fontSize: 13, color: theme.colors.textMuted, marginTop: 2 },
+  menuDetailTitle: { fontSize: 15, fontWeight: '700', color: P.text },
+  menuDetailSub: { fontSize: 12, color: P.subtext, marginTop: 2 },
   menuBadge: {
     minWidth: 22,
     height: 22,
@@ -1045,16 +1861,16 @@ const styles = StyleSheet.create({
   onlineLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   onlineDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: theme.colors.textMuted },
   onlineDotOn: { backgroundColor: theme.colors.success },
-  onlineLabel: { fontSize: 16, fontWeight: '600', color: theme.colors.text },
+  onlineLabel: { fontSize: 16, fontWeight: '600', color: P.text },
   jobInfoCard: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
+    backgroundColor: P.card,
+    borderRadius: 16,
     padding: theme.spacing.lg,
     marginTop: theme.spacing.sm,
     marginBottom: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
+    borderWidth: 0,
     ...theme.shadows.sm,
+    shadowOpacity: 0.06,
   },
   evaluationTeaserWrap: {
     marginTop: theme.spacing.lg,
@@ -1068,7 +1884,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   jobInfoRowLast: { marginBottom: 0 },
-  jobInfoItem: { fontSize: 14, color: theme.colors.text, flex: 1, minWidth: 0 },
+  jobInfoItem: { fontSize: 14, color: P.text, flex: 1, minWidth: 0 },
   jobInfoStatus: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: {
     ...theme.typography.bodySmall,
@@ -1078,50 +1894,58 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.lg,
   },
   actionsSection: { marginTop: theme.spacing.sm },
-  actionsGrid: {
+  quickAccessGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: 8,
   },
-  actionCard: {
-    width: (SCREEN_WIDTH - theme.spacing.lg * 2 - 12) / 2,
+  quickAccessCard: {
     position: 'relative',
-    backgroundColor: theme.colors.surface,
-    borderRadius: 20,
-    paddingVertical: 20,
-    paddingHorizontal: 12,
+    width: (SCREEN_WIDTH - theme.spacing.lg * 2 - 8) / 2,
+    minHeight: 84,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-    ...theme.shadows.sm,
-    shadowOpacity: 0.06,
-    elevation: 2,
+    borderLeftWidth: 3,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   actionTaskBadge: {
     position: 'absolute',
-    top: 10,
-    right: 10,
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
+    top: 5,
+    right: 5,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
     backgroundColor: theme.colors.error,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: 5,
     zIndex: 2,
   },
-  actionTaskBadgeText: { color: '#fff', fontSize: 11, fontWeight: '800' },
-  actionIconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: theme.colors.primary + '18',
-    justifyContent: 'center',
+  actionTaskBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  quickAccessIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     alignItems: 'center',
-    marginBottom: 10,
+    justifyContent: 'center',
+    marginBottom: 6,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
-  actionLabel: { fontSize: 14, fontWeight: '600', color: theme.colors.text },
+  quickAccessLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: P.text,
+    textAlign: 'center',
+    lineHeight: 15,
+  },
   infoSection: { marginTop: 4 },
   label: { fontSize: 14, fontWeight: '600', color: theme.colors.text, marginTop: 12, marginBottom: 6 },
   input: {
@@ -1170,11 +1994,12 @@ const styles = StyleSheet.create({
   editProfileHint: { fontSize: 13, color: theme.colors.textMuted, marginTop: 2 },
   editProfileChevron: {},
   card: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
+    backgroundColor: P.card,
+    borderRadius: 16,
     padding: theme.spacing.md,
     marginTop: theme.spacing.sm,
     ...theme.shadows.sm,
+    shadowOpacity: 0.06,
   },
   linkRow: {
     flexDirection: 'row',
@@ -1183,17 +2008,21 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   linkRowText: { fontSize: 15, color: theme.colors.text, flex: 1 },
-  signOutButton: {
+  signOutRow: {
     marginBottom: 12,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.md,
-    borderWidth: 1.5,
-    borderColor: theme.colors.error,
-    backgroundColor: 'transparent',
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: theme.spacing.lg,
+    gap: 8,
+    backgroundColor: theme.colors.backgroundSecondary,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    ...theme.shadows.sm,
   },
-  signOutButtonText: { fontSize: 16, fontWeight: '600', color: theme.colors.error },
+  signOutButtonText: { fontSize: 15, fontWeight: '600', color: theme.colors.textSecondary },
   deleteAccountRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1351,6 +2180,7 @@ const styles = StyleSheet.create({
   salaryHistoryList: { marginTop: 8, gap: 6 },
   salaryHistoryItem: { paddingVertical: 4 },
   salaryHistoryText: { fontSize: 13, color: theme.colors.textSecondary },
+  pendingSalaryTabArea: { paddingHorizontal: 16, marginTop: 10, marginBottom: 2 },
   pendingSalaryBlock: { marginTop: 8, padding: 12, backgroundColor: theme.colors.backgroundSecondary, borderRadius: theme.radius.md },
   pendingSalaryText: { fontSize: 14, fontWeight: '600', color: theme.colors.text },
   pendingSalaryHint: { fontSize: 13, color: theme.colors.textMuted, marginTop: 4 },
@@ -1377,4 +2207,112 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   unblockBtnText: { color: theme.colors.error, fontWeight: '700', fontSize: 13 },
+  profileTabRow: {
+    flexDirection: 'row',
+    marginHorizontal: theme.spacing.lg,
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+    padding: 4,
+    borderRadius: 16,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 1,
+    borderColor: '#DDE3FF',
+    gap: 4,
+    shadowColor: '#312E81',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 2,
+  },
+  profileTabBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  profileTabBtnActive: {
+    backgroundColor: P.gradient.start,
+    borderColor: P.gradient.start,
+    shadowColor: P.gradient.start,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  profileTabLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#374151',
+    textAlign: 'center',
+  },
+  profileTabLabelActive: {
+    color: '#FFFFFF',
+  },
+  visitorsLoading: {
+    minHeight: 200,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  visitorsEmpty: {
+    paddingVertical: 42,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+  },
+  visitorsEmptyTitle: {
+    marginTop: 12,
+    fontSize: 16,
+    fontWeight: '700',
+    color: theme.colors.text,
+    textAlign: 'center',
+  },
+  visitorsEmptyHint: {
+    marginTop: 8,
+    fontSize: 14,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  visitRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.borderLight,
+  },
+  visitRowLast: {
+    borderBottomWidth: 0,
+  },
+  visitAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: theme.colors.borderLight,
+  },
+  visitRowText: { flex: 1, minWidth: 0 },
+  visitName: { fontSize: 16, fontWeight: '700', color: theme.colors.text },
+  visitMeta: { fontSize: 13, color: theme.colors.textMuted, marginTop: 4 },
+  visitAbout: { marginTop: 8, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.borderLight },
+  visitAboutText: { fontSize: 13, lineHeight: 19, color: theme.colors.textSecondary },
+  visitAboutLink: { color: theme.colors.primary, textDecorationLine: 'underline', fontWeight: '600' },
+  aboutBlock: {
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+  },
+  aboutText: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: P.text,
+  },
+  aboutLink: {
+    color: P.accent.blue,
+    textDecorationLine: 'underline',
+    fontWeight: '600',
+  },
 });

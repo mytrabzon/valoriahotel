@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import nodemailer from "npm:nodemailer@6.9.16";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -237,16 +238,20 @@ async function sendEmailWithAttachment(opts: {
   subject: string;
   pdfBytes: Uint8Array;
 }) {
-  const resendApiKey = Deno.env.get("RESEND_API_KEY");
-  // PRINTER_FROM_EMAIL bazen panelden kopyala/yapistirda satir sonu alabiliyor.
-  // Resend'e bozuk "from" gitmesin diye normalize et.
-  const rawFrom = Deno.env.get("PRINTER_FROM_EMAIL") ?? "";
-  const normalizedFrom = rawFrom.replace(/[\r\n]+/g, "").trim();
-  const fromIsValid = normalizedFrom.includes("@") && normalizedFrom.includes("<") && normalizedFrom.includes(">");
+  const smtpHost = (Deno.env.get("SMTP_HOST") ?? "").trim();
+  const smtpPortRaw = (Deno.env.get("SMTP_PORT") ?? "").trim();
+  const smtpUser = (Deno.env.get("SMTP_USER") ?? "").trim();
+  const smtpPass = Deno.env.get("SMTP_PASS") ?? "";
+  const rawFrom = (Deno.env.get("SMTP_FROM_EMAIL") ?? Deno.env.get("PRINTER_FROM_EMAIL") ?? "").replace(/[\r\n]+/g, "").trim();
+  const from = rawFrom.includes("@") && rawFrom.includes("<") && rawFrom.includes(">") ? rawFrom : "Valoria <noreply@localhost>";
 
-  // Domain verify edilmediyse Resend kısıtlayabilir; yine de "from" formatini koru.
-  const from = fromIsValid ? normalizedFrom : "Valoria <onboarding@resend.dev>";
-  if (!resendApiKey) throw new Error("RESEND_API_KEY tanimli degil");
+  if (!smtpHost || !smtpPortRaw || !smtpUser || !smtpPass) {
+    throw new Error("SMTP secrets eksik: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS");
+  }
+  const smtpPort = Number(smtpPortRaw);
+  if (!Number.isFinite(smtpPort) || smtpPort <= 0) throw new Error("SMTP_PORT sayisal olmali");
+  const secureRaw = (Deno.env.get("SMTP_SECURE") ?? "").trim().toLowerCase();
+  const smtpSecure = secureRaw ? ["1", "true", "yes", "on"].includes(secureRaw) : smtpPort === 465;
 
   let binary = "";
   const chunkSize = 0x8000;
@@ -255,24 +260,19 @@ async function sendEmailWithAttachment(opts: {
     binary += String.fromCharCode(...chunk);
   }
   const contentBase64 = btoa(binary);
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${resendApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [opts.to],
-      subject: opts.subject,
-      html: "<p>Sozlesme otomatik olarak olusturulmus ve ektedir.</p>",
-      attachments: [{ filename: "sozlesme.pdf", content: contentBase64 }],
-    }),
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: smtpPort,
+    secure: smtpSecure,
+    auth: { user: smtpUser, pass: smtpPass },
   });
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`E-posta gonderilemedi: ${res.status} ${detail}`);
-  }
+  await transporter.sendMail({
+    from,
+    to: opts.to,
+    subject: opts.subject,
+    html: "<p>Sozlesme otomatik olarak olusturulmus ve ektedir.</p>",
+    attachments: [{ filename: "sozlesme.pdf", content: contentBase64, encoding: "base64" }],
+  });
 }
 
 async function insertPrinterLog(
@@ -352,13 +352,13 @@ Deno.serve(async (req: Request) => {
     }
 
     const hasPdfShiftKey = !!Deno.env.get("PDFSHIFT_API_KEY");
-    const hasResendKey = !!Deno.env.get("RESEND_API_KEY");
-    if (!hasPdfShiftKey || !hasResendKey) {
+    const hasSmtpCore = !!Deno.env.get("SMTP_HOST") && !!Deno.env.get("SMTP_PORT") && !!Deno.env.get("SMTP_USER") && !!Deno.env.get("SMTP_PASS");
+    if (!hasPdfShiftKey || !hasSmtpCore) {
       await insertPrinterLog(
         supabase,
         record.id,
         "skipped",
-        "PDFSHIFT_API_KEY/RESEND_API_KEY eksik oldugu icin gonderim yapilmadi",
+        "PDFSHIFT_API_KEY veya SMTP secrets eksik oldugu icin gonderim yapilmadi",
       );
       return new Response(
         JSON.stringify({

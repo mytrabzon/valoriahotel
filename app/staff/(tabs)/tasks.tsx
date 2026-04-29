@@ -16,7 +16,7 @@ import {
   Linking,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Video, ResizeMode } from 'expo-av';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -235,23 +235,23 @@ export default function StaffTasksTabScreen() {
   }, []);
 
   const openContractPdfMenu = useCallback((guestId: string) => {
-    Alert.alert('Sözleşme PDF', 'Önizleme, yazdırma veya PDF paylaş / indir', [
+    Alert.alert(t('screenDocumentManagement'), t('screenPost'), [
       {
-        text: 'Önizleme',
+        text: t('screenPost'),
         onPress: () => {
           void (async () => {
             setPdfActionLoading(true);
             try {
               const g = await loadGuestForPdf(supabase, guestId);
               if (!g) {
-                Alert.alert('Hata', 'Misafir verisi alınamadı.');
+                Alert.alert(t('error'), t('recordError'));
                 return;
               }
               const appearance = await fetchContractPdfAppearance(supabase);
               setContractPreviewKey((k) => k + 1);
               setContractPreviewHtml(buildContractHtml(g, appearance));
             } catch (e) {
-              Alert.alert('Hata', (e as Error)?.message ?? 'Önizleme açılamadı.');
+              Alert.alert(t('error'), (e as Error)?.message ?? t('recordError'));
             } finally {
               setPdfActionLoading(false);
             }
@@ -259,19 +259,19 @@ export default function StaffTasksTabScreen() {
         },
       },
       {
-        text: 'Yazdır',
+        text: t('save'),
         onPress: () => {
           void (async () => {
             setPdfActionLoading(true);
             try {
               const g = await loadGuestForPdf(supabase, guestId);
               if (!g) {
-                Alert.alert('Hata', 'Misafir verisi alınamadı.');
+                Alert.alert(t('error'), t('recordError'));
                 return;
               }
               await printContractGuest(g);
             } catch (e) {
-              Alert.alert('Hata', (e as Error)?.message ?? 'Yazdırma başarısız.');
+              Alert.alert(t('error'), (e as Error)?.message ?? t('recordError'));
             } finally {
               setPdfActionLoading(false);
             }
@@ -279,26 +279,26 @@ export default function StaffTasksTabScreen() {
         },
       },
       {
-        text: 'PDF indir / paylaş',
+        text: t('share'),
         onPress: () => {
           void (async () => {
             setPdfActionLoading(true);
             try {
               const g = await loadGuestForPdf(supabase, guestId);
               if (!g) {
-                Alert.alert('Hata', 'Misafir verisi alınamadı.');
+                Alert.alert(t('error'), t('recordError'));
                 return;
               }
               await shareContractPdf(g);
             } catch (e) {
-              Alert.alert('Hata', (e as Error)?.message ?? 'PDF oluşturulamadı.');
+              Alert.alert(t('error'), (e as Error)?.message ?? t('recordError'));
             } finally {
               setPdfActionLoading(false);
             }
           })();
         },
       },
-      { text: 'İptal', style: 'cancel' },
+      { text: t('cancel'), style: 'cancel' },
     ]);
   }, []);
 
@@ -405,11 +405,7 @@ export default function StaffTasksTabScreen() {
     loadAll();
   }, [staff?.id, loadAll]);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (staff?.id) loadAll();
-    }, [staff?.id, loadAll])
-  );
+  /** Sekmeye her dönüşte loadAll tetiklemek hem flicker hem gereksiz trafik; ilk mount + çekme yeterli */
 
   const focusId = Array.isArray(focusAssignment) ? focusAssignment[0] : focusAssignment;
 
@@ -428,7 +424,7 @@ export default function StaffTasksTabScreen() {
   const updateStatus = async (roomId: string, newStatus: RoomStatus) => {
     const { error } = await supabase.from('rooms').update({ status: newStatus, updated_at: new Date().toISOString() }).eq('id', roomId);
     if (error) {
-      Alert.alert('Hata', error.message);
+      Alert.alert(t('error'), error.message);
       return;
     }
     setRooms((prev) => prev.map((r) => (r.id === roomId ? { ...r, status: newStatus } : r)));
@@ -453,7 +449,7 @@ export default function StaffTasksTabScreen() {
         ? { status: 'in_progress', started_at: new Date().toISOString() }
         : { status: 'completed', completed_at: new Date().toISOString() };
     const { error } = await supabase.from('staff_assignments').update(patch).eq('id', row.id).eq('assigned_staff_id', staff.id);
-    if (error) Alert.alert('Hata', error.message);
+    if (error) Alert.alert(t('error'), error.message);
     else loadAssignments();
   };
 
@@ -522,7 +518,7 @@ export default function StaffTasksTabScreen() {
             <>
               <View style={styles.roomSheetHeader}>
                 <Text style={styles.roomSheetTitle}>Oda {roomSheetRoom.room_number}</Text>
-                <TouchableOpacity onPress={closeRoomSheet} hitSlop={12} accessibilityLabel="Kapat">
+                <TouchableOpacity onPress={closeRoomSheet} hitSlop={12} accessibilityLabel={t('close')}>
                   <Ionicons name="close" size={26} color={theme.colors.text} />
                 </TouchableOpacity>
               </View>
@@ -576,7 +572,7 @@ export default function StaffTasksTabScreen() {
                     }
                   }}
                   hitSlop={12}
-                  accessibilityLabel="Geri"
+                  accessibilityLabel={t('back')}
                 >
                   <Ionicons name="chevron-back" size={26} color={theme.colors.primary} />
                 </TouchableOpacity>
